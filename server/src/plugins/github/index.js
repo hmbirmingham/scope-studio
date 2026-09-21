@@ -1,4 +1,5 @@
 import { Octokit } from 'octokit';
+import { tryEmbedDocument } from '../../lib/embeddings.js';
 import { upsertNodeByExternalId } from '../../models/nodeStore.js';
 import { getAuthorizeUrl, exchangeCodeForToken } from './oauth.js';
 
@@ -25,6 +26,16 @@ async function fetchRepos(token, { since } = {}) {
   return repos.filter((repo) => new Date(repo.updated_at) > since);
 }
 
+async function upsertRepos(repos) {
+  const nodes = [];
+  for (const repo of repos) {
+    const node = repoToNode(repo);
+    const embedding = await tryEmbedDocument(node.content);
+    nodes.push(await upsertNodeByExternalId({ ...node, embedding }));
+  }
+  return nodes;
+}
+
 const githubPlugin = {
   name: 'github',
   displayName: 'GitHub',
@@ -35,21 +46,11 @@ const githubPlugin = {
   authenticate: { getAuthorizeUrl, exchangeCodeForToken },
 
   async ingest(token) {
-    const repos = await fetchRepos(token);
-    const nodes = [];
-    for (const repo of repos) {
-      nodes.push(await upsertNodeByExternalId(repoToNode(repo)));
-    }
-    return nodes;
+    return upsertRepos(await fetchRepos(token));
   },
 
   async sync(token, since) {
-    const repos = await fetchRepos(token, { since });
-    const nodes = [];
-    for (const repo of repos) {
-      nodes.push(await upsertNodeByExternalId(repoToNode(repo)));
-    }
-    return nodes;
+    return upsertRepos(await fetchRepos(token, { since }));
   },
 };
 
