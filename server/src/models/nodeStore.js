@@ -1,5 +1,9 @@
 import { getPool } from '../db/pool.js';
 
+// Excludes embedding and content_tsv, which are large and internal to retrieval.
+const NODE_COLUMNS =
+  'id, type, content, source, external_id, project, created_at, last_accessed, access_count, privacy';
+
 function toPgVector(embedding) {
   return embedding ? `[${embedding.join(',')}]` : null;
 }
@@ -9,7 +13,7 @@ export async function createNode({ type, content, embedding, source, project, pr
   const { rows } = await pool.query(
     `INSERT INTO nodes (type, content, embedding, source, project, privacy)
      VALUES ($1, $2, $3, $4, $5, COALESCE($6, 'cloud'))
-     RETURNING *`,
+     RETURNING ${NODE_COLUMNS}`,
     [type, content, toPgVector(embedding), source ?? null, project ?? null, privacy ?? null]
   );
   return rows[0];
@@ -20,7 +24,7 @@ export async function getNode(id) {
   const { rows } = await pool.query(
     `UPDATE nodes SET last_accessed = now(), access_count = access_count + 1
      WHERE id = $1
-     RETURNING *`,
+     RETURNING ${NODE_COLUMNS}`,
     [id]
   );
   return rows[0] ?? null;
@@ -42,7 +46,7 @@ export async function listNodes({ project, type } = {}) {
 
   const where = conditions.length ? `WHERE ${conditions.join(' AND ')}` : '';
   const { rows } = await pool.query(
-    `SELECT * FROM nodes ${where} ORDER BY created_at DESC`,
+    `SELECT ${NODE_COLUMNS} FROM nodes ${where} ORDER BY created_at DESC`,
     values
   );
   return rows;
@@ -57,10 +61,38 @@ export async function updateNode(id, { content, embedding, project, privacy }) {
        project = COALESCE($4, project),
        privacy = COALESCE($5, privacy)
      WHERE id = $1
-     RETURNING *`,
+     RETURNING ${NODE_COLUMNS}`,
     [id, content ?? null, toPgVector(embedding), project ?? null, privacy ?? null]
   );
   return rows[0] ?? null;
+}
+
+export async function upsertNodeByExternalId({ type, content, embedding, source, externalId, project, privacy }) {
+  const pool = getPool();
+  const { rows } = await pool.query(
+    `INSERT INTO nodes (type, content, embedding, source, external_id, project, privacy)
+     VALUES ($1, $2, $3, $4, $5, $6, COALESCE($7, 'cloud'))
+     ON CONFLICT (source, external_id) WHERE external_id IS NOT NULL
+     DO UPDATE SET
+       content = EXCLUDED.content,
+       embedding = COALESCE(EXCLUDED.embedding, nodes.embedding),
+       project = EXCLUDED.project,
+       last_accessed = now()
+     RETURNING ${NODE_COLUMNS}`,
+    [type, content, toPgVector(embedding), source, externalId, project ?? null, privacy ?? null]
+  );
+  return rows[0];
+}
+
+export async function listNodesMissingEmbedding() {
+  const pool = getPool();
+  const { rows } = await pool.query('SELECT id, content FROM nodes WHERE embedding IS NULL');
+  return rows;
+}
+
+export async function setNodeEmbedding(id, embedding) {
+  const pool = getPool();
+  await pool.query('UPDATE nodes SET embedding = $2 WHERE id = $1', [id, toPgVector(embedding)]);
 }
 
 export async function deleteNode(id) {
