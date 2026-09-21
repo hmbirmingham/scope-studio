@@ -2,7 +2,8 @@ import { getPool } from '../db/pool.js';
 
 // Excludes embedding and content_tsv, which are large and internal to retrieval.
 const NODE_COLUMNS =
-  'id, type, content, source, external_id, project, created_at, last_accessed, access_count, privacy';
+  'id, type, content, source, external_id, project, created_at, last_accessed, ' +
+  'last_confirmed_useful, access_count, confirmed_useful_count, token_length, privacy';
 
 function toPgVector(embedding) {
   return embedding ? `[${embedding.join(',')}]` : null;
