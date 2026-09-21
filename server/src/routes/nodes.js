@@ -1,5 +1,6 @@
 import { Router } from 'express';
 import requireAuth from '../middleware/requireAuth.js';
+import { tryEmbedDocument } from '../lib/embeddings.js';
 import {
   createNode,
   getNode,
@@ -29,7 +30,8 @@ router.post('/', async (req, res) => {
     return res.status(400).json({ error: `privacy must be one of: ${PRIVACY_LEVELS.join(', ')}` });
   }
 
-  const node = await createNode({ type, content, project, privacy, source: 'manual' });
+  const embedding = await tryEmbedDocument(content);
+  const node = await createNode({ type, content, embedding, project, privacy, source: 'manual' });
   res.status(201).json(node);
 });
 
@@ -51,7 +53,8 @@ router.patch('/:id', async (req, res) => {
     return res.status(400).json({ error: `privacy must be one of: ${PRIVACY_LEVELS.join(', ')}` });
   }
 
-  const node = await updateNode(req.params.id, { content, project, privacy });
+  const embedding = content ? await tryEmbedDocument(content) : null;
+  const node = await updateNode(req.params.id, { content, embedding, project, privacy });
   if (!node) return res.status(404).json({ error: 'node not found' });
   res.json(node);
 });
