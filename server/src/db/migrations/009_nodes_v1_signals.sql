@@ -1,0 +1,4 @@
+ALTER TABLE nodes
+  ADD COLUMN token_length INTEGER GENERATED ALWAYS AS (CEIL(LENGTH(content) / 4.0)::INTEGER) STORED,
+  ADD COLUMN last_confirmed_useful TIMESTAMPTZ,
+  ADD COLUMN confirmed_useful_count INTEGER NOT NULL DEFAULT 0;

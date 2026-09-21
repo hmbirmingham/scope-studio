@@ -1,18 +1,22 @@
 import { getPool } from '../db/pool.js';
 import { embedQuery } from '../lib/embeddings.js';
-import { logQueryMetrics } from '../models/metricsStore.js';
+import { logQueryMetrics, logContextNodes, markFollowUp } from '../models/metricsStore.js';
 import {
-  CONTEXT_TOKEN_BUDGET,
+  DECAY_LAMBDA,
   DENSE_CANDIDATES,
   EXPANSION_DECAY,
   EXPANSION_SEEDS,
   LEXICAL_CANDIDATES,
   LEXICAL_MIN_MATCH,
-  MAX_CONTEXT_NODES,
+  SUPERSEDE_DEMOTION,
   fuseAndScore,
+  resolveConfig,
 } from './score.js';
+import { inferTask } from './taskInference.js';
 
-const NODE_COLUMNS = 'id, type, content, source, project, last_accessed, access_count, privacy';
+const NODE_COLUMNS =
+  'id, type, content, source, project, created_at, last_accessed, last_confirmed_useful, ' +
+  'access_count, confirmed_useful_count, token_length, privacy';
 
 const STOPWORDS = new Set([
   'the', 'and', 'for', 'are', 'but', 'not', 'you', 'all', 'can', 'had', 'her', 'was', 'one',
@@ -22,8 +26,37 @@ const STOPWORDS = new Set([
   'would', 'could', 'should', 'into', 'than', 'then', 'them', 'these', 'those', 'over', 'why',
 ]);
 
-export function estimateTokens(text) {
-  return Math.ceil(text.length / 4);
+// Edge semantics per ADR §2.3: traversal is forward only (seed is the source).
+const EDGE_WEIGHTS = { depends_on: 1.0, references: 0.7, part_of: 0.7, caused_by: 1.0, supersedes: 1.0 };
+const WHY_PATTERN = /^\s*(why|how come|what('s| is| was) the reason)\b/i;
+const WHY_CAUSED_BY_BOOST = 1.5;
+
+const EMBED_CACHE_MAX = 256;
+const embedCache = new Map();
+
+function columns(alias) {
+  return NODE_COLUMNS.split(', ').map((col) => `${alias}.${col}`).join(', ');
+}
+
+function supersededSql(alias) {
+  return `EXISTS (SELECT 1 FROM node_relationships s
+                  WHERE s.target_id = ${alias}.id AND s.type = 'supersedes') AS superseded`;
+}
+
+// Iterative workflows re-ask near-identical queries; skipping the embedding
+// pass is the cheapest TTFT win available (ADR §6.4).
+async function cachedEmbedQuery(query) {
+  const key = query.toLowerCase().replace(/\s+/g, ' ').trim();
+  const hit = embedCache.get(key);
+  if (hit) {
+    embedCache.delete(key);
+    embedCache.set(key, hit);
+    return { vector: hit, cached: true };
+  }
+  const vector = await embedQuery(query);
+  embedCache.set(key, vector);
+  if (embedCache.size > EMBED_CACHE_MAX) embedCache.delete(embedCache.keys().next().value);
+  return { vector, cached: false };
 }
 
 // Mirrors the index side (migration 008): identifiers split on non-alphanumerics.
@@ -37,7 +70,8 @@ function toLexicalTerms(query) {
 
 async function denseCandidates(pool, vector) {
   const { rows } = await pool.query(
-    `SELECT ${NODE_COLUMNS}, 1 - (embedding <=> $1::vector) AS similarity
+    `SELECT ${columns('nodes')}, ${supersededSql('nodes')},
+            1 - (embedding <=> $1::vector) AS similarity
      FROM nodes
      WHERE embedding IS NOT NULL
      ORDER BY embedding <=> $1::vector
@@ -54,7 +88,8 @@ async function lexicalCandidates(pool, query) {
   if (terms.length === 0) return [];
   const minMatch = Math.min(LEXICAL_MIN_MATCH, terms.length);
   const { rows } = await pool.query(
-    `SELECT ${NODE_COLUMNS}, ts_rank_cd(content_tsv, to_tsquery('simple', $1)) AS rank
+    `SELECT ${columns('nodes')}, ${supersededSql('nodes')},
+            ts_rank_cd(content_tsv, to_tsquery('simple', $1)) AS rank
      FROM nodes
      WHERE content_tsv @@ to_tsquery('simple', $1)
        AND (SELECT count(*) FROM unnest($3::text[]) AS t(term)
@@ -66,57 +101,64 @@ async function lexicalCandidates(pool, query) {
   return rows.map(({ rank, ...node }) => ({ node, rank: Number(rank) }));
 }
 
-// One-hop expansion from the strongest seeds only: this is the "minimum
-// connected subgraph" — relationships pull in decision/spec context that
-// embeddings alone would miss, without flooding the budget.
-async function expandFromSeeds(pool, scored) {
+// One forward hop from the strongest seeds only — the "minimum connected
+// subgraph". Superseded targets are pulled in near-zero, not dropped (ADR §2.3).
+async function expandFromSeeds(pool, scored, { query, config }) {
   const seeds = scored.slice(0, EXPANSION_SEEDS);
   if (seeds.length === 0) return scored;
 
   const seedIds = seeds.map((entry) => entry.node.id);
   const seedScore = new Map(seeds.map((entry) => [entry.node.id, entry.score]));
   const { rows } = await pool.query(
-    `SELECT r.source_id, r.target_id, r.weight, r.type AS relationship,
-            ${NODE_COLUMNS.split(', ').map((col) => `n.${col}`).join(', ')}
+    `SELECT r.source_id, r.weight, r.type AS relationship, ${columns('n')}, ${supersededSql('n')}
      FROM node_relationships r
-     JOIN nodes n ON n.id = CASE WHEN r.source_id = ANY($1) THEN r.target_id ELSE r.source_id END
-     WHERE r.source_id = ANY($1) OR r.target_id = ANY($1)`,
+     JOIN nodes n ON n.id = r.target_id
+     WHERE r.source_id = ANY($1)`,
     [seedIds]
   );
 
+  const whyQuery = WHY_PATTERN.test(query);
   const byId = new Map(scored.map((entry) => [entry.node.id, entry]));
-  for (const { source_id, target_id, weight, relationship, ...node } of rows) {
-    const from = seedIds.includes(source_id) ? source_id : target_id;
-    const score = seedScore.get(from) * Number(weight) * EXPANSION_DECAY;
+  for (const { source_id, weight, relationship, ...node } of rows) {
+    let edge = EDGE_WEIGHTS[relationship];
+    if (relationship === 'caused_by' && whyQuery) edge *= WHY_CAUSED_BY_BOOST;
+    const demotion = config.features.supersede_demotion && node.superseded ? SUPERSEDE_DEMOTION : 1;
+    const score = seedScore.get(source_id) * Number(weight) * edge * EXPANSION_DECAY * demotion;
+
     const existing = byId.get(node.id);
-    if (existing) {
-      existing.score = Math.max(existing.score, score);
-    } else {
-      byId.set(node.id, { node, score, via: { from, relationship } });
+    if (!existing) {
+      byId.set(node.id, { node, score, via: { from: source_id, relationship } });
+    } else if (score > existing.score) {
+      existing.score = score;
+      existing.via = { from: source_id, relationship };
     }
   }
   return [...byId.values()].sort((a, b) => b.score - a.score);
 }
 
-function packIntoBudget(scored) {
+function packIntoBudget(candidates, config) {
   const selected = [];
   let tokens = 0;
-  for (const entry of scored) {
-    if (selected.length >= MAX_CONTEXT_NODES) break;
-    const cost = estimateTokens(entry.node.content);
-    if (tokens + cost > CONTEXT_TOKEN_BUDGET) continue;
-    selected.push({ ...entry, tokens: cost });
+  for (const entry of candidates) {
+    if (selected.length >= config.max_nodes) break;
+    const cost = entry.node.token_length;
+    if (tokens + cost > config.max_context_tokens) continue;
+    selected.push(entry);
     tokens += cost;
   }
   return { selected, tokens };
 }
 
+// Lets the router re-pack under a stricter tier after privacy flags are known,
+// without re-querying (provisional tier, then re-pack).
+export function packForTier(candidates, tier, overrides) {
+  return packIntoBudget(candidates, resolveConfig(tier, overrides));
+}
+
 // Baseline for the efficiency claim: everything the user would otherwise
 // paste. Retrieval draws from all nodes, so the baseline is all nodes too.
 async function tokensAvailable(pool) {
-  const { rows } = await pool.query(
-    'SELECT COALESCE(SUM(CEIL(LENGTH(content) / 4.0)), 0) AS tokens FROM nodes'
-  );
+  const { rows } = await pool.query('SELECT COALESCE(SUM(token_length), 0) AS tokens FROM nodes');
   return Number(rows[0].tokens);
 }
 
@@ -126,22 +168,27 @@ function buildContext(selected) {
     .join('\n\n');
 }
 
-export async function retrieve({ query, project, taskType }) {
+export async function retrieve({ query, project, tier = 'local_7b', overrides, sessionId }) {
   const pool = getPool();
+  const config = resolveConfig(tier, overrides);
+  const now = new Date();
 
   const embedStart = performance.now();
-  const vector = await embedQuery(query);
+  const { vector, cached } = await cachedEmbedQuery(query);
   const embeddingLatencyMs = Math.round(performance.now() - embedStart);
 
   const retrievalStart = performance.now();
-  const [dense, lexical, available] = await Promise.all([
+  const [dense, lexical, available, task] = await Promise.all([
     denseCandidates(pool, vector),
     lexicalCandidates(pool, query),
     tokensAvailable(pool),
+    config.features.task_inference ? inferTask(pool, vector) : null,
   ]);
-  const scored = fuseAndScore({ dense, lexical, project, taskType, now: new Date() });
-  const expanded = await expandFromSeeds(pool, scored);
-  const { selected, tokens } = packIntoBudget(expanded);
+  const scored = fuseAndScore({ dense, lexical, project, task, now, config });
+  const candidates = config.features.expansion
+    ? await expandFromSeeds(pool, scored, { query, config })
+    : scored;
+  const { selected, tokens } = packIntoBudget(candidates, config);
 
   if (selected.length > 0) {
     await pool.query(
@@ -152,26 +199,47 @@ export async function retrieve({ query, project, taskType }) {
   const retrievalLatencyMs = Math.round(performance.now() - retrievalStart);
 
   const metrics = {
+    tier,
     embeddingLatencyMs,
+    embeddingCached: cached,
     retrievalLatencyMs,
     nodesRetrieved: selected.length,
     tokensInjected: tokens,
     tokensAvailable: available,
     efficiencyRatio: available > 0 ? tokens / available : null,
+    inferredTaskType: task?.task ?? null,
+    taskConfidence: task?.confidence ?? null,
+    supersededNodesDemoted: selected.filter((entry) => entry.node.superseded).length,
+    sourceTypeBoostApplied: selected.filter((entry) => entry.boosts?.source > 0).length,
   };
-  const queryId = await logQueryMetrics({ queryText: query, ...metrics });
+  const queryId = await logQueryMetrics({ queryText: query, sessionId, ...metrics });
+  await Promise.all([
+    logContextNodes(
+      queryId,
+      selected.map((entry, position) => ({
+        nodeId: entry.node.id,
+        position,
+        score: entry.score,
+        decayLambda: DECAY_LAMBDA[entry.node.type],
+      }))
+    ),
+    sessionId ? markFollowUp(sessionId, queryId) : null,
+  ]);
 
   return {
     queryId,
+    tier,
+    task,
     context: buildContext(selected),
-    nodes: selected.map(({ node, score, similarity, lexicalRank, via, tokens }) => ({
+    nodes: selected.map(({ node, score, similarity, lexicalRank, boosts, via }) => ({
       ...node,
       score,
-      similarity,
-      lexicalRank,
-      via,
-      tokens,
+      similarity: similarity ?? null,
+      lexicalRank: lexicalRank ?? null,
+      boosts: boosts ?? null,
+      via: via ?? null,
     })),
+    candidates,
     metrics,
   };
 }
