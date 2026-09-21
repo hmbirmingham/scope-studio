@@ -5,7 +5,9 @@
   "main": "src/index.js",
   "scripts": {
     "start": "node src/index.js",
-    "dev": "node --watch src/index.js"
+    "dev": "node --watch src/index.js",
+    "migrate": "node src/db/migrate.js",
+    "embed": "node src/db/embed-missing.js"
   },
   "keywords": [],
   "author": "Hynes Birmingham",
@@ -14,6 +16,8 @@
   "dependencies": {
     "dotenv": "^18.0.1",
     "express": "^5.2.1",
-    "express-session": "^1.19.0"
+    "express-session": "^1.19.0",
+    "octokit": "^5.0.5",
+    "pg": "^8.23.0"
   }
 }
