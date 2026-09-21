@@ -63,6 +63,19 @@ export async function updateNode(id, { content, embedding, project, privacy }) {
   return rows[0] ?? null;
 }
 
+export async function upsertNodeByExternalId({ type, content, source, externalId, project, privacy }) {
+  const pool = getPool();
+  const { rows } = await pool.query(
+    `INSERT INTO nodes (type, content, source, external_id, project, privacy)
+     VALUES ($1, $2, $3, $4, $5, COALESCE($6, 'cloud'))
+     ON CONFLICT (source, external_id) WHERE external_id IS NOT NULL
+     DO UPDATE SET content = EXCLUDED.content, project = EXCLUDED.project, last_accessed = now()
+     RETURNING *`,
+    [type, content, source, externalId, project ?? null, privacy ?? null]
+  );
+  return rows[0];
+}
+
 export async function deleteNode(id) {
   const pool = getPool();
   const { rowCount } = await pool.query('DELETE FROM nodes WHERE id = $1', [id]);
