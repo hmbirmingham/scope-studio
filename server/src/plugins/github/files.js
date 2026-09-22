@@ -81,7 +81,8 @@ export function chunkText(text, size = CHUNK_CHARS, overlap = CHUNK_OVERLAP_CHAR
       chunks.push(current.join('\n'));
       const kept = [];
       let keptLength = 0;
-      for (let i = current.length - 1; i >= 0 && keptLength < overlap; i--) {
+      for (let i = current.length - 1; i >= 0; i--) {
+        if (keptLength + current[i].length + 1 > overlap) break;
         kept.unshift(current[i]);
         keptLength += current[i].length + 1;
       }

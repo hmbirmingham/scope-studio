@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import { describe, test } from 'node:test';
 import {
   CHUNK_CHARS,
+  CHUNK_OVERLAP_CHARS,
   chunkExternalId,
   chunkText,
   isEligible,
@@ -62,6 +63,17 @@ describe('chunkText', () => {
     }
     const firstOfSecond = chunks[1].split('\n')[0];
     assert.ok(chunks[0].includes(firstOfSecond), 'second chunk begins with lines the first already had');
+  });
+
+  test('no chunk ever exceeds size + overlap, even when long prose lines meet at a boundary', () => {
+    const longLine = ('lorem ipsum '.repeat(300)).trim();
+    const text = ['short', longLine, longLine, 'tail', longLine, 'end'].join('\n');
+    for (const chunk of chunkText(text)) {
+      assert.ok(
+        chunk.length <= CHUNK_CHARS + CHUNK_OVERLAP_CHARS,
+        `chunk of ${chunk.length} chars exceeds ${CHUNK_CHARS + CHUNK_OVERLAP_CHARS}`
+      );
+    }
   });
 
   test('a definition that would straddle a boundary is findable in one chunk', () => {
