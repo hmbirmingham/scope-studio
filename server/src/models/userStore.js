@@ -1,18 +1,19 @@
-// In-memory placeholder — DATABASE_URL has not been provided yet, so user
-// persistence can't be wired to Postgres until that credential arrives and
-// the Sprint 2 node-schema migration lands. Swap this for a real repository
-// backed by pg at that point; the function signatures are the contract.
-const usersByEmail = new Map();
+import { getPool } from '../db/pool.js';
 
-export function createUser({ email, passwordHash }) {
-  if (usersByEmail.has(email)) {
-    throw new Error('User already exists');
-  }
-  const user = { id: crypto.randomUUID(), email, passwordHash };
-  usersByEmail.set(email, user);
-  return user;
+export async function createUser({ email, passwordHash }) {
+  const { rows } = await getPool().query(
+    `INSERT INTO users (email, password_hash)
+     VALUES ($1, $2)
+     RETURNING id, email, created_at`,
+    [email, passwordHash]
+  );
+  return rows[0];
 }
 
-export function findUserByEmail(email) {
-  return usersByEmail.get(email) || null;
+export async function findUserByEmail(email) {
+  const { rows } = await getPool().query(
+    'SELECT id, email, password_hash FROM users WHERE email = $1',
+    [email]
+  );
+  return rows[0] ?? null;
 }

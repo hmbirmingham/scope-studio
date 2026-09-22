@@ -17,6 +17,7 @@ router.post('/', async (req, res) => {
   }
 
   const { candidates, ...result } = await retrieve({
+    ownerId: req.session.userId,
     query: query.trim(),
     project,
     tier,

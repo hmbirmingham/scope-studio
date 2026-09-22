@@ -26,12 +26,12 @@ async function fetchRepos(token, { since } = {}) {
   return repos.filter((repo) => new Date(repo.updated_at) > since);
 }
 
-async function upsertRepos(repos) {
+async function upsertRepos(repos, ownerId) {
   const nodes = [];
   for (const repo of repos) {
     const node = repoToNode(repo);
     const embedding = await tryEmbedDocument(node.content);
-    nodes.push(await upsertNodeByExternalId({ ...node, embedding }));
+    nodes.push(await upsertNodeByExternalId({ ...node, ownerId, embedding }));
   }
   return nodes;
 }
@@ -45,12 +45,12 @@ const githubPlugin = {
   // step rather than one function call; see routes/plugins/github.js.
   authenticate: { getAuthorizeUrl, exchangeCodeForToken },
 
-  async ingest(token) {
-    return upsertRepos(await fetchRepos(token));
+  async ingest(token, ownerId) {
+    return upsertRepos(await fetchRepos(token), ownerId);
   },
 
-  async sync(token, since) {
-    return upsertRepos(await fetchRepos(token, { since }));
+  async sync(token, since, ownerId) {
+    return upsertRepos(await fetchRepos(token, { since }), ownerId);
   },
 };
 
