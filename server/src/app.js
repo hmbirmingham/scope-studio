@@ -1,9 +1,13 @@
+import connectPgSimple from 'connect-pg-simple';
 import express from 'express';
 import session from 'express-session';
+import { getPool } from './db/pool.js';
 import authRouter from './routes/auth.js';
 import nodesRouter from './routes/nodes.js';
 import githubPluginRouter from './routes/plugins/github.js';
 import queryRouter from './routes/query.js';
+
+const PgSessionStore = connectPgSimple(session);
 
 function createApp(env) {
   const app = express();
@@ -11,12 +15,19 @@ function createApp(env) {
   app.use(express.json());
   app.use(
     session({
+      store: new PgSessionStore({
+        pool: getPool(),
+        tableName: 'session',
+        // The prune timer would keep test processes alive after the server closes.
+        pruneSessionInterval: env.nodeEnv === 'test' ? false : 60,
+      }),
       secret: env.sessionSecret,
       resave: false,
       saveUninitialized: false,
       cookie: {
         secure: env.nodeEnv === 'production',
         httpOnly: true,
+        maxAge: 30 * 24 * 60 * 60 * 1000,
       },
     })
   );

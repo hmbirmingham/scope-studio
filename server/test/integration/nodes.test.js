@@ -69,4 +69,26 @@ describe('nodes', () => {
     const { rows } = await server.pool.query('SELECT count(*)::int AS count FROM node_relationships');
     assert.equal(rows[0].count, 0, 'relationships cascade on node delete');
   });
+
+  test('isolates nodes between users', async () => {
+    const mine = (await api('POST', '/api/nodes', { type: 'spec', content: 'private spec', project: 'p' })).data;
+    const stranger = await registeredSession(server.base);
+
+    assert.equal((await stranger('GET', `/api/nodes/${mine.id}`)).status, 404);
+    assert.equal((await stranger('PATCH', `/api/nodes/${mine.id}`, { content: 'hijacked' })).status, 404);
+    assert.equal((await stranger('DELETE', `/api/nodes/${mine.id}`)).status, 404);
+    assert.ok(!(await stranger('GET', '/api/nodes')).data.some((node) => node.id === mine.id));
+    assert.deepEqual((await stranger('GET', `/api/nodes/${mine.id}/relationships`)).data, []);
+
+    const theirs = (await stranger('POST', '/api/nodes', { type: 'spec', content: 'their spec' })).data;
+    const link = await stranger('POST', `/api/nodes/${theirs.id}/relationships`, {
+      targetId: mine.id,
+      type: 'references',
+    });
+    assert.equal(link.status, 404, "cannot link into another user's graph");
+
+    const stillMine = await api('GET', `/api/nodes/${mine.id}`);
+    assert.equal(stillMine.status, 200);
+    assert.equal(stillMine.data.content, 'private spec');
+  });
 });
