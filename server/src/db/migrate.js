@@ -1,14 +1,12 @@
 import 'dotenv/config';
 import { readdirSync, readFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
-import { fileURLToPath } from 'node:url';
+import { fileURLToPath, pathToFileURL } from 'node:url';
 import { getPool } from './pool.js';
 
 const migrationsDir = join(dirname(fileURLToPath(import.meta.url)), 'migrations');
 
-async function run() {
-  const pool = getPool();
-
+export async function migrate(pool, { log = console.log } = {}) {
   await pool.query(`
     CREATE TABLE IF NOT EXISTS schema_migrations (
       name TEXT PRIMARY KEY,
@@ -33,7 +31,7 @@ async function run() {
       await client.query(sql);
       await client.query('INSERT INTO schema_migrations (name) VALUES ($1)', [file]);
       await client.query('COMMIT');
-      console.log(`Applied: ${file}`);
+      log(`Applied: ${file}`);
     } catch (err) {
       await client.query('ROLLBACK');
       throw new Error(`Migration ${file} failed: ${err.message}`);
@@ -41,11 +39,14 @@ async function run() {
       client.release();
     }
   }
-
-  await pool.end();
 }
 
-run().catch((err) => {
-  console.error(err.message);
-  process.exit(1);
-});
+if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
+  const pool = getPool();
+  migrate(pool)
+    .then(() => pool.end())
+    .catch((err) => {
+      console.error(err.message);
+      process.exit(1);
+    });
+}

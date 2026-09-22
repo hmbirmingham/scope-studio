@@ -1,0 +1,70 @@
+name: CI
+
+on:
+  pull_request:
+    branches: [dev, main]
+  push:
+    branches: [dev]
+
+jobs:
+  server:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: pgvector/pgvector:pg18
+        env:
+          POSTGRES_USER: scope
+          POSTGRES_HOST_AUTH_METHOD: trust
+          POSTGRES_DB: scope_studio_test
+        ports: ['5432:5432']
+        options: >-
+          --health-cmd "pg_isready -U scope"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 12
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+          cache-dependency-path: server/package-lock.json
+
+      - name: Install Ollama
+        run: curl -fsSL https://ollama.com/install.sh | sh
+
+      - name: Start Ollama and pull the embedding model
+        run: |
+          ollama serve > /tmp/ollama.log 2>&1 &
+          for i in $(seq 1 30); do
+            curl -sf http://localhost:11434/api/version > /dev/null && break
+            sleep 1
+          done
+          ollama pull nomic-embed-text
+
+      - run: npm ci
+        working-directory: server
+
+      - run: npm test
+        working-directory: server
+        env:
+          NODE_ENV: test
+          TEST_DATABASE_URL: postgresql://scope@localhost:5432/scope_studio_test
+          SESSION_SECRET: ${{ secrets.SESSION_SECRET }}
+          BASE_URL: http://localhost:3001
+
+  client:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+          cache-dependency-path: client/package-lock.json
+      - run: npm ci
+        working-directory: client
+      - run: npx oxlint src/
+        working-directory: client
+      - run: npx vite build
+        working-directory: client

@@ -1,4 +1,5 @@
 import 'dotenv/config';
+import { pathToFileURL } from 'node:url';
 import { embedQuery } from '../lib/embeddings.js';
 import { TASK_EXAMPLES } from '../retrieval/taskExamples.js';
 import { getPool } from './pool.js';
@@ -13,8 +14,7 @@ function meanUnitVector(vectors) {
   return mean.map((value) => value / norm);
 }
 
-async function run() {
-  const pool = getPool();
+export async function buildCentroids(pool, { log = console.log } = {}) {
   for (const [task, examples] of Object.entries(TASK_EXAMPLES)) {
     const vectors = await Promise.all(examples.map(embedQuery));
     const centroid = meanUnitVector(vectors);
@@ -27,12 +27,16 @@ async function run() {
          updated_at = now()`,
       [task, `[${centroid.join(',')}]`, examples.length]
     );
-    console.log(`${task}: centroid from ${examples.length} examples`);
+    log(`${task}: centroid from ${examples.length} examples`);
   }
-  await pool.end();
 }
 
-run().catch((err) => {
-  console.error(err.message);
-  process.exit(1);
-});
+if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
+  const pool = getPool();
+  buildCentroids(pool)
+    .then(() => pool.end())
+    .catch((err) => {
+      console.error(err.message);
+      process.exit(1);
+    });
+}
