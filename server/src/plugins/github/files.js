@@ -12,6 +12,10 @@ export const DEFAULT_LIMITS = {
 };
 export const CHUNK_CHARS = 3000;
 export const CHUNK_OVERLAP_CHARS = 200;
+// A whitespace-free line this long is base64, a minified bundle, or a hash —
+// never something a question is about, and one of them can eat a whole
+// local-tier context budget.
+export const DATA_LINE_CHARS = 512;
 const FETCH_CONCURRENCY = 8;
 const EMBED_BATCH = 32;
 
@@ -70,7 +74,9 @@ export function chunkText(text, size = CHUNK_CHARS, overlap = CHUNK_OVERLAP_CHAR
   let current = [];
   let length = 0;
 
-  for (const line of text.split('\n')) {
+  for (const rawLine of text.split('\n')) {
+    if (rawLine.length > DATA_LINE_CHARS && !/\s/.test(rawLine.trim())) continue;
+    const line = rawLine.length > size ? rawLine.slice(0, size) : rawLine;
     if (current.length > 0 && length + line.length + 1 > size) {
       chunks.push(current.join('\n'));
       const kept = [];
@@ -82,7 +88,7 @@ export function chunkText(text, size = CHUNK_CHARS, overlap = CHUNK_OVERLAP_CHAR
       current = kept;
       length = keptLength;
     }
-    current.push(line.length > size * 2 ? line.slice(0, size * 2) : line);
+    current.push(line);
     length += line.length + 1;
   }
   if (current.length > 0) chunks.push(current.join('\n'));

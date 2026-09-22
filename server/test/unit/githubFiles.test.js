@@ -72,11 +72,20 @@ describe('chunkText', () => {
     assert.ok(hit.some((chunk) => chunk.includes('return mask.sum()')));
   });
 
-  test('a pathological single line is hard-capped, and blank input yields nothing', () => {
-    const chunks = chunkText('y'.repeat(50_000));
-    assert.equal(chunks.length, 1);
-    assert.equal(chunks[0].length, CHUNK_CHARS * 2);
+  test('whitespace-free data lines are dropped, long prose lines are capped, blank input yields nothing', () => {
+    assert.deepEqual(chunkText('y'.repeat(50_000)), [], 'a base64-like line is not text');
+    const prose = chunkText('word '.repeat(2_000));
+    assert.equal(prose.length, 1);
+    assert.ok(prose[0].length <= CHUNK_CHARS, 'a long prose line is cut to the chunk size');
     assert.deepEqual(chunkText('\n\n  \n'), []);
+  });
+
+  test('a data line embedded in source is removed while the surrounding code survives intact', () => {
+    const text = `def f():\n    return 1\n    "${'A'.repeat(700)}=="\nx = 2\n`;
+    const joined = chunkText(text).join('\n');
+    assert.ok(joined.includes('def f():') && joined.includes('x = 2'));
+    assert.ok(!joined.includes('AAAA'));
+    assert.ok(joined.length < 100);
   });
 });
 
