@@ -183,11 +183,13 @@ project(node) = 0.3 if node.project == active_project else 0
 
 taskType(node) = 0.3 × confidence × [node.type ∈ TASK_NODE_TYPES[inferred_task]]
   confidence = cosine_similarity(query_embedding, centroid[inferred_task])
-  inferred_task ∈ {firmware, hardware, data_pipeline, research, cross_project}
+  inferred_task ∈ {codebase, firmware, hardware, data_pipeline, research, cross_project}
   centroid[task] = mean embedding of labeled examples for that task
-  TASK_NODE_TYPES: firmware → {file, datasheet}; hardware → {datasheet, spec};
-                   data_pipeline → {file, repo}; research → {paper, decision, spec};
-                   cross_project → {repo}
+  TASK_NODE_TYPES: codebase → {file, repo}; firmware → {file, datasheet};
+                   hardware → {datasheet, spec}; data_pipeline → {file, repo};
+                   research → {paper, decision, spec}; cross_project → {repo}
+  (v0.2 had no task for the benchmark's own "codebase lookup" category; a
+   migration-runner question inferred `research` on live data.)
   (v0.1 wrote this term without a node factor; it multiplied every candidate
    equally and re-ranked nothing.)
 

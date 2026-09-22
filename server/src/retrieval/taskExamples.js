@@ -2,6 +2,15 @@
 // Replace with real labeled queries once query_metrics.inferred_task_type and
 // user_confirmed_useful accumulate; rebuild with `npm run centroids`.
 export const TASK_EXAMPLES = {
+  codebase: [
+    'what does quantify_colonies return',
+    'where is the session middleware configured',
+    'how does the migration runner track applied migrations',
+    'which function parses the incoming request body',
+    'what arguments does the ingest endpoint accept',
+    'where do we validate the privacy flag on nodes',
+    'show me how the retry loop handles a timeout',
+  ],
   firmware: [
     'why does the UART ISR drop bytes at 115200 baud',
     'where is the watchdog timer configured in main.c',

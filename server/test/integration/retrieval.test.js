@@ -59,11 +59,16 @@ describe('retrieval', { skip: ollama ? false : 'Ollama not reachable — embeddi
       content: 'server/src/db/migrations/001_extensions.sql — enables the pgvector and pgcrypto extensions on first migration.',
       project: 'hmbirmingham/scope-studio',
     });
+    const flask = await create({
+      type: 'file',
+      content: 'app.py\n\nfrom flask import Flask, jsonify\napp = Flask(__name__)\n\n@app.route("/health")\ndef health():\n    return jsonify(ok=True)',
+      project: 'hmbirmingham/focus-guard',
+    });
     await relate(d2.id, d1.id, 'supersedes');
     await relate(file.id, d1.id, 'caused_by', 0.9);
     await relate(file.id, d3.id, 'caused_by', 0.9);
     await relate(repo.id, d1.id, 'references', 0.9);
-    ids = { repo: repo.id, huskybook: huskybook.id, focusGuard: focusGuard.id, d1: d1.id, d2: d2.id, d3: d3.id, file: file.id };
+    ids = { repo: repo.id, huskybook: huskybook.id, focusGuard: focusGuard.id, d1: d1.id, d2: d2.id, d3: d3.id, file: file.id, flask: flask.id };
   });
   after(() => server.close());
 
@@ -85,20 +90,38 @@ describe('retrieval', { skip: ollama ? false : 'Ollama not reachable — embeddi
       ['what anomaly threshold did the paper settle on', 'research'],
       ['where is the dataframe merged with the metadata table', 'data_pipeline'],
       ['what is the maximum input voltage of the buck regulator', 'hardware'],
+      ['how does the migration runner track which migrations have been applied', 'codebase'],
     ];
     let hits = 0;
+    const misses = [];
     for (const [text, expected] of probes) {
       const result = await query(text);
       if (result.data.task?.task === expected) hits++;
+      else misses.push(`${expected} → ${result.data.task?.task}`);
       assert.ok(result.data.task.confidence > 0 && result.data.task.confidence <= 1);
     }
-    assert.ok(hits >= 4, `task inference accuracy ${hits}/5`);
+    assert.ok(hits >= probes.length - 1, `task inference accuracy ${hits}/${probes.length}; misses: ${misses.join(', ')}`);
   });
 
   test('bare identifiers resolve through the lexical path', async () => {
     const result = await query('huskybook');
     assert.ok(find(result, ids.huskybook), 'huskybook found via lexical hit');
     assert.equal(find(result, ids.huskybook).lexicalRank, 1);
+  });
+
+  test('a rare discriminative term qualifies as a lexical hit on its own', async () => {
+    const result = await query('which repositories use Flask', { tier: 'cloud_frontier' });
+    const hit = find(result, ids.flask);
+    assert.ok(hit, 'the Flask app is retrieved');
+    assert.equal(hit.lexicalRank, 1, 'through the lexical channel, not only dense similarity');
+  });
+
+  test('a common term alone is still not a lexical hit', async () => {
+    const result = await query('pgvector spaceship', { tier: 'cloud_frontier' });
+    assert.ok(
+      result.data.nodes.every((node) => node.lexicalRank === null),
+      'pgvector appears in several nodes, so on its own it is noise'
+    );
   });
 
   test('superseded decisions are demoted ×0.1 and never traversed backwards', async () => {
