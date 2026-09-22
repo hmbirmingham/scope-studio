@@ -41,8 +41,7 @@ router.post('/ingest', async (req, res, next) => {
     return res.status(400).json({ error: 'GitHub not connected — call /authorize first' });
   }
   try {
-    const nodes = await githubPlugin.ingest(req.session.githubToken, req.session.userId);
-    res.json({ ingested: nodes.length, nodes });
+    res.json(await githubPlugin.ingest(req.session.githubToken, req.session.userId));
   } catch (err) {
     next(err);
   }
@@ -54,8 +53,7 @@ router.post('/sync', async (req, res, next) => {
   }
   const since = req.body.since ? new Date(req.body.since) : null;
   try {
-    const nodes = await githubPlugin.sync(req.session.githubToken, since, req.session.userId);
-    res.json({ synced: nodes.length, nodes });
+    res.json(await githubPlugin.sync(req.session.githubToken, since, req.session.userId));
   } catch (err) {
     next(err);
   }
