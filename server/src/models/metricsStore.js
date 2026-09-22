@@ -3,6 +3,7 @@ import { getPool } from '../db/pool.js';
 export async function logQueryMetrics({
   queryText,
   sessionId,
+  ownerId,
   tier,
   embeddingLatencyMs,
   retrievalLatencyMs,
@@ -15,18 +16,18 @@ export async function logQueryMetrics({
   supersededNodesDemoted,
   sourceTypeBoostApplied,
 }) {
-  const pool = getPool();
-  const { rows } = await pool.query(
+  const { rows } = await getPool().query(
     `INSERT INTO query_metrics
-       (query_text, session_id, tier, embedding_latency_ms, retrieval_latency_ms,
+       (query_text, session_id, owner_id, tier, embedding_latency_ms, retrieval_latency_ms,
         nodes_retrieved, tokens_injected, tokens_available, efficiency_ratio,
         inferred_task_type, task_confidence, superseded_nodes_demoted,
         source_type_boost_applied)
-     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)
+     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14)
      RETURNING query_id`,
     [
       queryText,
       sessionId ?? null,
+      ownerId ?? null,
       tier,
       embeddingLatencyMs,
       retrievalLatencyMs,
@@ -45,8 +46,7 @@ export async function logQueryMetrics({
 
 export async function logContextNodes(queryId, entries) {
   if (entries.length === 0) return;
-  const pool = getPool();
-  await pool.query(
+  await getPool().query(
     `INSERT INTO query_context_nodes (query_id, node_id, position, score, decay_lambda)
      SELECT $1, node_id, position, score, decay_lambda
      FROM unnest($2::uuid[], $3::int[], $4::real[], $5::real[])
@@ -64,8 +64,7 @@ export async function logContextNodes(queryId, entries) {
 // A re-ask within 60s is the implicit "that answer failed" signal (ADR §7):
 // stamp it on the previous query in the same session.
 export async function markFollowUp(sessionId, currentQueryId) {
-  const pool = getPool();
-  await pool.query(
+  await getPool().query(
     `UPDATE query_metrics
      SET follow_up_within_60s = (now() - created_at) < interval '60 seconds'
      WHERE query_id = (

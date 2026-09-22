@@ -158,8 +158,16 @@ describe('retrieval', { skip: ollama ? false : 'Ollama not reachable — embeddi
     assert.ok(result.data.nodes.length <= 5);
     assert.ok(result.data.metrics.efficiencyRatio <= 1);
 
-    const { rows: tokens } = await server.pool.query('SELECT SUM(token_length)::int AS total FROM nodes');
-    assert.equal(result.data.metrics.tokensAvailable, tokens[0].total);
+    const projects = [...new Set(result.data.nodes.map((node) => node.project))];
+    const { rows: tokens } = await server.pool.query(
+      'SELECT SUM(token_length)::int AS total FROM nodes WHERE project = ANY($1::text[])',
+      [projects]
+    );
+    assert.equal(
+      result.data.metrics.tokensAvailable,
+      tokens[0].total,
+      "baseline is the injected nodes' projects, not the whole database"
+    );
 
     const { rows: context } = await server.pool.query(
       'SELECT count(*)::int AS count FROM query_context_nodes WHERE query_id = $1',
@@ -172,5 +180,15 @@ describe('retrieval', { skip: ollama ? false : 'Ollama not reachable — embeddi
     const result = await query('zxqv plorth wibblesnatch');
     assert.equal(result.data.nodes.length, 0);
     assert.equal(result.data.metrics.tokensInjected, 0);
+  });
+
+  test("never retrieves another user's nodes", async () => {
+    const result = await other('POST', '/api/query', {
+      query: 'why did we pick pgvector for the neural map',
+      tier: 'cloud_frontier',
+    });
+    assert.equal(result.status, 200);
+    assert.equal(result.data.nodes.length, 0);
+    assert.equal(result.data.metrics.tokensAvailable, 0);
   });
 });

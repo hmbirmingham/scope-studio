@@ -17,6 +17,11 @@ describe('auth', () => {
     assert.equal(registered.status, 201);
     assert.equal(registered.data.email, email);
 
+    const { rows: users } = await server.pool.query('SELECT id FROM users WHERE email = $1', [email]);
+    assert.equal(users[0]?.id, registered.data.id, 'user row is persisted');
+    const { rows: sessions } = await server.pool.query('SELECT count(*)::int AS count FROM session');
+    assert.ok(sessions[0].count >= 1, 'session is stored in Postgres, not memory');
+
     const active = await api('GET', '/api/auth/session');
     assert.equal(active.status, 200);
     assert.equal(active.data.userId, registered.data.id);

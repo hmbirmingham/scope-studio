@@ -4,24 +4,30 @@ import { createUser, findUserByEmail } from '../models/userStore.js';
 
 const router = Router();
 
-router.post('/register', (req, res) => {
-  const { email, password } = req.body;
+const normalizeEmail = (email) => (typeof email === 'string' ? email.trim().toLowerCase() : '');
+
+router.post('/register', async (req, res) => {
+  const email = normalizeEmail(req.body.email);
+  const { password } = req.body;
   if (!email || !password) {
     return res.status(400).json({ error: 'email and password are required' });
   }
-  if (findUserByEmail(email)) {
-    return res.status(409).json({ error: 'user already exists' });
-  }
 
-  const user = createUser({ email, passwordHash: hashPassword(password) });
-  req.session.userId = user.id;
-  res.status(201).json({ id: user.id, email: user.email });
+  try {
+    const user = await createUser({ email, passwordHash: hashPassword(password) });
+    req.session.userId = user.id;
+    res.status(201).json({ id: user.id, email: user.email });
+  } catch (err) {
+    if (err.code === '23505') return res.status(409).json({ error: 'user already exists' });
+    throw err;
+  }
 });
 
-router.post('/login', (req, res) => {
-  const { email, password } = req.body;
-  const user = findUserByEmail(email);
-  if (!user || !verifyPassword(password, user.passwordHash)) {
+router.post('/login', async (req, res) => {
+  const email = normalizeEmail(req.body.email);
+  const { password } = req.body;
+  const user = email && password ? await findUserByEmail(email) : null;
+  if (!user || !verifyPassword(password, user.password_hash)) {
     return res.status(401).json({ error: 'invalid credentials' });
   }
 
