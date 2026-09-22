@@ -1,6 +1,10 @@
+import { randomUUID } from 'node:crypto';
 import { getPool } from '../db/pool.js';
 
+// The id may be minted by the caller: a streaming answer hands it to the client
+// on the first line and writes this row only after the last token.
 export async function logQueryMetrics({
+  queryId = randomUUID(),
   queryText,
   sessionId,
   ownerId,
@@ -15,16 +19,26 @@ export async function logQueryMetrics({
   taskConfidence,
   supersededNodesDemoted,
   sourceTypeBoostApplied,
-}) {
-  const { rows } = await getPool().query(
+  routingDecision = null,
+  routingDecisionMs = null,
+  routingReason = null,
+  modelUsed = null,
+  ttftMs = null,
+  totalResponseMs = null,
+  outputTokens = null,
+}, db = getPool()) {
+  const { rows } = await db.query(
     `INSERT INTO query_metrics
-       (query_text, session_id, owner_id, tier, embedding_latency_ms, retrieval_latency_ms,
-        nodes_retrieved, tokens_injected, tokens_available, efficiency_ratio,
-        inferred_task_type, task_confidence, superseded_nodes_demoted,
-        source_type_boost_applied)
-     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14)
+       (query_id, query_text, session_id, owner_id, tier, embedding_latency_ms,
+        retrieval_latency_ms, nodes_retrieved, tokens_injected, tokens_available,
+        efficiency_ratio, inferred_task_type, task_confidence, superseded_nodes_demoted,
+        source_type_boost_applied, routing_decision, routing_decision_ms, routing_reason,
+        model_used, ttft_ms, total_response_ms, output_tokens)
+     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17,
+             $18, $19, $20, $21, $22)
      RETURNING query_id`,
     [
+      queryId,
       queryText,
       sessionId ?? null,
       ownerId ?? null,
@@ -39,14 +53,21 @@ export async function logQueryMetrics({
       taskConfidence,
       supersededNodesDemoted,
       sourceTypeBoostApplied,
+      routingDecision,
+      routingDecisionMs,
+      routingReason,
+      modelUsed,
+      ttftMs,
+      totalResponseMs,
+      outputTokens,
     ]
   );
   return rows[0].query_id;
 }
 
-export async function logContextNodes(queryId, entries) {
+export async function logContextNodes(queryId, entries, db = getPool()) {
   if (entries.length === 0) return;
-  await getPool().query(
+  await db.query(
     `INSERT INTO query_context_nodes (query_id, node_id, position, score, decay_lambda)
      SELECT $1, node_id, position, score, decay_lambda
      FROM unnest($2::uuid[], $3::int[], $4::real[], $5::real[])
