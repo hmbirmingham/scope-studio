@@ -4,6 +4,7 @@ import loadEnv from '../src/config/env.js';
 import { buildCentroids } from '../src/db/build-centroids.js';
 import { migrate } from '../src/db/migrate.js';
 import { getPool } from '../src/db/pool.js';
+import { TASK_EXAMPLES } from '../src/retrieval/taskExamples.js';
 
 const LOCAL_HOSTS = new Set(['localhost', '127.0.0.1', 'postgres']);
 
@@ -76,5 +77,7 @@ export async function ollamaAvailable() {
 
 export async function ensureCentroids(pool) {
   const { rows } = await pool.query('SELECT count(*)::int AS count FROM task_centroids');
-  if (rows[0].count === 0) await buildCentroids(pool, { log: () => {} });
+  if (rows[0].count !== Object.keys(TASK_EXAMPLES).length) {
+    await buildCentroids(pool, { log: () => {} });
+  }
 }

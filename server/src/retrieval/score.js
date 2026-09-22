@@ -5,6 +5,11 @@
 export const DENSE_CANDIDATES = 20;
 export const LEXICAL_CANDIDATES = 20;
 export const LEXICAL_MIN_MATCH = 2;
+// A term matching at most this fraction of the owner's nodes is discriminative
+// enough to count as a lexical hit on its own. Calibrated on a live 871-chunk
+// corpus: identifiers worth matching sat at 2–7% (flask 6.5%, watershed 3.8%),
+// noise at 15%+ (return 38%, import 27%, def 26%, model 15%).
+export const RARE_TERM_MAX_DF = 0.1;
 export const EXPANSION_SEEDS = 3;
 export const EXPANSION_DECAY = 0.5;
 export const SUPERSEDE_DEMOTION = 0.1;
@@ -61,6 +66,7 @@ export const DECAY_LAMBDA = {
 };
 
 export const TASK_NODE_TYPES = {
+  codebase: ['file', 'repo'],
   firmware: ['file', 'datasheet'],
   hardware: ['datasheet', 'spec'],
   data_pipeline: ['file', 'repo'],
