@@ -127,3 +127,40 @@ export async function listRelationships(ownerId, nodeId) {
   );
   return rows;
 }
+
+// Idempotent variant for ingestion: re-running a sync must not fail on edges
+// that already exist.
+export async function ensureRelationship(ownerId, { sourceId, targetId, type, weight }) {
+  await getPool().query(
+    `INSERT INTO node_relationships (source_id, target_id, type, weight)
+     SELECT $1::uuid, $2::uuid, $3::text, COALESCE($4::real, 1.0)
+     WHERE $1::uuid <> $2::uuid
+       AND (SELECT count(*) FROM nodes WHERE id IN ($1::uuid, $2::uuid) AND owner_id = $5) = 2
+     ON CONFLICT (source_id, target_id, type) DO NOTHING`,
+    [sourceId, targetId, type, weight ?? null, ownerId]
+  );
+}
+
+// Chunked external ids are "<prefix><index>|<path>". Removes chunks for paths
+// no longer present and trailing chunks of files that shrank.
+const CHUNK_PATH_SQL = "regexp_replace(external_id, '^[^|]*\\|[^|]*\\|', '')";
+const CHUNK_INDEX_SQL = "split_part(external_id, '|', 2)::int";
+
+export async function pruneChunkedNodes(ownerId, source, prefix, { keepPaths, chunkCounts }) {
+  const pool = getPool();
+  const { rowCount: removedPaths } = await pool.query(
+    `DELETE FROM nodes
+     WHERE owner_id = $1 AND source = $2 AND starts_with(external_id, $3)
+       AND NOT (${CHUNK_PATH_SQL} = ANY($4::text[]))`,
+    [ownerId, source, prefix, keepPaths]
+  );
+  const { rowCount: removedTails } = await pool.query(
+    `DELETE FROM nodes n
+     USING unnest($4::text[], $5::int[]) AS c(path, count)
+     WHERE n.owner_id = $1 AND n.source = $2 AND starts_with(n.external_id, $3)
+       AND ${CHUNK_PATH_SQL.replaceAll('external_id', 'n.external_id')} = c.path
+       AND ${CHUNK_INDEX_SQL.replaceAll('external_id', 'n.external_id')} >= c.count`,
+    [ownerId, source, prefix, chunkCounts.map((c) => c.path), chunkCounts.map((c) => c.count)]
+  );
+  return removedPaths + removedTails;
+}
