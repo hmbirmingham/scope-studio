@@ -70,7 +70,8 @@ function Studio() {
 
   function handleSelectProject(project) {
     setActiveProject(project);
-    canvasRef.current?.focusProject(project);
+    if (project) canvasRef.current?.focusProject(project);
+    else canvasRef.current?.fit();
   }
 
   function handleFocusNode(id) {
@@ -87,6 +88,7 @@ function Studio() {
         onSelectProject={handleSelectProject}
         onOpenProjectSettings={(project) => setScope({ kind: 'project', project })}
         onOpenSources={() => setSourcesOpen(true)}
+        onNewThread={() => chat.newThread()}
       />
 
       {/* The conversation is the workspace; outputs sit beside it. */}
