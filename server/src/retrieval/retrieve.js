@@ -68,22 +68,22 @@ function toLexicalTerms(query) {
   return [...new Set(terms)];
 }
 
-async function denseCandidates(pool, vector) {
+async function denseCandidates(pool, ownerId, vector) {
   const { rows } = await pool.query(
     `SELECT ${columns('nodes')}, ${supersededSql('nodes')},
             1 - (embedding <=> $1::vector) AS similarity
      FROM nodes
-     WHERE embedding IS NOT NULL
+     WHERE embedding IS NOT NULL AND owner_id = $3
      ORDER BY embedding <=> $1::vector
      LIMIT $2`,
-    [`[${vector.join(',')}]`, DENSE_CANDIDATES]
+    [`[${vector.join(',')}]`, DENSE_CANDIDATES, ownerId]
   );
   return rows.map(({ similarity, ...node }) => ({ node, similarity: Number(similarity) }));
 }
 
 // A node must match several query terms to count as a lexical hit; a single
 // shared common word is noise that RRF would otherwise reward.
-async function lexicalCandidates(pool, query) {
+async function lexicalCandidates(pool, ownerId, query) {
   const terms = toLexicalTerms(query);
   if (terms.length === 0) return [];
   const minMatch = Math.min(LEXICAL_MIN_MATCH, terms.length);
@@ -91,19 +91,20 @@ async function lexicalCandidates(pool, query) {
     `SELECT ${columns('nodes')}, ${supersededSql('nodes')},
             ts_rank_cd(content_tsv, to_tsquery('simple', $1)) AS rank
      FROM nodes
-     WHERE content_tsv @@ to_tsquery('simple', $1)
+     WHERE owner_id = $5
+       AND content_tsv @@ to_tsquery('simple', $1)
        AND (SELECT count(*) FROM unnest($3::text[]) AS t(term)
             WHERE content_tsv @@ to_tsquery('simple', t.term)) >= $4
      ORDER BY rank DESC
      LIMIT $2`,
-    [terms.join(' | '), LEXICAL_CANDIDATES, terms, minMatch]
+    [terms.join(' | '), LEXICAL_CANDIDATES, terms, minMatch, ownerId]
   );
   return rows.map(({ rank, ...node }) => ({ node, rank: Number(rank) }));
 }
 
 // One forward hop from the strongest seeds only — the "minimum connected
 // subgraph". Superseded targets are pulled in near-zero, not dropped (ADR §2.3).
-async function expandFromSeeds(pool, scored, { query, config }) {
+async function expandFromSeeds(pool, ownerId, scored, { query, config }) {
   const seeds = scored.slice(0, EXPANSION_SEEDS);
   if (seeds.length === 0) return scored;
 
@@ -112,9 +113,9 @@ async function expandFromSeeds(pool, scored, { query, config }) {
   const { rows } = await pool.query(
     `SELECT r.source_id, r.weight, r.type AS relationship, ${columns('n')}, ${supersededSql('n')}
      FROM node_relationships r
-     JOIN nodes n ON n.id = r.target_id
+     JOIN nodes n ON n.id = r.target_id AND n.owner_id = $2
      WHERE r.source_id = ANY($1)`,
-    [seedIds]
+    [seedIds, ownerId]
   );
 
   const whyQuery = WHY_PATTERN.test(query);
@@ -155,10 +156,19 @@ export function packForTier(candidates, tier, overrides) {
   return packIntoBudget(candidates, resolveConfig(tier, overrides));
 }
 
-// Baseline for the efficiency claim: everything the user would otherwise
-// paste. Retrieval draws from all nodes, so the baseline is all nodes too.
-async function tokensAvailable(pool) {
-  const { rows } = await pool.query('SELECT COALESCE(SUM(token_length), 0) AS tokens FROM nodes');
+// Baseline for the efficiency claim: what the user would otherwise have pasted —
+// the full context of the project(s) the answer actually drew from. Summing the
+// whole database would make the ratio look better with every unrelated ingest.
+async function tokensBaseline(pool, ownerId, selected) {
+  if (selected.length === 0) return 0;
+  const projects = [...new Set(selected.map((entry) => entry.node.project).filter(Boolean))];
+  const includeUnassigned = selected.some((entry) => entry.node.project == null);
+  const { rows } = await pool.query(
+    `SELECT COALESCE(SUM(token_length), 0) AS tokens
+     FROM nodes
+     WHERE owner_id = $1 AND (project = ANY($2::text[]) OR ($3 AND project IS NULL))`,
+    [ownerId, projects, includeUnassigned]
+  );
   return Number(rows[0].tokens);
 }
 
@@ -168,7 +178,7 @@ function buildContext(selected) {
     .join('\n\n');
 }
 
-export async function retrieve({ query, project, tier = 'local_7b', overrides, sessionId }) {
+export async function retrieve({ ownerId, query, project, tier = 'local_7b', overrides, sessionId }) {
   const pool = getPool();
   const config = resolveConfig(tier, overrides);
   const now = new Date();
@@ -178,17 +188,17 @@ export async function retrieve({ query, project, tier = 'local_7b', overrides, s
   const embeddingLatencyMs = Math.round(performance.now() - embedStart);
 
   const retrievalStart = performance.now();
-  const [dense, lexical, available, task] = await Promise.all([
-    denseCandidates(pool, vector),
-    lexicalCandidates(pool, query),
-    tokensAvailable(pool),
+  const [dense, lexical, task] = await Promise.all([
+    denseCandidates(pool, ownerId, vector),
+    lexicalCandidates(pool, ownerId, query),
     config.features.task_inference ? inferTask(pool, vector) : null,
   ]);
   const scored = fuseAndScore({ dense, lexical, project, task, now, config });
   const candidates = config.features.expansion
-    ? await expandFromSeeds(pool, scored, { query, config })
+    ? await expandFromSeeds(pool, ownerId, scored, { query, config })
     : scored;
   const { selected, tokens } = packIntoBudget(candidates, config);
+  const available = await tokensBaseline(pool, ownerId, selected);
 
   if (selected.length > 0) {
     await pool.query(
@@ -212,7 +222,7 @@ export async function retrieve({ query, project, tier = 'local_7b', overrides, s
     supersededNodesDemoted: selected.filter((entry) => entry.node.superseded).length,
     sourceTypeBoostApplied: selected.filter((entry) => entry.boosts?.source > 0).length,
   };
-  const queryId = await logQueryMetrics({ queryText: query, sessionId, ...metrics });
+  const queryId = await logQueryMetrics({ queryText: query, sessionId, ownerId, ...metrics });
   await Promise.all([
     logContextNodes(
       queryId,

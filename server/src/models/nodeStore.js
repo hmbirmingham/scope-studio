@@ -9,32 +9,29 @@ function toPgVector(embedding) {
   return embedding ? `[${embedding.join(',')}]` : null;
 }
 
-export async function createNode({ type, content, embedding, source, project, privacy }) {
-  const pool = getPool();
-  const { rows } = await pool.query(
-    `INSERT INTO nodes (type, content, embedding, source, project, privacy)
-     VALUES ($1, $2, $3, $4, $5, COALESCE($6, 'cloud'))
+export async function createNode({ ownerId, type, content, embedding, source, project, privacy }) {
+  const { rows } = await getPool().query(
+    `INSERT INTO nodes (owner_id, type, content, embedding, source, project, privacy)
+     VALUES ($1, $2, $3, $4, $5, $6, COALESCE($7, 'cloud'))
      RETURNING ${NODE_COLUMNS}`,
-    [type, content, toPgVector(embedding), source ?? null, project ?? null, privacy ?? null]
+    [ownerId, type, content, toPgVector(embedding), source ?? null, project ?? null, privacy ?? null]
   );
   return rows[0];
 }
 
-export async function getNode(id) {
-  const pool = getPool();
-  const { rows } = await pool.query(
+export async function getNode(ownerId, id) {
+  const { rows } = await getPool().query(
     `UPDATE nodes SET last_accessed = now(), access_count = access_count + 1
-     WHERE id = $1
+     WHERE id = $1 AND owner_id = $2
      RETURNING ${NODE_COLUMNS}`,
-    [id]
+    [id, ownerId]
   );
   return rows[0] ?? null;
 }
 
-export async function listNodes({ project, type } = {}) {
-  const pool = getPool();
-  const conditions = [];
-  const values = [];
+export async function listNodes(ownerId, { project, type } = {}) {
+  const conditions = ['owner_id = $1'];
+  const values = [ownerId];
 
   if (project) {
     values.push(project);
@@ -45,79 +42,88 @@ export async function listNodes({ project, type } = {}) {
     conditions.push(`type = $${values.length}`);
   }
 
-  const where = conditions.length ? `WHERE ${conditions.join(' AND ')}` : '';
-  const { rows } = await pool.query(
-    `SELECT ${NODE_COLUMNS} FROM nodes ${where} ORDER BY created_at DESC`,
+  const { rows } = await getPool().query(
+    `SELECT ${NODE_COLUMNS} FROM nodes WHERE ${conditions.join(' AND ')} ORDER BY created_at DESC`,
     values
   );
   return rows;
 }
 
-export async function updateNode(id, { content, embedding, project, privacy }) {
-  const pool = getPool();
-  const { rows } = await pool.query(
+export async function updateNode(ownerId, id, { content, embedding, project, privacy }) {
+  const { rows } = await getPool().query(
     `UPDATE nodes SET
-       content = COALESCE($2, content),
-       embedding = COALESCE($3, embedding),
-       project = COALESCE($4, project),
-       privacy = COALESCE($5, privacy)
-     WHERE id = $1
+       content = COALESCE($3, content),
+       embedding = COALESCE($4, embedding),
+       project = COALESCE($5, project),
+       privacy = COALESCE($6, privacy)
+     WHERE id = $1 AND owner_id = $2
      RETURNING ${NODE_COLUMNS}`,
-    [id, content ?? null, toPgVector(embedding), project ?? null, privacy ?? null]
+    [id, ownerId, content ?? null, toPgVector(embedding), project ?? null, privacy ?? null]
   );
   return rows[0] ?? null;
 }
 
-export async function upsertNodeByExternalId({ type, content, embedding, source, externalId, project, privacy }) {
-  const pool = getPool();
-  const { rows } = await pool.query(
-    `INSERT INTO nodes (type, content, embedding, source, external_id, project, privacy)
-     VALUES ($1, $2, $3, $4, $5, $6, COALESCE($7, 'cloud'))
-     ON CONFLICT (source, external_id) WHERE external_id IS NOT NULL
+export async function upsertNodeByExternalId({
+  ownerId,
+  type,
+  content,
+  embedding,
+  source,
+  externalId,
+  project,
+  privacy,
+}) {
+  const { rows } = await getPool().query(
+    `INSERT INTO nodes (owner_id, type, content, embedding, source, external_id, project, privacy)
+     VALUES ($1, $2, $3, $4, $5, $6, $7, COALESCE($8, 'cloud'))
+     ON CONFLICT (owner_id, source, external_id) WHERE external_id IS NOT NULL
      DO UPDATE SET
        content = EXCLUDED.content,
        embedding = COALESCE(EXCLUDED.embedding, nodes.embedding),
        project = EXCLUDED.project,
        last_accessed = now()
      RETURNING ${NODE_COLUMNS}`,
-    [type, content, toPgVector(embedding), source, externalId, project ?? null, privacy ?? null]
+    [ownerId, type, content, toPgVector(embedding), source, externalId, project ?? null, privacy ?? null]
   );
   return rows[0];
 }
 
 export async function listNodesMissingEmbedding() {
-  const pool = getPool();
-  const { rows } = await pool.query('SELECT id, content FROM nodes WHERE embedding IS NULL');
+  const { rows } = await getPool().query('SELECT id, content FROM nodes WHERE embedding IS NULL');
   return rows;
 }
 
 export async function setNodeEmbedding(id, embedding) {
-  const pool = getPool();
-  await pool.query('UPDATE nodes SET embedding = $2 WHERE id = $1', [id, toPgVector(embedding)]);
+  await getPool().query('UPDATE nodes SET embedding = $2 WHERE id = $1', [id, toPgVector(embedding)]);
 }
 
-export async function deleteNode(id) {
-  const pool = getPool();
-  const { rowCount } = await pool.query('DELETE FROM nodes WHERE id = $1', [id]);
+export async function deleteNode(ownerId, id) {
+  const { rowCount } = await getPool().query(
+    'DELETE FROM nodes WHERE id = $1 AND owner_id = $2',
+    [id, ownerId]
+  );
   return rowCount > 0;
 }
 
-export async function createRelationship({ sourceId, targetId, type, weight }) {
-  const pool = getPool();
-  const { rows } = await pool.query(
+// Both endpoints must belong to the owner, or a user could link into another user's graph.
+export async function createRelationship(ownerId, { sourceId, targetId, type, weight }) {
+  const { rows } = await getPool().query(
     `INSERT INTO node_relationships (source_id, target_id, type, weight)
-     VALUES ($1, $2, $3, COALESCE($4, 1.0))
+     SELECT $1::uuid, $2::uuid, $3::text, COALESCE($4::real, 1.0)
+     WHERE $1::uuid <> $2::uuid
+       AND (SELECT count(*) FROM nodes WHERE id IN ($1::uuid, $2::uuid) AND owner_id = $5) = 2
      RETURNING *`,
-    [sourceId, targetId, type, weight ?? null]
+    [sourceId, targetId, type, weight ?? null, ownerId]
   );
-  return rows[0];
+  return rows[0] ?? null;
 }
 
-export async function listRelationships(nodeId) {
-  const pool = getPool();
-  const { rows } = await pool.query(
-    `SELECT * FROM node_relationships WHERE source_id = $1 OR target_id = $1`,
-    [nodeId]
+export async function listRelationships(ownerId, nodeId) {
+  const { rows } = await getPool().query(
+    `SELECT r.* FROM node_relationships r
+     WHERE (r.source_id = $1 OR r.target_id = $1)
+       AND EXISTS (SELECT 1 FROM nodes WHERE id = $1 AND owner_id = $2)`,
+    [nodeId, ownerId]
   );
   return rows;
 }

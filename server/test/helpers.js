@@ -16,11 +16,14 @@ if (!LOCAL_HOSTS.has(host)) {
   throw new Error(`Refusing to run tests against non-local database host "${host}"`);
 }
 process.env.DATABASE_URL = testUrl;
+process.env.NODE_ENV = 'test';
 
 export async function startServer() {
   const pool = getPool();
   await migrate(pool, { log: () => {} });
-  await pool.query('TRUNCATE nodes, node_relationships, query_metrics, query_context_nodes CASCADE');
+  await pool.query(
+    'TRUNCATE nodes, node_relationships, query_metrics, query_context_nodes, users, session CASCADE'
+  );
 
   const app = createApp(loadEnv());
   const server = await new Promise((resolve) => {
