@@ -12,7 +12,8 @@
   },
   "keywords": [],
   "author": "Hynes Birmingham",
-  "license": "ISC",
+  "license": "UNLICENSED",
+  "private": true,
   "type": "module",
   "dependencies": {
     "dotenv": "^18.0.1",
