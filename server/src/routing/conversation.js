@@ -60,18 +60,27 @@ export function getConversation(id, ownerId) {
 // the cached context lacks are appended as a new block rather than triggering a
 // rebuild. Rebuilding would drop the cached prefix — the expensive part — while
 // appending keeps it and still puts the new evidence in front of the model.
-export function continuation(entry, { selected, tier }) {
+export function continuation(entry, { selected, tier, project }) {
   if (!entry || entry.tier !== tier) return null;
+  // A different project is a different subject: continuing would keep the
+  // previous repository's files in front of the model for the rest of the thread.
+  if ((entry.project ?? null) !== (project ?? null)) return null;
   if (estimateTokens(entry.messages) > MAX_PROMPT_TOKENS) return null;
+
   const known = new Set(entry.nodeIds);
-  return { entry, added: selected.filter(({ node }) => !known.has(node.id)) };
+  const added = selected.filter(({ node }) => !known.has(node.id));
+  // Nothing the question needs was already in context — the thread moved on,
+  // so start a fresh block instead of carrying the old one along for ever.
+  if (selected.length > 0 && added.length === selected.length) return null;
+  return { entry, added };
 }
 
-export function saveConversation(id, ownerId, { tier, sources, messages, contextTokens, lastQuestion }) {
+export function saveConversation(id, ownerId, { tier, project, sources, messages, contextTokens, lastQuestion }) {
   if (!id) return;
   conversations.set(id, {
     ownerId,
     tier,
+    project: project ?? null,
     sources,
     messages,
     contextTokens,
@@ -94,4 +103,19 @@ export function retrievalQuery(entry, query) {
 export function resetConversations() {
   conversations.clear();
   drafts.clear();
+}
+
+// A script's output belongs in the thread: appending it keeps the cached
+// prefix intact and lets the next question be about what just happened.
+export function rememberRunOutput(id, ownerId, run) {
+  const entry = getConversation(id, ownerId);
+  if (!entry) return;
+  entry.messages = [
+    ...entry.messages,
+    {
+      role: 'user',
+      content: `<command-output command="npm run ${run.script}" exit="${run.exitCode}">\n${run.output}\n</command-output>`,
+    },
+  ];
+  entry.updatedAt = Date.now();
 }

@@ -102,15 +102,19 @@ function toLexicalTerms(query) {
   return [...new Set(terms)];
 }
 
-async function denseCandidates(pool, ownerId, vector) {
+// A chosen project scopes retrieval rather than merely boosting it: picking a
+// project in the sidebar means "work in this one", and a boost still let
+// neighbouring repositories into the answer.
+async function denseCandidates(pool, ownerId, vector, project) {
   const { rows } = await pool.query(
     `SELECT ${columns('nodes')}, ${supersededSql('nodes')},
             1 - (embedding <=> $1::vector) AS similarity
      FROM nodes
      WHERE embedding IS NOT NULL AND owner_id = $3
+       AND ($4::text IS NULL OR project = $4)
      ORDER BY embedding <=> $1::vector
      LIMIT $2`,
-    [`[${vector.join(',')}]`, DENSE_CANDIDATES, ownerId]
+    [`[${vector.join(',')}]`, DENSE_CANDIDATES, ownerId, project ?? null]
   );
   return rows.map(({ similarity, ...node }) => ({ node, similarity: Number(similarity) }));
 }
@@ -118,7 +122,7 @@ async function denseCandidates(pool, ownerId, vector) {
 // A lexical hit needs several matched terms — a single shared common word is
 // noise RRF would otherwise reward — unless the matched term is rare across
 // this owner's nodes: "flask" in 3 of 900 files is the answer, not noise.
-async function lexicalCandidates(pool, ownerId, query) {
+async function lexicalCandidates(pool, ownerId, query, project) {
   const terms = toLexicalTerms(query);
   if (terms.length === 0) return [];
   const minMatch = Math.min(LEXICAL_MIN_MATCH, terms.length);
@@ -139,6 +143,7 @@ async function lexicalCandidates(pool, ownerId, query) {
             ts_rank_cd(content_tsv, to_tsquery('simple', $1)) AS rank
      FROM nodes
      WHERE owner_id = $5
+       AND ($7::text IS NULL OR project = $7)
        AND content_tsv @@ to_tsquery('simple', $1)
        AND (
          (SELECT count(*) FROM unnest($3::text[]) AS t(term)
@@ -148,14 +153,14 @@ async function lexicalCandidates(pool, ownerId, query) {
        )
      ORDER BY rank DESC
      LIMIT $2`,
-    [terms.join(' | '), LEXICAL_CANDIDATES, terms, minMatch, ownerId, RARE_TERM_MAX_DF]
+    [terms.join(' | '), LEXICAL_CANDIDATES, terms, minMatch, ownerId, RARE_TERM_MAX_DF, project ?? null]
   );
   return rows.map(({ rank, ...node }) => ({ node, rank: Number(rank) }));
 }
 
 // One forward hop from the strongest seeds only — the "minimum connected
 // subgraph". Superseded targets are pulled in near-zero, not dropped (ADR §2.3).
-async function expandFromSeeds(pool, ownerId, scored, { query, config }) {
+async function expandFromSeeds(pool, ownerId, scored, { query, config, project }) {
   const seeds = scored.slice(0, EXPANSION_SEEDS);
   if (seeds.length === 0) return scored;
 
@@ -165,8 +170,8 @@ async function expandFromSeeds(pool, ownerId, scored, { query, config }) {
     `SELECT r.source_id, r.weight, r.type AS relationship, ${columns('n')}, ${supersededSql('n')}
      FROM node_relationships r
      JOIN nodes n ON n.id = r.target_id AND n.owner_id = $2
-     WHERE r.source_id = ANY($1)`,
-    [seedIds, ownerId]
+     WHERE r.source_id = ANY($1) AND ($3::text IS NULL OR n.project = $3)`,
+    [seedIds, ownerId, project ?? null]
   );
 
   const whyQuery = WHY_PATTERN.test(query);
@@ -253,13 +258,13 @@ export async function gatherCandidates({ ownerId, query, project, tier = 'local_
 
   const retrievalStart = performance.now();
   const [dense, lexical, task] = await Promise.all([
-    embedding ? denseCandidates(pool, ownerId, embedding.vector) : [],
-    lexicalCandidates(pool, ownerId, query),
+    embedding ? denseCandidates(pool, ownerId, embedding.vector, project) : [],
+    lexicalCandidates(pool, ownerId, query, project),
     embedding && config.features.task_inference ? inferTask(pool, embedding.vector) : null,
   ]);
   const scored = fuseAndScore({ dense, lexical, project, task, now: new Date(), config });
   const candidates = config.features.expansion
-    ? await expandFromSeeds(pool, ownerId, scored, { query, config })
+    ? await expandFromSeeds(pool, ownerId, scored, { query, config, project })
     : scored;
 
   return {

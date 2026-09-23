@@ -1,12 +1,13 @@
 import { useMemo, useRef, useState } from 'react';
 import ChatPanel from './components/ChatPanel';
 import InspectorOverlay from './components/InspectorOverlay';
-import KnowledgeGraphCanvas from './components/KnowledgeGraphCanvas';
 import LoginGate from './components/LoginGate';
+import OutputPanel from './components/OutputPanel';
 import Sidebar from './components/Sidebar';
 import SourcesOverlay from './components/SourcesOverlay';
 import { edgeKey } from './graph/GraphEngine';
 import { useChat } from './hooks/useChat';
+import { useProjectSettings } from './hooks/useProjectSettings';
 import { useGraphData } from './hooks/useGraphData';
 import './App.css';
 
@@ -17,9 +18,19 @@ function Studio() {
   const [activeProject, setActiveProject] = useState(null);
   const [scope, setScope] = useState(null);
   const [sourcesOpen, setSourcesOpen] = useState(false);
+  const [panelOpen, setPanelOpen] = useState(true);
+  // Held in memory for this session only: never localStorage, never the server.
+  const [apiKey, setApiKey] = useState('');
+  const [tier, setTier] = useState(null);
   const [preferences, setPreferences] = useState({});
 
-  const chat = useChat({ project: activeProject });
+  const projectSettings = useProjectSettings(true);
+
+  const chat = useChat({
+    project: activeProject,
+    apiKey,
+    tier,
+  });
 
   const nodesById = useMemo(
     () => new Map(graph.nodes.map((node) => [node.id, node])),
@@ -59,7 +70,8 @@ function Studio() {
 
   function handleSelectProject(project) {
     setActiveProject(project);
-    canvasRef.current?.focusProject(project);
+    if (project) canvasRef.current?.focusProject(project);
+    else canvasRef.current?.fit();
   }
 
   function handleFocusNode(id) {
@@ -76,36 +88,61 @@ function Studio() {
         onSelectProject={handleSelectProject}
         onOpenProjectSettings={(project) => setScope({ kind: 'project', project })}
         onOpenSources={() => setSourcesOpen(true)}
+        onNewThread={() => chat.newThread()}
       />
 
+      {/* The conversation is the workspace; outputs sit beside it. */}
       <main className="stage">
-        <KnowledgeGraphCanvas
-          ref={canvasRef}
-          nodes={graph.nodes}
-          edges={graph.edges}
-          activeIds={activeIds}
-          traversedKeys={traversedKeys}
-          preferences={preferences}
-          onSelectNode={(node) => setScope({ kind: 'node', node })}
+        <ChatPanel
+          project={activeProject}
+          chat={chat}
+          onNarrow={handleSelectProject}
+          tier={tier}
+          onTierChange={setTier}
+          hasKey={Boolean(apiKey)}
         />
-        {state === 'loading' && <div className="stage-note">Loading your map…</div>}
-        {state === 'error' && <div className="stage-note is-error">{error}</div>}
-        {state === 'ready' && graph.nodes.length === 0 && (
-          <button type="button" className="stage-note is-action" onClick={() => setSourcesOpen(true)}>
-            No nodes yet — connect GitHub and pick repositories to ingest.
+        {!panelOpen && (
+          <button
+            type="button"
+            className="map-open"
+            onClick={() => setPanelOpen(true)}
+            aria-label="Show map"
+            title="Show map"
+          >
+            🌐
           </button>
         )}
+        {state === 'loading' && <div className="stage-note">Loading your map…</div>}
+        {state === 'error' && <div className="stage-note is-error">{error}</div>}
       </main>
 
-      <ChatPanel project={activeProject} chat={chat} onNarrow={handleSelectProject} />
+      <OutputPanel
+        open={panelOpen}
+        onClose={() => setPanelOpen(false)}
+        canvasRef={canvasRef}
+        graph={graph}
+        activeIds={activeIds}
+        traversedKeys={traversedKeys}
+        preferences={preferences}
+        onSelectNode={(node) => setScope({ kind: 'node', node })}
+      />
 
-      <SourcesOverlay open={sourcesOpen} onClose={() => setSourcesOpen(false)} onIngested={refresh} />
+      <SourcesOverlay
+        open={sourcesOpen}
+        onClose={() => setSourcesOpen(false)}
+        onIngested={refresh}
+        apiKey={apiKey}
+        onApiKeyChange={setApiKey}
+      />
 
       <InspectorOverlay
         scope={scope}
         onClose={() => setScope(null)}
         relations={scope?.kind === 'node' ? relationsFor(scope.node.id) : []}
         stats={scope?.kind === 'project' ? projectStats(scope.project) : null}
+        settings={scope?.kind === 'project' ? projectSettings.settingsFor(scope.project) : null}
+        settingsError={projectSettings.error}
+        onBindPath={projectSettings.bind}
         preference={scope?.kind === 'node' ? preferences[scope.node.id] ?? null : null}
         onSetPreference={(id, preference) =>
           setPreferences((prev) => ({ ...prev, [id]: preference }))

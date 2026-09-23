@@ -1,7 +1,9 @@
 import { randomUUID } from 'node:crypto';
 import { Router } from 'express';
 import requireAuth from '../middleware/requireAuth.js';
-import { localChatModel, localModelStatus, streamChat } from '../lib/ollama.js';
+import { costUsd, describeError, streamChat as streamCloud } from '../lib/anthropic.js';
+import { cloudEffortFor, resolveCloudModel } from '../billing/plans.js';
+import { localChatModel, localModelStatus, streamChat as streamLocal } from '../lib/ollama.js';
 import {
   gatherCandidates,
   packForTier,
@@ -22,12 +24,15 @@ import {
 } from '../routing/conversation.js';
 import { buildFollowUp, buildMessages, composeMessages } from '../routing/prompt.js';
 import { decideRoute, provisionalTier } from '../routing/route.js';
+import { parseEdits, presentProposal, recordProposals } from '../editing/proposals.js';
+import { declaredScripts, parseRuns, presentRun, recordRuns } from '../editing/commands.js';
+import { getProjectSettings } from '../models/projectSettings.js';
 import { beginGeneration, endGeneration, warmCache } from '../routing/warm.js';
+import { getUserPlan } from '../models/userStore.js';
 
-// No cloud client until Sprint 6 brings the per-request user API key. The
-// router still decides "cloud"; such requests are refused explicitly rather
-// than silently answered somewhere else.
-const CLOUD_AVAILABLE = false;
+// The cloud tier runs on the user's own key, sent per request in this header
+// and never stored — not in the session, not in the database, not in a log.
+const API_KEY_HEADER = 'x-anthropic-api-key';
 
 // Room for the local context budget in real Qwen tokens (token_length is a
 // chars/4 estimate and code tokenizes denser), the system prompt, and the answer.
@@ -44,9 +49,10 @@ function localFix(status, model) {
 
 function unavailableMessage(route, status, model) {
   if (route.blocked === 'cloud_unavailable') {
+    const needsKey = `Cloud routing needs your own Anthropic API key, sent with the request in the ${API_KEY_HEADER} header; it is never stored.`;
     return route.reason === 'user_override'
-      ? 'Cloud routing needs an API key, which arrives with the cloud tier. Ask without choosing a tier to answer locally.'
-      : `The local model is not available, and cloud routing needs an API key, which arrives with the cloud tier. ${localFix(status, model)}`;
+      ? `${needsKey} Ask without choosing a tier to answer locally.`
+      : `The local model is not available. ${needsKey} ${localFix(status, model)}`;
   }
   const lead =
     route.reason === 'privacy_flag'
@@ -65,7 +71,35 @@ function invalid({ query, tier }) {
 // routing decision from what was selected, and the exact messages to send —
 // continuing an existing conversation when its context still covers the
 // question, so the prefix stays cached.
-async function planTurn(ownerId, sessionId, { query, project, tier, overrides, conversationId }) {
+// Both tiers stream the same shape, so the route does not care which answered.
+// Where the cacheable prefix ends: everything above the question is stable
+// across a conversation, so that is where the cache breakpoint goes.
+const CACHE_MARKERS = { strict_xml: '<question>', markdown: '## Question' };
+
+async function* generate({ decision, model, effort, messages, apiKey, cacheMarker, signal }) {
+  if (decision === 'local') {
+    for await (const chunk of streamLocal({ model, messages, options: LOCAL_OPTIONS, signal })) {
+      if (chunk.message?.content) yield { text: chunk.message.content };
+      if (chunk.done) {
+        yield { done: true, outputTokens: chunk.eval_count ?? null, promptTokens: chunk.prompt_eval_count ?? null };
+      }
+    }
+    return;
+  }
+  for await (const event of streamCloud({ apiKey, model, effort, messages, cacheMarker, signal })) {
+    if (event.text) yield { text: event.text };
+    if (event.done) {
+      yield {
+        done: true,
+        outputTokens: event.usage?.output_tokens ?? null,
+        promptTokens: event.usage?.input_tokens ?? null,
+        costUsd: costUsd(model, event.usage),
+      };
+    }
+  }
+}
+
+async function planTurn(ownerId, sessionId, { query, project, tier, overrides, conversationId }, { cloudAvailable }) {
   const text = query.trim();
   const model = localChatModel();
 
@@ -91,13 +125,13 @@ async function planTurn(ownerId, sessionId, { query, project, tier, overrides, c
     selected: packed.selected,
     preferredTier: tier,
     localAvailable,
-    cloudAvailable: CLOUD_AVAILABLE,
+    cloudAvailable,
   });
   if (route.tier !== provisional) packed = packForTier(gathered.candidates, route.tier, overrides);
   const routingDecisionMs = Math.round(probeMs + performance.now() - decideStart);
 
   const config = resolveConfig(route.tier, overrides);
-  const continued = continuation(conversation, { selected: packed.selected, tier: route.tier });
+  const continued = continuation(conversation, { selected: packed.selected, tier: route.tier, project });
   const prefilled = continued ? null : coveringDraft(draftKey(ownerId, sessionId), { selected: packed.selected, tier: route.tier });
   let messages;
   let sources;
@@ -130,6 +164,7 @@ async function planTurn(ownerId, sessionId, { query, project, tier, overrides, c
     model,
     status,
     route,
+    config,
     gathered,
     messages,
     sources,
@@ -157,7 +192,9 @@ router.post('/prepare', async (req, res) => {
   const problem = invalid(req.body);
   if (problem) return res.status(400).json({ error: problem });
 
-  const plan = await planTurn(req.session.userId, req.sessionID, req.body);
+  const plan = await planTurn(req.session.userId, req.sessionID, req.body, {
+    cloudAvailable: Boolean(req.get(API_KEY_HEADER)),
+  });
   if (plan.contextBlock) {
     saveDraft(draftKey(req.session.userId, req.sessionID), {
       tier: plan.route.tier,
@@ -197,8 +234,13 @@ router.post('/', async (req, res) => {
   });
 
   const ownerId = req.session.userId;
-  const plan = await planTurn(ownerId, req.sessionID, req.body);
-  const { route, model, sources, metrics } = plan;
+  const apiKey = req.get(API_KEY_HEADER);
+  const [userPlan, plan] = await Promise.all([
+    getUserPlan(ownerId),
+    planTurn(ownerId, req.sessionID, req.body, { cloudAvailable: Boolean(apiKey) }),
+  ]);
+  const { route, sources, metrics } = plan;
+  const model = route.decision === 'local' ? plan.model : resolveCloudModel(userPlan);
   const conversationId = req.body.conversationId ?? randomUUID();
 
   const queryId = randomUUID();
@@ -222,7 +264,8 @@ router.post('/', async (req, res) => {
   if (route.blocked) {
     await record({}, false);
     return res.status(503).json({
-      error: unavailableMessage(route, plan.status, model),
+      // Always the local model here: the hint is about what to install.
+      error: unavailableMessage(route, plan.status, plan.model),
       code: route.blocked,
       queryId,
       routing: plan.routing,
@@ -230,7 +273,7 @@ router.post('/', async (req, res) => {
     });
   }
 
-  const modelUsed = `ollama/${model}`;
+  const modelUsed = route.decision === 'local' ? `ollama/${model}` : `anthropic/${model}`;
   res.status(200).set({
     'Content-Type': 'application/x-ndjson; charset=utf-8',
     'Cache-Control': 'no-cache',
@@ -252,20 +295,29 @@ router.post('/', async (req, res) => {
   let ttftMs = null;
   let outputTokens = null;
   let promptTokens = null;
+  let cost = null;
   let failure = null;
   let answer = '';
   beginGeneration();
   try {
-    for await (const chunk of streamChat({ model, messages: plan.messages, options: LOCAL_OPTIONS, signal: upstream.signal })) {
-      const token = chunk.message?.content;
-      if (token) {
+    for await (const event of generate({
+      decision: route.decision,
+      model,
+      messages: plan.messages,
+      apiKey,
+      effort: cloudEffortFor(userPlan),
+      cacheMarker: CACHE_MARKERS[plan.config.prompt_structure],
+      signal: upstream.signal,
+    })) {
+      if (event.text) {
         ttftMs ??= Math.round(performance.now() - started);
-        answer += token;
-        send({ type: 'token', text: token });
+        answer += event.text;
+        send({ type: 'token', text: event.text });
       }
-      if (chunk.done) {
-        outputTokens = chunk.eval_count ?? null;
-        promptTokens = chunk.prompt_eval_count ?? null;
+      if (event.done) {
+        outputTokens = event.outputTokens;
+        promptTokens = event.promptTokens;
+        cost = event.costUsd ?? null;
       }
     }
   } catch (err) {
@@ -274,10 +326,45 @@ router.post('/', async (req, res) => {
     endGeneration();
   }
 
+  // Edits are parsed from the finished answer and held for approval; the model
+  // never writes to a repository itself.
+  const edits = failure ? [] : parseEdits(answer);
+  const proposed = edits.length
+    ? recordProposals({ ownerId, queryId, conversationId, edits, sources })
+    : [];
+
+  const names = failure ? [] : parseRuns(answer);
+  const proposedRuns = [];
+  if (names.length) {
+    // A script runs in the project's working copy; without one bound there is
+    // nowhere to run it, and the card says so rather than guessing a directory.
+    const runProject = req.body.project ?? sources[0]?.node.project ?? null;
+    const settings = runProject ? await getProjectSettings(ownerId, runProject) : null;
+    proposedRuns.push(
+      ...recordRuns({
+        ownerId,
+        conversationId,
+        project: runProject,
+        localPath: settings?.localPath ?? null,
+        scripts: settings?.localPath ? await declaredScripts(settings.localPath) : [],
+        names,
+      })
+    );
+  }
+
   const totalResponseMs = Math.round(performance.now() - started);
   if (!upstream.signal.aborted) {
-    if (failure) send({ type: 'error', queryId, error: failure.message });
-    else send({ type: 'done', queryId, conversationId, metrics: { ttftMs, totalResponseMs, outputTokens, promptTokens } });
+    if (proposed.length) send({ type: 'edits', queryId, edits: proposed.map(presentProposal) });
+    if (proposedRuns.length) send({ type: 'runs', queryId, runs: proposedRuns.map(presentRun) });
+    if (failure) send({ type: 'error', queryId, error: describeError(failure) });
+    else {
+      send({
+        type: 'done',
+        queryId,
+        conversationId,
+        metrics: { ttftMs, totalResponseMs, outputTokens, promptTokens, costUsd: cost },
+      });
+    }
     res.end();
   }
 
@@ -286,6 +373,7 @@ router.post('/', async (req, res) => {
   if (!failure && answer) {
     saveConversation(conversationId, ownerId, {
       tier: route.tier,
+      project: req.body.project ?? null,
       sources,
       messages: [...plan.messages, { role: 'assistant', content: answer }],
       contextTokens: plan.contextTokens,
@@ -295,7 +383,18 @@ router.post('/', async (req, res) => {
 
   // Written after the last token, so the metrics inserts never delay the answer.
   try {
-    await record({ modelUsed, ttftMs, totalResponseMs, outputTokens }, true);
+    await record(
+      {
+        modelUsed,
+        ttftMs,
+        totalResponseMs,
+        outputTokens,
+        costUsd: cost,
+        // Whose money paid for this answer: only platform spend is margin.
+        billedTo: route.decision === 'cloud' ? (apiKey ? 'user_key' : 'platform') : null,
+      },
+      true
+    );
   } catch (err) {
     console.error(`failed to log metrics for query ${queryId}: ${err.message}`);
   }

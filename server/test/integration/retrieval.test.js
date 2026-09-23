@@ -72,6 +72,25 @@ describe('retrieval', { skip: ollama ? false : 'Ollama not reachable — embeddi
   });
   after(() => server.close());
 
+  test('choosing a project scopes retrieval to it, not just boosts it', async () => {
+    const question = 'campus marketplace for students';
+
+    const scoped = await query(question, { project: 'hmbirmingham/huskybook' });
+    assert.ok(scoped.data.nodes.length > 0, 'the chosen project answers');
+    assert.ok(
+      scoped.data.nodes.every((node) => node.project === 'hmbirmingham/huskybook'),
+      `only the chosen project: ${[...new Set(scoped.data.nodes.map((n) => n.project))].join(', ')}`
+    );
+
+    // The same question, pointed at a different project, must not reach back
+    // into huskybook — that leak is what puts one repository in another's chat.
+    const elsewhere = await query(question, { project: 'hmbirmingham/focus-guard' });
+    assert.ok(
+      elsewhere.data.nodes.every((node) => node.project === 'hmbirmingham/focus-guard'),
+      'a chosen project never returns another project\'s nodes'
+    );
+  });
+
   test('rejects blank queries, unknown tiers, and unauthenticated calls', async () => {
     assert.equal((await query('   ')).status, 400);
     assert.equal((await query('x', { tier: 'gpu_cluster' })).status, 400);

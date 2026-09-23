@@ -1,4 +1,4 @@
-export default function Sidebar({ projects, activeProject, onSelectProject, onOpenProjectSettings, onOpenSources }) {
+export default function Sidebar({ projects, activeProject, onSelectProject, onOpenProjectSettings, onOpenSources, onNewThread }) {
   return (
     <aside className="sidebar">
       <div className="sidebar-top">
@@ -9,7 +9,7 @@ export default function Sidebar({ projects, activeProject, onSelectProject, onOp
       </div>
 
       <nav className="sidebar-nav">
-        <button type="button" className="nav-item is-active">New query</button>
+        <button type="button" className="nav-item is-active" onClick={onNewThread}>New query</button>
         <button type="button" className="nav-item">Search map</button>
         <button type="button" className="nav-item" onClick={onOpenSources}>Sources</button>
         <button type="button" className="nav-item">Settings</button>
@@ -20,6 +20,11 @@ export default function Sidebar({ projects, activeProject, onSelectProject, onOp
         <button type="button" className="sidebar-add" onClick={onOpenSources} aria-label="Add sources">+</button>
       </div>
       <div className="sidebar-nav">
+        <div className={`map-item ${activeProject === null ? 'is-active' : ''}`}>
+          <button type="button" className="map-item-name" onClick={() => onSelectProject(null)}>
+            All maps
+          </button>
+        </div>
         {projects.map(({ project, nodes, privacy }) => (
           <div
             key={project}

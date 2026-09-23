@@ -3,10 +3,25 @@
 // nodes follow relevance-descending (small models attend most to the start),
 // and the question comes last, after the material it is asked about.
 
+const EDITING = `- When the user asks you to change code, keep the prose to a sentence and give the change as an edit block:
+<edit path="exact/path/from/the/context">
+<<<<<<< SEARCH
+lines copied exactly from the excerpt
+=======
+the replacement lines
+>>>>>>> REPLACE
+</edit>
+- Only edit a file that appears in the context, use its exact path, and copy the SEARCH lines verbatim from the excerpt — they are matched character for character against the real file.
+- When the user asks you to run, test or benchmark something, name the project's own script on its own line:
+<run>test</run>
+Only a script the project declares in package.json can run, it runs in the project's working copy, and only after the user approves it. You are shown the output afterwards.
+- Never abbreviate inside SEARCH. No "...", no "rest of the function", no summarising comments: copy the exact lines you are replacing, and keep the block small — a few lines around the change, not the whole file. Nothing is applied until the user approves it.`;
+
 const RULES = `- Answer from the context. Cite the excerpts you use inline by number, like [1] or [2][3].
 - If the context does not contain the answer, say so in one sentence, then give your best general answer and label it as general knowledge.
 - Quote code, names, and values exactly as they appear. Never invent file paths, functions, or APIs.
-- Be concise: lead with the answer, then only the detail that supports it.`;
+- Be concise: lead with the answer, then only the detail that supports it.
+${EDITING}`;
 
 export const SYSTEM_PROMPTS = {
   strict_xml: `You are Scope Studio, an assistant that answers questions about the user's own engineering projects.

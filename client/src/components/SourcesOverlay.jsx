@@ -30,7 +30,33 @@ function Progress({ job }) {
   );
 }
 
-export default function SourcesOverlay({ open, onClose, onIngested }) {
+function CloudKey({ apiKey, onApiKeyChange }) {
+  return (
+    <div className="inspector-block">
+      <div className="inspector-block-title">Cloud model</div>
+      <p className="key-note">
+        Your own Anthropic key. It is kept for this session only — sent with each cloud
+        request, never written to disk and never stored on the server.
+      </p>
+      <input
+        className="key-input"
+        type="password"
+        autoComplete="off"
+        spellCheck="false"
+        placeholder="sk-ant-..."
+        value={apiKey}
+        onChange={(event) => onApiKeyChange(event.target.value)}
+      />
+      {apiKey && (
+        <button type="button" className="key-clear" onClick={() => onApiKeyChange('')}>
+          Forget key
+        </button>
+      )}
+    </div>
+  );
+}
+
+export default function SourcesOverlay({ open, onClose, onIngested, apiKey, onApiKeyChange }) {
   const { connected, repos, job, error, loadRepos, ingest } = useIngest(onIngested);
   const [selected, setSelected] = useState(() => new Set());
 
@@ -61,6 +87,8 @@ export default function SourcesOverlay({ open, onClose, onIngested }) {
           <div className="inspector-title">GitHub</div>
           <div className="inspector-sub">Private repositories stay on this machine.</div>
         </div>
+
+        <CloudKey apiKey={apiKey} onApiKeyChange={onApiKeyChange} />
 
         {connected === false && (
           <div className="inspector-block">

@@ -17,3 +17,8 @@ export async function findUserByEmail(email) {
   );
   return rows[0] ?? null;
 }
+
+export async function getUserPlan(id) {
+  const { rows } = await getPool().query('SELECT plan FROM users WHERE id = $1', [id]);
+  return rows[0]?.plan ?? 'free';
+}

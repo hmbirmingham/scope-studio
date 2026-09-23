@@ -1,3 +1,4 @@
+import { useState } from 'react';
 const PREFERENCES = [
   { key: 'pin', label: 'Pin', glyph: '★' },
   { key: 'boost', label: 'Boost', glyph: '↑' },
@@ -52,7 +53,45 @@ function NodeScope({ node, relations, preference, onSetPreference, onFocusNode }
   );
 }
 
-function ProjectScope({ project, stats }) {
+function WorkingCopy({ project, settings, error, onBindPath }) {
+  const [path, setPath] = useState(settings?.localPath ?? '');
+
+  return (
+    <div className="inspector-block">
+      <div className="inspector-block-title">Working copy</div>
+      <p className="key-note">
+        Where this project lives on this machine. Scripts it declares can then be run — after you
+        approve each one.
+      </p>
+      <input
+        className="key-input"
+        type="text"
+        spellCheck="false"
+        placeholder="/Users/you/code/project"
+        value={path}
+        onChange={(event) => setPath(event.target.value)}
+      />
+      <div className="edit-actions" style={{ padding: '10px 0 0', borderTop: 'none' }}>
+        <button type="button" className="edit-approve" onClick={() => onBindPath(project, path.trim())}>
+          Use this folder
+        </button>
+        {settings?.localPath && (
+          <button type="button" className="edit-reject" onClick={() => { setPath(''); onBindPath(project, null); }}>
+            Unlink
+          </button>
+        )}
+      </div>
+      {error && <div className="edit-note is-warn">{error}</div>}
+      {settings?.scripts?.length > 0 && (
+        <div className="inspector-sub" style={{ marginTop: 10 }}>
+          scripts: {settings.scripts.join(', ')}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function ProjectScope({ project, stats, settings, settingsError, onBindPath }) {
   return (
     <>
       <div className="inspector-head">
@@ -62,6 +101,8 @@ function ProjectScope({ project, stats }) {
           {stats.nodes} nodes · {stats.tokens.toLocaleString()} tokens
         </div>
       </div>
+
+      <WorkingCopy project={project} settings={settings} error={settingsError} onBindPath={onBindPath} />
 
       <div className="inspector-block">
         <div className="inspector-block-title">Composition</div>
