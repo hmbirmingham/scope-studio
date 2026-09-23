@@ -1,5 +1,5 @@
 # Scope Studio — Architecture Decision Record
-**Version:** 0.2 (v1 retrieval implemented; §4 taskType and recency anchor corrected, §5 tier loop resolved, routing order recorded)
+**Version:** 0.3 (benchmark built and run on the live corpus; §4 gains the definition term and loses nothing else; §8 records what the 20 queries measured; §9 items 1 and 3 settled)
 **Author:** Hynes Birmingham, Fourier Studios
 **Last updated:** September 2026
 **Status:** Canonical — update only when a fundamental decision changes
@@ -168,7 +168,8 @@ score(node) = rrf(node)
             × (1 + recency(node)
                  + project(node)
                  + taskType(node)
-                 + sourceType(node))
+                 + sourceType(node)
+                 + definition(node))
             × supersedeDemotion(node)
 
 where:
@@ -199,17 +200,47 @@ sourceType(node) = 0.2 if source ∈ {kicad} AND inferred_task == hardware
 
 supersedeDemotion(node) = 0.1 if any node supersedes this node
                         = 1.0 otherwise
+
+definition(node) = 2.0 if inferred_task ∈ {codebase, firmware, data_pipeline}
+                       AND the chunk defines an identifier whose every part
+                       the query supplied (def/class/function/const/…, or a
+                       C-style `type name(...) {`; identifiers split on `_`
+                       and camelCase the way the lexical index splits them)
+                 = 0 otherwise
 ```
 
-**Default parameters to tune first against the 20-query benchmark:**
-1. `λ` values per node type (recency decay rates) — highest expected impact
-2. `project` boost magnitude (0.3 is a guess, may need to be 0.15-0.5)
-3. Relevance floor threshold (0.55 is a guess on real nomic similarity distributions)
+**The definition term (v0.3), and why it is large.** The benchmark's own
+first query, "what does `quantify_colonies` return", missed on both tiers:
+the chunk holding `def quantify_colonies` had the second-highest cosine
+similarity of any node but was named once, while a test file names the
+function ten times. `ts_rank_cd` is frequency-weighted, so the definition
+fell outside the lexical top 20, and RRF then scored it identically to a
+lexical-only chunk with no dense signal at all. A boost of 1.0 did not
+clear that gap; 2.0 did, and 1.5–3.0 all give the same result, so the
+value is not delicate. It is gated to code-shaped tasks because a research
+or decision question is rarely answered by the code that defines its terms:
+ungated, it displaced a failure-analysis summary with the function that
+computes the analysis.
 
-**Parameters to tune second:**
-4. `taskType` boost magnitude
-5. `sourceType` boost magnitude
-6. `supersedeDemotion` multiplier (0.1 vs 0.0 vs 0.25)
+**Tried and rejected (v0.3): a file-kind boost.** Preferring code chunks for
+code questions and README chunks for research questions, from the path
+extension, cut the local hit rate from 75% to 55%. Task inference is right
+three times in four, and when it guesses `research` for a question the code
+answers, preferring prose buries the answer. Nothing that multiplies a
+75%-accurate signal across every candidate survives contact with this corpus.
+
+**What the benchmark said about the "tune first" list.** On the live corpus,
+none of the following moved hit rate, recall or MRR at all: the relevance
+floor from 0.50 to 0.75, `rrf_k` from 10 to 100, `max_nodes` from 3 to 12,
+and every rung of the ablation ladder (recency, task inference, supersede
+demotion). The reasons are structural, not tuning: every node was ingested
+on the same day (recency is flat), there are no decision nodes (demotion
+has nothing to act on), and the task-type boost applies to `file`, which
+is every chunk. These become live signals only once the corpus carries
+decisions, confirmations, and age. The one parameter that moved anything
+was the local token budget: 800 → 1,500 tokens raised hit rate from 55% to
+70%; beyond 1,500 nothing changed because `max_nodes` and ~750-token chunks
+cap the pack at two or three chunks either way.
 
 ---
 
@@ -429,36 +460,58 @@ from Sprint 6 onward.
 
 ---
 
-## 8. Ablation Plan — 20-Query Benchmark
+## 8. The 20-Query Benchmark — as built and as measured
 
-The benchmark covers 4 categories (5 queries each):
-- **Codebase lookup:** "what does `quantify_colonies` return?"
-- **Decision context:** "why did we choose watershed over contour detection?"
-- **Cross-project:** "which repos use Flask?"
-- **Research context:** "what anomaly threshold did we settle on?"
+`npm run benchmark` in `server/` (`src/benchmark/`) runs the golden set in
+`server/benchmarks/queries.json` against the live corpus for the owner with the
+most nodes, through the side-effect-free half of retrieval (`gatherCandidates`
++ `packForTier`), so it never bumps `access_count` or logs metrics. Each query
+lists the nodes a correct answer needs — a project, optionally a path suffix,
+optionally a content pattern for the one chunk of a ten-chunk file that
+answers — and the judge scores the packed context against them.
 
-Each query runs against:
-A. Full-context baseline (no retrieval, paste everything)
-B. v0 retrieval (current pipeline)
-C. v1 with recency decay only (isolate recency fix)
-D. v1 with decay + task inference (isolate task boost)
-E. v1 with decay + task + supersede demotion (isolate demotion)
-F. v1 full (all components)
+**Categories (5 each), adapted to a corpus of files and repositories:**
+codebase lookup ("what does `quantify_colonies` return"), cross-project
+("which repositories use Flask" — any Flask chunk per project counts),
+decision context (answered by design notes, runbooks and failure-analysis
+summaries that exist as files), research context (thresholds, organism
+profiles, validation notebooks, peripheral setup).
 
-**Metrics per run:**
-- `answer_correct` (binary, ground truth hand-labeled)
-- `tokens_injected` vs `tokens_available` (efficiency ratio)
-- `retrieval_latency_ms`
-- `nDCG@5` (requires relevance judgments for top-5 retrieved nodes)
+**Metrics per configuration:** hit rate (a relevant node is in the pack),
+candidate hit rate (a relevant node cleared the floor at all — separating
+retrieval failures from ranking and budget failures), recall over
+expectations, MRR, task-inference accuracy, tokens injected, efficiency ratio,
+retrieval latency. The ablation ladder (B v0 → C recency → D task → E
+demotion → F full) and `--sweep param=v1,v2,…` layer on the same runner;
+`--save` writes a row per configuration to `benchmark_runs` with the commit.
 
-**What this sample size can and cannot show:**
-At 20 queries, individual component ablations (C vs D vs E) can detect
-improvements of ~15% in answer_correct or ~20% in efficiency ratio as
-statistically meaningful. Smaller effects will be noise at this sample
-size. The benchmark is sufficient to validate that the system works and
-to tune the highest-impact parameters (λ, relevance floor). It is not
-sufficient to validate learning-to-rank approaches — that requires 200+
-labeled queries.
+**Measured, 2026-09-23, 871 chunks across 9 repositories:**
+
+| | local (5 nodes, 1,500 tokens) | cloud (10 nodes, 4,000 tokens) |
+|---|---|---|
+| hit rate, before v0.3 | 75% | 90% |
+| hit rate, with definition term | **80%** | **95%** |
+| candidate hit rate | 95% | 100% |
+| MRR | 0.72 | 0.74 |
+| task inference | 15/20 | 15/20 |
+| tokens injected (mean) | 1,439 | 3,872 |
+| retrieval latency (warm) | 5–9 ms | 5–6 ms |
+
+**What the remaining misses are.** Every local miss but one is a *budget*
+failure: the relevant chunk cleared the floor and ranked in the top five, but
+two or three ~750-token chunks fill 1,500 tokens first (a README of the same
+project, or a test file). The exception is a semantic gap ("how does
+focus-guard decide that the user is distracted" against a `detector.py` that
+never uses the word). Larger budgets do not help within `max_nodes = 5`;
+smaller chunks for the local tier, or a budget-aware pack that trades one
+large chunk for two small ones, are the next experiments.
+
+**What this sample size can and cannot show** is unchanged from v0.2: a
+15-point change in hit rate is a signal at 20 queries, a 5-point change is
+one query, and learning-to-rank still needs 200+ labelled queries. The
+definition term's 5-point gain is one query on each tier — but it is the
+query the benchmark was written around, it is the same query on both tiers,
+and the fix is stable across a 2× range of weights.
 
 ---
 
@@ -468,9 +521,11 @@ These items are experiments, not decisions. They should be tested empirically
 on the 20-query benchmark rather than assumed from prior work.
 
 1. **Optimal cosine relevance floor for nomic-embed-text on engineering text.**
-   0.55 is a guess. The actual distribution of cosine similarities for
-   relevant vs. irrelevant engineering nodes under nomic needs to be
-   measured empirically on real data.
+   *Settled for hit rate (v0.3):* 0.50–0.75 changes nothing on the live
+   corpus because the lexical channel admits candidates regardless of the
+   floor and the pack is budget-bound. Lowering it to 0.50 raises candidate
+   hit rate from 90% to 95% at the cost of a worse efficiency ratio (more
+   projects in the baseline). 0.65 stays for the local tier.
 
 2. **Whether session context improves intent inference enough to justify
    the implementation cost.** The hypothesis (recently accessed node types
@@ -478,10 +533,12 @@ on the 20-query benchmark rather than assumed from prior work.
    workflows specifically.
 
 3. **Whether one-hop graph expansion helps or hurts on the local tier.**
-   Multi-hop is disabled. Whether even one-hop expansion improves local
-   tier accuracy or introduces distraction is unclear from the literature
-   and should be ablated explicitly (v1 with and without one-hop on
-   local tier queries).
+   *Settled for this corpus (v0.3):* neither. The ablation ladder's v0
+   rung (expansion off) and the full configuration score identically on
+   every query, because the live graph has only `part_of` edges and those
+   run chunk → file → repository, so expansion can only ever add a
+   repository node. The question reopens once `caused_by`, `supersedes`
+   and `references` edges exist between real nodes; the harness is ready.
 
 4. **Optimal λ values per node type.** The values in Section 4 are
    principled estimates. Real engineering workflows may have very different

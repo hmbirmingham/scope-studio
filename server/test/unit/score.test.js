@@ -5,6 +5,8 @@ import {
   SUPERSEDE_DEMOTION,
   TASK_TYPE_BOOST,
   boostMultiplier,
+  DEFINITION_BOOST,
+  definitionMatch,
   fuseAndScore,
   recencyBoost,
   resolveConfig,
@@ -128,8 +130,42 @@ describe('fuseAndScore', () => {
   });
 });
 
+describe('definitionMatch', () => {
+  const chunk = (path, content = '') => ({ type: 'file', external_id: `1|0|${path}`, content });
+
+  test('a definition matches when the query supplied every part of its identifier', () => {
+    assert.equal(definitionMatch(chunk('a.py', 'def quantify_colonies(img):'), ['quantify', 'colonies', 'return']), 'quantify_colonies');
+    assert.equal(definitionMatch(chunk('a.py', 'class AnomalyDetector:'), ['anomaly', 'detector']), 'AnomalyDetector');
+    assert.equal(definitionMatch(chunk('a.js', 'export function fitView() {'), ['fit', 'view']), 'fitView');
+    assert.equal(definitionMatch(chunk('a.c', 'static void USART2_Init(void)\n{'), ['usart2', 'init']), 'USART2_Init');
+  });
+
+  test('usages, partial names, and unrelated definitions do not match', () => {
+    assert.equal(definitionMatch(chunk('t.py', 'result = quantify_colonies(img)'), ['quantify', 'colonies']), null);
+    assert.equal(definitionMatch(chunk('a.py', 'def quantify_colonies(img):'), ['quantify']), null);
+    assert.equal(definitionMatch(chunk('a.py', 'def health():'), ['flask', 'repositories']), null);
+    assert.equal(definitionMatch(chunk('a.py', 'def health():'), []), null);
+  });
+});
+
 describe('boostMultiplier', () => {
   const features = resolveConfig('cloud_frontier').features;
+
+  test('a definition of the asked-about identifier adds the definition weight; the switch, weight and task gate are honoured', () => {
+    const chunk = node({ type: 'file', external_id: '1|0|quantify.py', content: 'def quantify_colonies(img):' });
+    const terms = ['quantify', 'colonies'];
+    const on = boostMultiplier(chunk, { project: null, task: null, now: NOW, features, terms });
+    const codebase = boostMultiplier(chunk, { project: null, task: { task: 'codebase', confidence: 0.6 }, now: NOW, features, terms });
+    const research = boostMultiplier(chunk, { project: null, task: { task: 'research', confidence: 0.9 }, now: NOW, features, terms });
+    assert.equal(codebase.applied.definition, DEFINITION_BOOST);
+    assert.equal(research.applied.definition, 0, 'a research question is not answered by the code that defines its terms');
+    const off = boostMultiplier(chunk, { project: null, task: null, now: NOW, features: { ...features, definition_boost: false }, terms });
+    const weighted = boostMultiplier(chunk, { project: null, task: null, now: NOW, features, terms, weights: { definition_boost: 0.25 } });
+    assert.equal(on.applied.definition, DEFINITION_BOOST);
+    assert.equal(off.applied.definition, 0);
+    assert.equal(weighted.applied.definition, 0.25);
+    assert.ok(Math.abs(on.multiplier - off.multiplier - DEFINITION_BOOST) < 1e-9);
+  });
 
   test('task boost applies only to node types mapped to the inferred task, scaled by confidence', () => {
     const task = { task: 'research', confidence: 0.8 };

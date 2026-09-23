@@ -17,7 +17,7 @@ import { inferTask } from './taskInference.js';
 
 const NODE_COLUMNS =
   'id, type, content, source, project, created_at, last_accessed, last_confirmed_useful, ' +
-  'access_count, confirmed_useful_count, token_length, privacy';
+  'access_count, confirmed_useful_count, token_length, privacy, external_id';
 
 const STOPWORDS = new Set([
   'the', 'and', 'for', 'are', 'but', 'not', 'you', 'all', 'can', 'had', 'her', 'was', 'one',
@@ -262,7 +262,7 @@ export async function gatherCandidates({ ownerId, query, project, tier = 'local_
     lexicalCandidates(pool, ownerId, query, project),
     embedding && config.features.task_inference ? inferTask(pool, embedding.vector) : null,
   ]);
-  const scored = fuseAndScore({ dense, lexical, project, task, now: new Date(), config });
+  const scored = fuseAndScore({ dense, lexical, project, task, now: new Date(), config, terms: toLexicalTerms(query) });
   const candidates = config.features.expansion
     ? await expandFromSeeds(pool, ownerId, scored, { query, config, project })
     : scored;
