@@ -10,7 +10,8 @@
     "test:unit": "node --test \"test/unit/**/*.test.js\"",
     "migrate": "node src/db/migrate.js",
     "embed": "node src/db/embed-missing.js",
-    "centroids": "node src/db/build-centroids.js"
+    "centroids": "node src/db/build-centroids.js",
+    "benchmark": "node src/benchmark/run.js"
   },
   "keywords": [],
   "author": "Hynes Birmingham",

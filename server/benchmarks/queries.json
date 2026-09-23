@@ -1,0 +1,279 @@
+{
+  "name": "live-v1",
+  "description": "Twenty questions against the live corpus (nine repositories, 871 chunks). Each lists the nodes a correct answer needs: a project, a path suffix, and optionally a pattern the chunk's content must contain. Categories follow ADR §8, adapted to a corpus that holds files and repositories but no decision or paper nodes yet.",
+  "queries": [
+    {
+      "id": "code-1",
+      "category": "codebase_lookup",
+      "task": "codebase",
+      "query": "what does quantify_colonies return",
+      "relevant": [
+        {
+          "project": "hmbirmingham/imaging-system",
+          "path": "quantify.py",
+          "content": "def quantify_colonies"
+        }
+      ]
+    },
+    {
+      "id": "code-2",
+      "category": "codebase_lookup",
+      "task": "codebase",
+      "query": "how is illumination correction applied before colony detection",
+      "relevant": [
+        {
+          "project": "hmbirmingham/imaging-system",
+          "path": "quantify.py",
+          "content": "illumination_corrected"
+        }
+      ]
+    },
+    {
+      "id": "code-3",
+      "category": "codebase_lookup",
+      "task": "codebase",
+      "query": "how does the migration runner know which migrations have already been applied",
+      "relevant": [
+        {
+          "project": "hmbirmingham/scope-studio",
+          "path": "server/src/db/migrate.js",
+          "content": "schema_migrations"
+        }
+      ]
+    },
+    {
+      "id": "code-4",
+      "category": "codebase_lookup",
+      "task": "codebase",
+      "query": "how does focus-guard decide that the user is distracted",
+      "relevant": [
+        {
+          "project": "hmbirmingham/focus-guard",
+          "path": "detector.py"
+        }
+      ]
+    },
+    {
+      "id": "code-5",
+      "category": "codebase_lookup",
+      "task": "codebase",
+      "query": "where does the pharmacokinetic simulator compute the dosing schedule",
+      "relevant": [
+        {
+          "project": "hmbirmingham/Pharmacokinetic-Simulator",
+          "path": "dosing.py"
+        }
+      ]
+    },
+    {
+      "id": "cross-1",
+      "category": "cross_project",
+      "task": "cross_project",
+      "query": "which repositories use Flask",
+      "relevant": [
+        {
+          "project": "hmbirmingham/focus-guard",
+          "content": "flask"
+        },
+        {
+          "project": "hmbirmingham/imaging-system",
+          "content": "flask"
+        },
+        {
+          "project": "onlyycliff/BRIDGE-Discord-Bot",
+          "content": "flask"
+        }
+      ]
+    },
+    {
+      "id": "cross-2",
+      "category": "cross_project",
+      "task": "cross_project",
+      "query": "which projects have a React client",
+      "relevant": [
+        {
+          "project": "hmbirmingham/huskybook",
+          "content": "react"
+        },
+        {
+          "project": "hmbirmingham/scope-studio",
+          "content": "react"
+        }
+      ]
+    },
+    {
+      "id": "cross-3",
+      "category": "cross_project",
+      "task": "cross_project",
+      "query": "which repos have a sync.sh script and what does it do",
+      "relevant": [
+        {
+          "project": "hmbirmingham/imaging-system",
+          "path": "sync.sh"
+        },
+        {
+          "project": "hmbirmingham/Pharmacokinetic-Simulator",
+          "path": "sync.sh"
+        },
+        {
+          "project": "hmbirmingham/focus-guard",
+          "path": "sync.sh"
+        }
+      ]
+    },
+    {
+      "id": "cross-4",
+      "category": "cross_project",
+      "task": "cross_project",
+      "query": "which projects run tests in GitHub Actions",
+      "relevant": [
+        {
+          "project": "hmbirmingham/imaging-system",
+          "path": ".github/workflows/continuous-testing.yml"
+        }
+      ]
+    },
+    {
+      "id": "cross-5",
+      "category": "cross_project",
+      "task": "cross_project",
+      "query": "which projects talk to Discord",
+      "relevant": [
+        {
+          "project": "onlyycliff/BRIDGE-Discord-Bot",
+          "content": "discord"
+        }
+      ]
+    },
+    {
+      "id": "decision-1",
+      "category": "decision_context",
+      "task": "research",
+      "query": "why was watershed segmentation chosen for separating touching colonies",
+      "relevant": [
+        {
+          "project": "hmbirmingham/imaging-system",
+          "path": "quantify.py",
+          "content": "watershed"
+        }
+      ]
+    },
+    {
+      "id": "decision-2",
+      "category": "decision_context",
+      "task": "research",
+      "query": "what did the blind evaluation failure analysis conclude after the second iteration",
+      "relevant": [
+        {
+          "project": "hmbirmingham/imaging-system",
+          "path": "testing/blind_eval/failure_analysis/iteration_2/summary.md"
+        }
+      ]
+    },
+    {
+      "id": "decision-3",
+      "category": "decision_context",
+      "task": "codebase",
+      "query": "how did huskybook end up handling sign-in according to its build log",
+      "relevant": [
+        {
+          "project": "hmbirmingham/huskybook",
+          "path": "BUILD_LOG.md",
+          "content": "auth|magic|login|verify"
+        }
+      ]
+    },
+    {
+      "id": "decision-4",
+      "category": "decision_context",
+      "task": "codebase",
+      "query": "how does the BRIDGE bot integrate with Excel",
+      "relevant": [
+        {
+          "project": "onlyycliff/BRIDGE-Discord-Bot",
+          "path": "docs/EXCEL_INTEGRATION_GUIDE.md"
+        }
+      ]
+    },
+    {
+      "id": "decision-5",
+      "category": "decision_context",
+      "task": "codebase",
+      "query": "what does the runbook say about running a continuous testing cycle",
+      "relevant": [
+        {
+          "project": "hmbirmingham/imaging-system",
+          "path": "testing/RUNBOOK.md",
+          "content": "cycle"
+        }
+      ]
+    },
+    {
+      "id": "research-1",
+      "category": "research_context",
+      "task": "research",
+      "query": "what z-score and IQR thresholds flag a colony as anomalous",
+      "relevant": [
+        {
+          "project": "hmbirmingham/imaging-system",
+          "path": "anomaly.py",
+          "content": "z.?score|iqr"
+        }
+      ]
+    },
+    {
+      "id": "research-2",
+      "category": "research_context",
+      "task": "research",
+      "query": "what colony morphology is expected for E. coli on the plate profiles",
+      "relevant": [
+        {
+          "project": "hmbirmingham/imaging-system",
+          "path": "escherichia_coli_lf.yaml"
+        },
+        {
+          "project": "hmbirmingham/imaging-system",
+          "path": "escherichia_coli_bhem.yaml"
+        }
+      ]
+    },
+    {
+      "id": "research-3",
+      "category": "research_context",
+      "task": "research",
+      "query": "how was the vancomycin model validated against reference data",
+      "relevant": [
+        {
+          "project": "hmbirmingham/Pharmacokinetic-Simulator",
+          "path": "validation/vancomycin_comparison.ipynb",
+          "content": "vancomycin"
+        }
+      ]
+    },
+    {
+      "id": "research-4",
+      "category": "research_context",
+      "task": "research",
+      "query": "how were the held-out plates for the blind evaluation generated",
+      "relevant": [
+        {
+          "project": "hmbirmingham/imaging-system",
+          "path": "testing/blind_eval/generate_held_out_plates.py"
+        }
+      ]
+    },
+    {
+      "id": "research-5",
+      "category": "research_context",
+      "task": "firmware",
+      "query": "how is the USART peripheral configured on the STM32 board",
+      "relevant": [
+        {
+          "project": "hmbirmingham/stm32-peripherals",
+          "path": "02-uart/Src/main.c",
+          "content": "USART"
+        }
+      ]
+    }
+  ]
+}
