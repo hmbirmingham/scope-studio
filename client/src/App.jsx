@@ -1,8 +1,8 @@
 import { useMemo, useRef, useState } from 'react';
 import ChatPanel from './components/ChatPanel';
 import InspectorOverlay from './components/InspectorOverlay';
-import KnowledgeGraphCanvas from './components/KnowledgeGraphCanvas';
 import LoginGate from './components/LoginGate';
+import OutputPanel from './components/OutputPanel';
 import Sidebar from './components/Sidebar';
 import SourcesOverlay from './components/SourcesOverlay';
 import { edgeKey } from './graph/GraphEngine';
@@ -17,12 +17,23 @@ function Studio() {
   const [activeProject, setActiveProject] = useState(null);
   const [scope, setScope] = useState(null);
   const [sourcesOpen, setSourcesOpen] = useState(false);
+  const [panelOpen, setPanelOpen] = useState(true);
+  const [panelTab, setPanelTab] = useState('map');
   // Held in memory for this session only: never localStorage, never the server.
   const [apiKey, setApiKey] = useState('');
   const [tier, setTier] = useState(null);
   const [preferences, setPreferences] = useState({});
 
-  const chat = useChat({ project: activeProject, apiKey, tier });
+  const chat = useChat({
+    project: activeProject,
+    apiKey,
+    tier,
+    // A proposed edit is the thing to look at next.
+    onEdits: () => {
+      setPanelTab('edits');
+      setPanelOpen(true);
+    },
+  });
 
   const nodesById = useMemo(
     () => new Map(graph.nodes.map((node) => [node.id, node])),
@@ -81,32 +92,36 @@ function Studio() {
         onOpenSources={() => setSourcesOpen(true)}
       />
 
+      {/* The conversation is the workspace; outputs sit beside it. */}
       <main className="stage">
-        <KnowledgeGraphCanvas
-          ref={canvasRef}
-          nodes={graph.nodes}
-          edges={graph.edges}
-          activeIds={activeIds}
-          traversedKeys={traversedKeys}
-          preferences={preferences}
-          onSelectNode={(node) => setScope({ kind: 'node', node })}
+        <ChatPanel
+          project={activeProject}
+          chat={chat}
+          onNarrow={handleSelectProject}
+          tier={tier}
+          onTierChange={setTier}
+          hasKey={Boolean(apiKey)}
+          panelOpen={panelOpen}
+          onOpenPanel={() => setPanelOpen(true)}
         />
         {state === 'loading' && <div className="stage-note">Loading your map…</div>}
         {state === 'error' && <div className="stage-note is-error">{error}</div>}
-        {state === 'ready' && graph.nodes.length === 0 && (
-          <button type="button" className="stage-note is-action" onClick={() => setSourcesOpen(true)}>
-            No nodes yet — connect GitHub and pick repositories to ingest.
-          </button>
-        )}
       </main>
 
-      <ChatPanel
-        project={activeProject}
-        chat={chat}
-        onNarrow={handleSelectProject}
-        tier={tier}
-        onTierChange={setTier}
-        hasKey={Boolean(apiKey)}
+      <OutputPanel
+        open={panelOpen}
+        tab={panelTab}
+        onTab={setPanelTab}
+        onClose={() => setPanelOpen(false)}
+        canvasRef={canvasRef}
+        graph={graph}
+        activeIds={activeIds}
+        traversedKeys={traversedKeys}
+        preferences={preferences}
+        onSelectNode={(node) => setScope({ kind: 'node', node })}
+        spotlight={chat.spotlight}
+        edits={chat.edits}
+        onDecideEdit={chat.decideEdit}
       />
 
       <SourcesOverlay

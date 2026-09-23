@@ -4,6 +4,7 @@ import session from 'express-session';
 import { getPool } from './db/pool.js';
 import authRouter from './routes/auth.js';
 import chatRouter from './routes/chat.js';
+import editsRouter from './routes/edits.js';
 import nodesRouter from './routes/nodes.js';
 import githubPluginRouter from './routes/plugins/github.js';
 import graphRouter from './routes/graph.js';
@@ -38,6 +39,7 @@ function createApp(env) {
   app.get('/health', (req, res) => res.json({ status: 'ok' }));
   app.use('/api/auth', authRouter);
   app.use('/api/chat', chatRouter);
+  app.use('/api/edits', editsRouter);
   app.use('/api/graph', graphRouter);
   app.use('/api/nodes', nodesRouter);
   app.use('/api/plugins/github', githubPluginRouter);

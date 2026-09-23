@@ -24,6 +24,7 @@ import {
 } from '../routing/conversation.js';
 import { buildFollowUp, buildMessages, composeMessages } from '../routing/prompt.js';
 import { decideRoute, provisionalTier } from '../routing/route.js';
+import { parseEdits, presentProposal, recordProposals } from '../editing/proposals.js';
 import { beginGeneration, endGeneration, warmCache } from '../routing/warm.js';
 import { getUserPlan } from '../models/userStore.js';
 
@@ -323,8 +324,16 @@ router.post('/', async (req, res) => {
     endGeneration();
   }
 
+  // Edits are parsed from the finished answer and held for approval; the model
+  // never writes to a repository itself.
+  const edits = failure ? [] : parseEdits(answer);
+  const proposed = edits.length
+    ? recordProposals({ ownerId, queryId, conversationId, edits, sources })
+    : [];
+
   const totalResponseMs = Math.round(performance.now() - started);
   if (!upstream.signal.aborted) {
+    if (proposed.length) send({ type: 'edits', queryId, edits: proposed.map(presentProposal) });
     if (failure) send({ type: 'error', queryId, error: describeError(failure) });
     else {
       send({

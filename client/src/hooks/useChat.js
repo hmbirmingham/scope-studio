@@ -21,7 +21,7 @@ async function postJson(path, body, { apiKey, signal } = {}) {
   return { ok: response.ok, status: response.status, body: response };
 }
 
-export function useChat({ project, apiKey, tier }) {
+export function useChat({ project, apiKey, tier, onEdits }) {
   const [turns, setTurns] = useState([]);
   const [draft, setDraft] = useState('');
   // What the server would read for the question being typed, with its prefill
@@ -30,9 +30,15 @@ export function useChat({ project, apiKey, tier }) {
   const [live, setLive] = useState(null);
   const [status, setStatus] = useState('idle');
   const [error, setError] = useState(null);
+  const [edits, setEdits] = useState([]);
 
   const conversationRef = useRef(null);
   const answeringRef = useRef(false);
+  const onEditsRef = useRef(onEdits);
+
+  useEffect(() => {
+    onEditsRef.current = onEdits;
+  });
 
   useEffect(() => {
     const text = draft.trim();
@@ -97,6 +103,11 @@ export function useChat({ project, apiKey, tier }) {
         } else if (line.type === 'token') {
           answer.text += line.text;
           setLive({ ...answer });
+        } else if (line.type === 'edits') {
+          // Proposed, not applied: the panel shows them for approval, and the
+          // arrival itself is what opens that tab.
+          setEdits((prev) => [...prev, ...line.edits]);
+          onEditsRef.current?.(line.edits);
         } else if (line.type === 'done') {
           answer.metrics = { ...answer.metrics, ...line.metrics };
         } else if (line.type === 'error') {
@@ -117,8 +128,25 @@ export function useChat({ project, apiKey, tier }) {
   // then the answer being written, then the last answer given.
   const spotlight = preview?.nodes ?? live?.sources ?? turns.at(-1)?.sources ?? [];
 
+  // Approving is what writes; the server re-checks the file before it does.
+  const decideEdit = useCallback(async (id, decision) => {
+    const response = await fetch(`/api/edits/${id}/${decision}`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({}),
+    });
+    const body = await response.json().catch(() => ({}));
+    // A refusal belongs on the edit it refused, not in a general error bar.
+    const problem = response.ok ? null : body.error ?? `could not ${decision} that edit`;
+    setEdits((prev) =>
+      prev.map((edit) => (edit.id === id ? { ...(body.edit ?? edit), problem } : edit))
+    );
+  }, []);
+
   return {
     turns,
+    edits,
+    decideEdit,
     draft,
     setDraft,
     send,
