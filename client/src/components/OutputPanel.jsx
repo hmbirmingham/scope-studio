@@ -16,10 +16,10 @@ export default function OutputPanel({
 
   return (
     <aside className="output-panel">
+      {/* The globe opened it; the chevron pushes it back. No label needed. */}
       <header className="panel-tabs">
-        <span className="panel-title">Map</span>
         <button type="button" className="panel-close" onClick={onClose} aria-label="Close map">
-          ✕
+          ›
         </button>
       </header>
       <div className="panel-body is-map">

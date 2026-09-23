@@ -98,9 +98,18 @@ function Studio() {
           tier={tier}
           onTierChange={setTier}
           hasKey={Boolean(apiKey)}
-          panelOpen={panelOpen}
-          onOpenPanel={() => setPanelOpen(true)}
         />
+        {!panelOpen && (
+          <button
+            type="button"
+            className="map-open"
+            onClick={() => setPanelOpen(true)}
+            aria-label="Show map"
+            title="Show map"
+          >
+            🌐
+          </button>
+        )}
         {state === 'loading' && <div className="stage-note">Loading your map…</div>}
         {state === 'error' && <div className="stage-note is-error">{error}</div>}
       </main>

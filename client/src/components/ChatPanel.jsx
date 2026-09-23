@@ -164,7 +164,7 @@ function RunRow({ run, onDecide }) {
   );
 }
 
-export default function ChatPanel({ project, chat, onNarrow, tier, onTierChange, hasKey, panelOpen, onOpenPanel }) {
+export default function ChatPanel({ project, chat, onNarrow, tier, onTierChange, hasKey }) {
   const { turns, edits, runs, draft, setDraft, send, status, error, preview, live, routing, metrics, ambiguity } = chat;
   const model = modelName(routing) ?? (tier === 'cloud_frontier' ? 'cloud' : 'local');
   const pendingEdits = edits.filter((edit) => !['applied', 'rejected'].includes(edit.state));
@@ -274,11 +274,6 @@ export default function ChatPanel({ project, chat, onNarrow, tier, onTierChange,
           </div>
           <span className="composer-model">{model}</span>
           {!hasKey && tier === 'cloud_frontier' && <span className="composer-hint">needs your key</span>}
-          {!panelOpen && (
-            <button type="button" className="composer-link" onClick={onOpenPanel}>
-              map
-            </button>
-          )}
           <button type="submit" className="composer-send" aria-label="Send" disabled={status !== 'idle'}>
             ⏎
           </button>
