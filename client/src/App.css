@@ -474,3 +474,156 @@ body {
 .stat-count {
   color: var(--t1);
 }
+
+/* --- sign in ------------------------------------------------------------ */
+.gate {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  height: 100vh;
+  background: radial-gradient(60% 50% at 50% 40%, rgba(79, 172, 254, 0.07), transparent 70%), var(--base);
+}
+
+.gate-card {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  width: 300px;
+  padding: 28px;
+  background: var(--glass);
+  border: 1px solid var(--border);
+  border-radius: 14px;
+}
+
+.gate-mark {
+  width: 26px;
+  height: 26px;
+  border-radius: 50%;
+  background: linear-gradient(135deg, var(--g1), var(--g2), var(--g3));
+}
+
+.gate-title { font-family: var(--grotesk); font-size: 20px; font-weight: 500; }
+.gate-sub { color: var(--t2); font-size: 12px; margin-bottom: 8px; }
+
+.gate-card input {
+  padding: 10px 12px;
+  background: rgba(0, 0, 0, 0.3);
+  border: 1px solid var(--border2);
+  border-radius: 8px;
+  color: var(--t1);
+  font-family: inherit;
+  font-size: 13px;
+}
+
+.gate-card button[type='submit'] {
+  margin-top: 6px;
+  padding: 10px;
+  background: linear-gradient(135deg, var(--g1), var(--g2));
+  border: none;
+  border-radius: 8px;
+  color: #fff;
+  font-family: inherit;
+  font-size: 13px;
+  cursor: pointer;
+}
+
+.gate-switch {
+  background: none;
+  border: none;
+  color: var(--t2);
+  font-family: inherit;
+  font-size: 11px;
+  cursor: pointer;
+}
+
+.gate-error { color: var(--red); font-size: 12px; }
+
+/* --- map notes ---------------------------------------------------------- */
+.stage-note {
+  position: absolute;
+  left: 50%;
+  top: 50%;
+  transform: translate(-50%, -50%);
+  color: var(--t2);
+  font-size: 13px;
+}
+
+.stage-note.is-error { color: var(--red); }
+
+/* --- what the model is reading ----------------------------------------- */
+.context-strip {
+  border-top: 1px solid var(--border);
+  padding: 12px 16px;
+  background: rgba(0, 0, 0, 0.25);
+  font-size: 11px;
+}
+
+.context-head {
+  display: flex;
+  justify-content: space-between;
+  color: var(--t2);
+  margin-bottom: 8px;
+}
+
+.context-saving { color: var(--green); font-family: var(--mono); }
+
+.context-list { list-style: none; display: flex; flex-direction: column; gap: 4px; }
+
+.context-list li {
+  display: flex;
+  gap: 6px;
+  align-items: baseline;
+  color: var(--t1);
+}
+
+.context-index { color: var(--g1); font-family: var(--mono); font-size: 10px; }
+
+.context-label {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.context-flag { color: var(--amber); font-size: 10px; white-space: nowrap; }
+.context-note { margin-top: 8px; color: var(--t2); font-size: 10px; }
+
+.context-chips { display: flex; align-items: center; gap: 6px; margin-top: 10px; flex-wrap: wrap; }
+.context-chips-label { color: var(--t2); }
+
+.context-chips button {
+  padding: 3px 9px;
+  background: rgba(79, 172, 254, 0.1);
+  border: 1px solid rgba(79, 172, 254, 0.25);
+  border-radius: 999px;
+  color: var(--t1);
+  font-family: inherit;
+  font-size: 11px;
+  cursor: pointer;
+}
+
+/* --- answers ------------------------------------------------------------ */
+.chat-message.is-assistant .chat-who { color: var(--g1); }
+.chat-body { white-space: pre-wrap; }
+.chat-body.is-refused { color: var(--amber); }
+.chat-waiting { color: var(--t2); }
+
+.answer-sources {
+  list-style: none;
+  margin-top: 8px;
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  color: var(--t2);
+  font-size: 11px;
+}
+
+.chat-error { padding: 10px 16px; color: var(--red); font-size: 12px; }
+.model-dot.is-busy { background: var(--g1); animation: pulse 1.2s ease-in-out infinite; }
+
+@keyframes pulse {
+  0%, 100% { opacity: 0.35; }
+  50% { opacity: 1; }
+}
+
+.map-item-count { margin-left: 6px; color: var(--t3); font-family: var(--mono); font-size: 10px; }
+.map-item-local { margin-left: 5px; color: var(--amber); font-size: 8px; }

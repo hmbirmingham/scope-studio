@@ -17,13 +17,15 @@ export default function Sidebar({ projects, activeProject, onSelectProject, onOp
 
       <div className="sidebar-section">Maps</div>
       <div className="sidebar-nav">
-        {projects.map((project) => (
+        {projects.map(({ project, nodes, privacy }) => (
           <div
             key={project}
             className={`map-item ${project === activeProject ? 'is-active' : ''}`}
           >
             <button type="button" className="map-item-name" onClick={() => onSelectProject(project)}>
-              {project}
+              {project.split('/').pop()}
+              <span className="map-item-count">{nodes}</span>
+              {privacy === 'local' && <span className="map-item-local" title="stays on this machine">■</span>}
             </button>
             <button
               type="button"

@@ -12,7 +12,7 @@ function NodeScope({ node, relations, preference, onSetPreference, onFocusNode }
         <div className="inspector-type">{node.type}</div>
         <div className="inspector-title">{node.label ?? node.id}</div>
         <div className="inspector-sub">
-          {node.project} · {node.token_length} tokens
+          {node.project} · {node.tokenLength} tokens
           {node.privacy === 'local' && ' · local only'}
         </div>
       </div>
