@@ -81,7 +81,7 @@ function Sources({ sources }) {
   );
 }
 
-export default function ChatPanel({ project, chat, onNarrow, tier, onTierChange, hasKey }) {
+export default function ChatPanel({ project, chat, onNarrow, tier, onTierChange, hasKey, panelOpen, onOpenPanel }) {
   const { turns, draft, setDraft, send, status, error, preview, live, routing, metrics, ambiguity } = chat;
   const model = modelName(routing);
 
@@ -113,6 +113,11 @@ export default function ChatPanel({ project, chat, onNarrow, tier, onTierChange,
           </button>
         ))}
         {!hasKey && <span className="tier-hint">cloud needs your key</span>}
+        {!panelOpen && (
+          <button type="button" className="tier-btn panel-reopen" onClick={onOpenPanel}>
+            Show map
+          </button>
+        )}
       </div>
 
       <div className="chat-log">

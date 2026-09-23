@@ -35,6 +35,15 @@ export default function KnowledgeGraphCanvas({
     selectHandler.current = onSelectNode;
   });
 
+  // The canvas now lives in a panel that opens, closes and changes width, none
+  // of which fire a window resize.
+  useEffect(() => {
+    const element = canvasRef.current;
+    const observer = new ResizeObserver(() => engineRef.current?.resize());
+    observer.observe(element);
+    return () => observer.disconnect();
+  }, []);
+
   useEffect(() => {
     const engine = new GraphEngine(canvasRef.current);
     engineRef.current = engine;

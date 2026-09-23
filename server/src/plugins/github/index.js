@@ -66,6 +66,51 @@ function selectRepos(repos, select) {
   return repos.filter((repo) => wanted.has(repo.full_name));
 }
 
+// Applying an edit never trusts the stored chunk: chunks are truncated for
+// retrieval, so the file is re-fetched, the search text must still match, and
+// the change lands on a branch as a pull request the user can read before
+// merging. Nothing is pushed to a default branch.
+async function applyEdit(octokit, { project, path, search, replace, message, branchPrefix = 'scope-studio' }) {
+  const [owner, repo] = project.split('/');
+  const { data: repository } = await octokit.rest.repos.get({ owner, repo });
+  const base = repository.default_branch;
+
+  const { data: file } = await octokit.rest.repos.getContent({ owner, repo, path, ref: base });
+  const current = Buffer.from(file.content, file.encoding === 'base64' ? 'base64' : 'utf8').toString('utf8');
+
+  const occurrences = current.split(search).length - 1;
+  if (occurrences === 0) {
+    throw new Error(`the text to change is no longer in ${path} — the file changed since it was read`);
+  }
+  if (occurrences > 1) {
+    throw new Error(`the text to change appears ${occurrences} times in ${path}; the edit is ambiguous`);
+  }
+
+  const branch = `${branchPrefix}/${Date.now().toString(36)}`;
+  const { data: ref } = await octokit.rest.git.getRef({ owner, repo, ref: `heads/${base}` });
+  await octokit.rest.git.createRef({ owner, repo, ref: `refs/heads/${branch}`, sha: ref.object.sha });
+
+  await octokit.rest.repos.createOrUpdateFileContents({
+    owner,
+    repo,
+    path,
+    branch,
+    message,
+    sha: file.sha,
+    content: Buffer.from(current.replace(search, replace), 'utf8').toString('base64'),
+  });
+
+  const { data: pull } = await octokit.rest.pulls.create({
+    owner,
+    repo,
+    base,
+    head: branch,
+    title: message,
+    body: 'Proposed in Scope Studio and approved by the repository owner.',
+  });
+  return { branch, url: pull.html_url, number: pull.number };
+}
+
 const githubPlugin = {
   name: 'github',
   displayName: 'GitHub',
@@ -103,6 +148,12 @@ const githubPlugin = {
   ) {
     const all = await fetchRepos(octokit);
     return ingestRepos(octokit, selectRepos(all, repos), ownerId, limits, onProgress);
+  },
+
+  // The plugin that owns a file is what writes to it; the editing pipeline
+  // only knows this contract.
+  async applyEdit(token, edit, { octokit = githubPlugin.createClient(token) } = {}) {
+    return applyEdit(octokit, edit);
   },
 
   async sync(token, since, ownerId, { octokit = githubPlugin.createClient(token), limits = DEFAULT_LIMITS } = {}) {
