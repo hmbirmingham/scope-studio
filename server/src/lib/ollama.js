@@ -1,8 +1,12 @@
 const STATUS_TIMEOUT_MS = 500;
 
-// Qwen3.5 9B (Apache-2.0, 6.6 GB at Q4_K_M): the largest current Qwen that
-// fits a 16 GB machine alongside the embedding model; Qwen3.6 starts at 27B.
-export const DEFAULT_CHAT_MODEL = 'qwen3.5:9b';
+// Qwen3 8B (Apache-2.0, 5.2 GB at Q4_K_M). A plain transformer on purpose: its
+// KV cache can be rewound to where a prompt diverges, so a reworded question
+// over an already-prefilled context costs 0.12 s against 2.95 s on qwen3.5:9b,
+// whose hybrid layers can only append. Measured cold TTFT is also better
+// (9.7 s vs 15.3 s). qwen3.5:9b answers in more detail — set OLLAMA_CHAT_MODEL
+// to prefer it.
+export const DEFAULT_CHAT_MODEL = 'qwen3:8b';
 
 export function ollamaUrl() {
   return process.env.OLLAMA_URL || 'http://localhost:11434';
