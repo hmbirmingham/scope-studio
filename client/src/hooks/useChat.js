@@ -31,6 +31,7 @@ export function useChat({ project, apiKey, tier, onEdits }) {
   const [status, setStatus] = useState('idle');
   const [error, setError] = useState(null);
   const [edits, setEdits] = useState([]);
+  const [runs, setRuns] = useState([]);
 
   const conversationRef = useRef(null);
   const answeringRef = useRef(false);
@@ -39,6 +40,12 @@ export function useChat({ project, apiKey, tier, onEdits }) {
   useEffect(() => {
     onEditsRef.current = onEdits;
   });
+
+  // Switching project starts a new context block: the previous repository's
+  // files have no business in the next question.
+  useEffect(() => {
+    conversationRef.current = null;
+  }, [project]);
 
   useEffect(() => {
     const text = draft.trim();
@@ -108,6 +115,9 @@ export function useChat({ project, apiKey, tier, onEdits }) {
           // arrival itself is what opens that tab.
           setEdits((prev) => [...prev, ...line.edits]);
           onEditsRef.current?.(line.edits);
+        } else if (line.type === 'runs') {
+          setRuns((prev) => [...prev, ...line.runs]);
+          onEditsRef.current?.(line.runs);
         } else if (line.type === 'done') {
           answer.metrics = { ...answer.metrics, ...line.metrics };
         } else if (line.type === 'error') {
@@ -143,10 +153,25 @@ export function useChat({ project, apiKey, tier, onEdits }) {
     );
   }, []);
 
+  // Approving is what runs it; the server only allows scripts the project declares.
+  const decideRun = useCallback(async (id, decision) => {
+    setRuns((prev) => prev.map((run) => (run.id === id ? { ...run, state: decision === 'approve' ? 'running' : run.state } : run)));
+    const response = await fetch(`/api/runs/${id}/${decision}`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({}),
+    });
+    const body = await response.json().catch(() => ({}));
+    const problem = response.ok ? null : body.error ?? `could not ${decision} that command`;
+    setRuns((prev) => prev.map((run) => (run.id === id ? { ...(body.run ?? run), problem } : run)));
+  }, []);
+
   return {
     turns,
     edits,
+    runs,
     decideEdit,
+    decideRun,
     draft,
     setDraft,
     send,
