@@ -45,10 +45,11 @@ export async function startServer() {
 // `api.raw` returns the unread Response, for streaming endpoints.
 export function session(base) {
   let cookie = '';
-  const raw = async (method, path, body, init = {}) => {
+  const raw = async (method, path, body, { headers, ...init } = {}) => {
     const response = await fetch(base + path, {
       method,
-      headers: { 'Content-Type': 'application/json', cookie },
+      // Merged, not replaced: a caller adding one header must not drop the cookie.
+      headers: { 'Content-Type': 'application/json', cookie, ...headers },
       body: body ? JSON.stringify(body) : undefined,
       ...init,
     });

@@ -312,6 +312,16 @@ appended as a further block, because rebuilding would discard the cached prefix
 — the expensive part — to save tokens that are cheap. A fresh block starts only
 when the prompt outgrows its budget.
 
+**The cloud tier runs on the user's own key.** It arrives per request in the
+`x-anthropic-api-key` header and is never stored — not in the session, not in
+the database, not in a log line; a test asserts that. A request without a key
+has no cloud tier, so the router refuses a cloud decision rather than answering
+somewhere else. Each answer records `cost_usd` from the model's own usage
+numbers (migration 014), priced per model, because a metered tier cannot
+recover the input/output split from a total afterwards. Model and effort
+default to `claude-opus-5` at medium effort and are the two cost levers for the
+Sprint 7 benchmark to tune against measured answer quality.
+
 **The local model is a plain transformer on purpose.** A transformer's KV cache
 can be rewound to the point where a prompt diverges; the hybrid linear-attention
 layers in `qwen3.5:9b` can only append, so a reworded question over a cached
