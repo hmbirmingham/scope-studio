@@ -27,6 +27,7 @@ export async function logQueryMetrics({
   totalResponseMs = null,
   outputTokens = null,
   costUsd = null,
+  billedTo = null,
 }, db = getPool()) {
   const { rows } = await db.query(
     `INSERT INTO query_metrics
@@ -34,9 +35,9 @@ export async function logQueryMetrics({
         retrieval_latency_ms, nodes_retrieved, tokens_injected, tokens_available,
         efficiency_ratio, inferred_task_type, task_confidence, superseded_nodes_demoted,
         source_type_boost_applied, routing_decision, routing_decision_ms, routing_reason,
-        model_used, ttft_ms, total_response_ms, output_tokens, cost_usd)
+        model_used, ttft_ms, total_response_ms, output_tokens, cost_usd, billed_to)
      VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17,
-             $18, $19, $20, $21, $22, $23)
+             $18, $19, $20, $21, $22, $23, $24)
      RETURNING query_id`,
     [
       queryId,
@@ -62,6 +63,7 @@ export async function logQueryMetrics({
       totalResponseMs,
       outputTokens,
       costUsd,
+      billedTo,
     ]
   );
   return rows[0].query_id;

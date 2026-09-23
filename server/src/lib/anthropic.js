@@ -3,18 +3,14 @@ import Anthropic from '@anthropic-ai/sdk';
 // The cloud tier runs on the user's own key, sent per request and never
 // stored: it does not touch the session, the database, or a log line.
 
-// Sonnet by default: on a measured ~1,800-token prompt it answers for about
-// 40% of Opus's price, which is the difference between a metered tier that
-// pays for itself and one that does not. CLOUD_CHAT_MODEL overrides it.
-export const DEFAULT_CLOUD_MODEL = 'claude-sonnet-5';
-
 // USD per million tokens. Metered tiers need the cost of a query at the time
 // it ran, and input and output are priced differently, so the split cannot be
-// recovered from a total later.
+// recovered from a total later. Opus is priced here for accounting only — no
+// plan routes to it (billing/plans.js).
 const PRICES = {
-  'claude-opus-5': { input: 5, output: 25 },
   'claude-sonnet-5': { input: 2, output: 10 },
   'claude-haiku-4-5': { input: 1, output: 5 },
+  'claude-opus-5': { input: 5, output: 25 },
 };
 
 // Measured answers run 40-280 tokens. This is headroom, not a target: it
@@ -26,14 +22,6 @@ const MAX_TOKENS = 2048;
 // across turns, which is exactly the shape caching rewards.
 const CACHE_WRITE_MULTIPLIER = 1.25;
 const CACHE_READ_MULTIPLIER = 0.1;
-
-export function cloudChatModel() {
-  return process.env.CLOUD_CHAT_MODEL || DEFAULT_CLOUD_MODEL;
-}
-
-export function cloudEffort() {
-  return process.env.CLOUD_EFFORT || 'medium';
-}
 
 export function priceFor(model) {
   return PRICES[model] ?? null;
@@ -100,7 +88,7 @@ export function createClient(apiKey) {
 // Yields `{ text }` per delta and finally `{ done: true, usage, stopReason }`,
 // matching the shape the local client yields so the route streams either the
 // same way.
-export async function* streamChat({ apiKey, model = cloudChatModel(), messages, cacheMarker, signal }) {
+export async function* streamChat({ apiKey, model, effort, messages, cacheMarker, signal }) {
   const client = createClient(apiKey);
   const { system, rest } = splitSystem(withCacheBreakpoint(messages, cacheMarker));
 
@@ -110,7 +98,7 @@ export async function* streamChat({ apiKey, model = cloudChatModel(), messages, 
       max_tokens: MAX_TOKENS,
       system,
       messages: rest,
-      output_config: { effort: cloudEffort() },
+      output_config: { effort: process.env.CLOUD_EFFORT || effort },
     },
     { signal }
   );
