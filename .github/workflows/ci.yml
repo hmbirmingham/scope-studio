@@ -1,8 +1,10 @@
 name: CI
 
 on:
+  # Every pull request, not just the ones targeting dev: work lands as stacked
+  # branches, so a filter on the base branch leaves the whole stack untested
+  # until the moment it merges.
   pull_request:
-    branches: [dev, main]
   push:
     branches: [dev]
 
@@ -32,6 +34,13 @@ jobs:
 
       - name: Install Ollama
         run: curl -fsSL https://ollama.com/install.sh | sh
+
+      # The embedding model is 274 MB and changes only when we change the tag.
+      - name: Cache the embedding model
+        uses: actions/cache@v4
+        with:
+          path: ~/.ollama/models
+          key: ollama-nomic-embed-text
 
       - name: Start Ollama and pull the embedding model
         run: |
