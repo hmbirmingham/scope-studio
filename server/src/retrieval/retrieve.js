@@ -34,6 +34,9 @@ const WHY_PATTERN = /^\s*(why|how come|what('s| is| was) the reason)\b/i;
 const WHY_CAUSED_BY_BOOST = 1.5;
 
 const EMBED_CACHE_MAX = 256;
+// How long a query waits for its embedding before retrieving lexical-only.
+// Warm, embedding takes ~25 ms; this only bites on a cold load under pressure.
+const EMBED_WAIT_MS = 5_000;
 const embedCache = new Map();
 
 function columns(alias) {
@@ -45,9 +48,27 @@ function supersededSql(alias) {
                   WHERE s.target_id = ${alias}.id AND s.type = 'supersedes') AS superseded`;
 }
 
+function remember(key, vector) {
+  embedCache.set(key, vector);
+  if (embedCache.size > EMBED_CACHE_MAX) embedCache.delete(embedCache.keys().next().value);
+}
+
+function within(promise, ms) {
+  let timer;
+  const timeout = new Promise((resolve) => {
+    timer = setTimeout(resolve, ms, null);
+    timer.unref();
+  });
+  return Promise.race([promise, timeout]).finally(() => clearTimeout(timer));
+}
+
 // Iterative workflows re-ask near-identical queries; skipping the embedding
-// pass is the cheapest TTFT win available (ADR §6.4).
-async function cachedEmbedQuery(query) {
+// pass is the cheapest TTFT win available (ADR §6.4). Returns null when the
+// embedding is unavailable or slower than the wait budget: retrieval then runs
+// lexical-only rather than failing, which is what lets the router answer
+// "no_ollama" at all. A slow request is left running, so the model finishes
+// loading and the vector is cached for the next ask.
+async function cachedEmbedQuery(query, { compute = true } = {}) {
   const key = query.toLowerCase().replace(/\s+/g, ' ').trim();
   const hit = embedCache.get(key);
   if (hit) {
@@ -55,10 +76,21 @@ async function cachedEmbedQuery(query) {
     embedCache.set(key, hit);
     return { vector: hit, cached: true };
   }
-  const vector = await embedQuery(query);
-  embedCache.set(key, vector);
-  if (embedCache.size > EMBED_CACHE_MAX) embedCache.delete(embedCache.keys().next().value);
-  return { vector, cached: false };
+  if (!compute) return null;
+
+  const pending = embedQuery(query).then((vector) => {
+    remember(key, vector);
+    return vector;
+  });
+  pending.catch(() => {});
+  try {
+    const vector = await within(pending, EMBED_WAIT_MS);
+    if (vector) return { vector, cached: false };
+    console.warn(`query embedding exceeded ${EMBED_WAIT_MS} ms; retrieving lexical-only while it finishes`);
+  } catch (err) {
+    console.warn(`query embedding unavailable, retrieving lexical-only: ${err.message}`);
+  }
+  return null;
 }
 
 // Mirrors the index side (migration 008): identifiers split on non-alphanumerics.
@@ -197,78 +229,119 @@ function buildContext(selected) {
     .join('\n\n');
 }
 
-export async function retrieve({ ownerId, query, project, tier = 'local_7b', overrides, sessionId }) {
+export function presentNode({ node, score, similarity, lexicalRank, boosts, via }) {
+  return {
+    ...node,
+    score,
+    similarity: similarity ?? null,
+    lexicalRank: lexicalRank ?? null,
+    boosts: boosts ?? null,
+    via: via ?? null,
+  };
+}
+
+// Scores candidates without side effects, so a router can pack them under more
+// than one tier before anything is recorded. `embed: false` skips the model
+// call when the caller already knows Ollama is down.
+export async function gatherCandidates({ ownerId, query, project, tier = 'local_7b', overrides, embed = true }) {
   const pool = getPool();
   const config = resolveConfig(tier, overrides);
-  const now = new Date();
 
   const embedStart = performance.now();
-  const { vector, cached } = await cachedEmbedQuery(query);
-  const embeddingLatencyMs = Math.round(performance.now() - embedStart);
+  const embedding = await cachedEmbedQuery(query, { compute: embed });
+  const embeddingLatencyMs = embedding ? Math.round(performance.now() - embedStart) : null;
 
   const retrievalStart = performance.now();
   const [dense, lexical, task] = await Promise.all([
-    denseCandidates(pool, ownerId, vector),
+    embedding ? denseCandidates(pool, ownerId, embedding.vector) : [],
     lexicalCandidates(pool, ownerId, query),
-    config.features.task_inference ? inferTask(pool, vector) : null,
+    embedding && config.features.task_inference ? inferTask(pool, embedding.vector) : null,
   ]);
-  const scored = fuseAndScore({ dense, lexical, project, task, now, config });
+  const scored = fuseAndScore({ dense, lexical, project, task, now: new Date(), config });
   const candidates = config.features.expansion
     ? await expandFromSeeds(pool, ownerId, scored, { query, config })
     : scored;
-  const { selected, tokens } = packIntoBudget(candidates, config);
-  const available = await tokensBaseline(pool, ownerId, selected);
 
-  if (selected.length > 0) {
-    await pool.query(
-      'UPDATE nodes SET last_accessed = now(), access_count = access_count + 1 WHERE id = ANY($1)',
-      [selected.map((entry) => entry.node.id)]
-    );
-  }
-  const retrievalLatencyMs = Math.round(performance.now() - retrievalStart);
-
-  const metrics = {
-    tier,
+  return {
+    config,
+    task,
+    candidates,
     embeddingLatencyMs,
-    embeddingCached: cached,
-    retrievalLatencyMs,
+    embeddingCached: embedding?.cached ?? false,
+    retrievalLatencyMs: performance.now() - retrievalStart,
+  };
+}
+
+export async function summarizeRetrieval({ ownerId, tier, gathered, packed }) {
+  const baselineStart = performance.now();
+  const available = await tokensBaseline(getPool(), ownerId, packed.selected);
+  const { selected, tokens } = packed;
+  return {
+    tier,
+    embeddingLatencyMs: gathered.embeddingLatencyMs,
+    embeddingCached: gathered.embeddingCached,
+    retrievalLatencyMs: Math.round(gathered.retrievalLatencyMs + performance.now() - baselineStart),
     nodesRetrieved: selected.length,
     tokensInjected: tokens,
     tokensAvailable: available,
     efficiencyRatio: available > 0 ? tokens / available : null,
-    inferredTaskType: task?.task ?? null,
-    taskConfidence: task?.confidence ?? null,
+    inferredTaskType: gathered.task?.task ?? null,
+    taskConfidence: gathered.task?.confidence ?? null,
     supersededNodesDemoted: selected.filter((entry) => entry.node.superseded).length,
     sourceTypeBoostApplied: selected.filter((entry) => entry.boosts?.source > 0).length,
   };
-  const queryId = await logQueryMetrics({ queryText: query, sessionId, ownerId, ...metrics });
-  await Promise.all([
-    logContextNodes(
-      queryId,
+}
+
+// `served: false` logs a query the router refused: its context is recorded for
+// analysis, but the nodes were never used, so their access counts stay put.
+export async function recordRetrieval({ queryId, ownerId, sessionId, query, metrics, selected, routing, served = true }) {
+  if (served && selected.length > 0) {
+    await getPool().query(
+      'UPDATE nodes SET last_accessed = now(), access_count = access_count + 1 WHERE id = ANY($1)',
+      [selected.map((entry) => entry.node.id)]
+    );
+  }
+  // One transaction: feedback marks nodes useful through query_context_nodes,
+  // so a metrics row must never be visible without its context rows.
+  const client = await getPool().connect();
+  let id;
+  try {
+    await client.query('BEGIN');
+    id = await logQueryMetrics({ queryId, queryText: query, sessionId, ownerId, ...metrics, ...routing }, client);
+    await logContextNodes(
+      id,
       selected.map((entry, position) => ({
         nodeId: entry.node.id,
         position,
         score: entry.score,
         decayLambda: DECAY_LAMBDA[entry.node.type],
-      }))
-    ),
-    sessionId ? markFollowUp(sessionId, queryId) : null,
-  ]);
+      })),
+      client
+    );
+    await client.query('COMMIT');
+  } catch (err) {
+    await client.query('ROLLBACK');
+    throw err;
+  } finally {
+    client.release();
+  }
+  if (sessionId) await markFollowUp(sessionId, id);
+  return id;
+}
+
+export async function retrieve({ ownerId, query, project, tier = 'local_7b', overrides, sessionId }) {
+  const gathered = await gatherCandidates({ ownerId, query, project, tier, overrides });
+  const packed = packIntoBudget(gathered.candidates, gathered.config);
+  const metrics = await summarizeRetrieval({ ownerId, tier, gathered, packed });
+  const queryId = await recordRetrieval({ ownerId, sessionId, query, metrics, selected: packed.selected });
 
   return {
     queryId,
     tier,
-    task,
-    context: buildContext(selected),
-    nodes: selected.map(({ node, score, similarity, lexicalRank, boosts, via }) => ({
-      ...node,
-      score,
-      similarity: similarity ?? null,
-      lexicalRank: lexicalRank ?? null,
-      boosts: boosts ?? null,
-      via: via ?? null,
-    })),
-    candidates,
+    task: gathered.task,
+    context: buildContext(packed.selected),
+    nodes: packed.selected.map(presentNode),
+    candidates: gathered.candidates,
     metrics,
   };
 }

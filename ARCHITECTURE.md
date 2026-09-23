@@ -1,5 +1,5 @@
 # Scope Studio — Architecture Decision Record
-**Version:** 0.2 (v1 retrieval implemented; §4 taskType and recency anchor corrected, §5 tier loop resolved)
+**Version:** 0.2 (v1 retrieval implemented; §4 taskType and recency anchor corrected, §5 tier loop resolved, routing order recorded)
 **Author:** Hynes Birmingham, Fourier Studios
 **Last updated:** September 2026
 **Status:** Canonical — update only when a fundamental decision changes
@@ -273,6 +273,27 @@ system instructions and the most static nodes (project specs, unchanged
 datasheets) appear at the very beginning. Ollama/llama.cpp caches KV states
 for previous tokens — if the beginning of the prompt is identical across
 iterative queries, the engine skips recomputing those tokens, reducing TTFT.
+
+**Routing order (implemented).** The router decides from the nodes actually
+selected, in this order: (1) any `privacy = 'local'` node forces the local
+tier, above even the user's own per-query tier choice, and if the local model
+cannot serve, the request is refused rather than rerouted; (2) an explicit
+per-query tier choice (`user_override`); (3) no local model, meaning Ollama is
+down or the chat model is not pulled, routes cloud (`no_ollama`); (4) otherwise
+local (`context_size`: the provisional local pack fits the local budget by
+construction). Complexity- and size-based upgrades to cloud wait for the cloud
+tier and the benchmark to calibrate them. With Ollama down, retrieval runs
+lexical-only (the query embedding also needs Ollama), so the router can still
+decide.
+
+**Static prefix, as implemented.** The static prefix is the system prompt,
+byte-identical on every request; nodes follow relevance-descending, question
+last. Ordering nodes for cache reuse instead would give up the
+lost-in-the-middle ordering to help only queries that happen to share leading
+nodes, while a re-ask with the same retrieval already gets a full prefix hit.
+Measured on a 16 GB M4 with `qwen3.5:9b`: a cached prompt reaches the first
+token in 0.3–0.5 s; a fresh 1,700–2,000-token prompt takes 15–20 s at roughly
+100 tokens/s of prefill, so prompt length, not model choice, sets local TTFT.
 
 ---
 

@@ -42,18 +42,26 @@ export async function startServer() {
   };
 }
 
+// `api.raw` returns the unread Response, for streaming endpoints.
 export function session(base) {
   let cookie = '';
-  return async (method, path, body) => {
+  const raw = async (method, path, body, init = {}) => {
     const response = await fetch(base + path, {
       method,
       headers: { 'Content-Type': 'application/json', cookie },
       body: body ? JSON.stringify(body) : undefined,
+      ...init,
     });
     const setCookie = response.headers.get('set-cookie');
     if (setCookie) cookie = setCookie.split(';')[0];
+    return response;
+  };
+  const api = async (method, path, body) => {
+    const response = await raw(method, path, body);
     return { status: response.status, data: response.status === 204 ? null : await response.json() };
   };
+  api.raw = raw;
+  return api;
 }
 
 export async function registeredSession(base) {
