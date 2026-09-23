@@ -6,7 +6,7 @@ function NodeTooltip({ hover }) {
     <div className="tooltip" style={{ left: hover.screen.x + 16, top: hover.screen.y - 10 }}>
       <div className="tooltip-type">{hover.node.type}</div>
       <div className="tooltip-meta">
-        {hover.node.token_length} tokens
+        {hover.node.tokenLength} tokens
         {hover.node.privacy === 'local' && <span className="tooltip-local"> · local only</span>}
       </div>
     </div>

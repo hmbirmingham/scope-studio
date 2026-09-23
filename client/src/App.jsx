@@ -2,26 +2,34 @@ import { useMemo, useRef, useState } from 'react';
 import ChatPanel from './components/ChatPanel';
 import InspectorOverlay from './components/InspectorOverlay';
 import KnowledgeGraphCanvas from './components/KnowledgeGraphCanvas';
+import LoginGate from './components/LoginGate';
 import Sidebar from './components/Sidebar';
-import { buildMockGraph } from './graph/mockGraph';
+import { edgeKey } from './graph/GraphEngine';
+import { useChat } from './hooks/useChat';
+import { useGraphData } from './hooks/useGraphData';
 import './App.css';
 
-export default function App() {
-  // Stable identity matters: a new array each render would re-run syncNodes.
-  const graph = useMemo(() => buildMockGraph(), []);
+function Studio() {
+  const { graph, state, error } = useGraphData(true);
   const canvasRef = useRef(null);
 
   const [activeProject, setActiveProject] = useState(null);
   const [scope, setScope] = useState(null);
   const [preferences, setPreferences] = useState({});
 
-  const projects = useMemo(
-    () => [...new Set(graph.nodes.map((node) => node.project))],
-    [graph]
-  );
+  const chat = useChat({ project: activeProject });
+
   const nodesById = useMemo(
     () => new Map(graph.nodes.map((node) => [node.id, node])),
     [graph]
+  );
+
+  // Retrieval hands back the nodes it chose and the edge it reached each one
+  // through, which is exactly what the canvas lights up.
+  const activeIds = useMemo(() => chat.spotlight.map((node) => node.id), [chat.spotlight]);
+  const traversedKeys = useMemo(
+    () => chat.spotlight.filter((node) => node.via).map((node) => edgeKey(node.via.from, node.id)),
+    [chat.spotlight]
   );
 
   function relationsFor(id) {
@@ -39,7 +47,7 @@ export default function App() {
     const members = graph.nodes.filter((node) => node.project === project);
     return {
       nodes: members.length,
-      tokens: members.reduce((sum, node) => sum + node.token_length, 0),
+      tokens: members.reduce((sum, node) => sum + node.tokenLength, 0),
       byType: members.reduce((acc, node) => {
         acc[node.type] = (acc[node.type] ?? 0) + 1;
         return acc;
@@ -61,7 +69,7 @@ export default function App() {
   return (
     <div className="app">
       <Sidebar
-        projects={projects}
+        projects={graph.projects}
         activeProject={activeProject}
         onSelectProject={handleSelectProject}
         onOpenProjectSettings={(project) => setScope({ kind: 'project', project })}
@@ -72,12 +80,19 @@ export default function App() {
           ref={canvasRef}
           nodes={graph.nodes}
           edges={graph.edges}
+          activeIds={activeIds}
+          traversedKeys={traversedKeys}
           preferences={preferences}
           onSelectNode={(node) => setScope({ kind: 'node', node })}
         />
+        {state === 'loading' && <div className="stage-note">Loading your map…</div>}
+        {state === 'error' && <div className="stage-note is-error">{error}</div>}
+        {state === 'ready' && graph.nodes.length === 0 && (
+          <div className="stage-note">No nodes yet — connect GitHub and ingest a repository.</div>
+        )}
       </main>
 
-      <ChatPanel project={activeProject} />
+      <ChatPanel project={activeProject} chat={chat} onNarrow={handleSelectProject} />
 
       <InspectorOverlay
         scope={scope}
@@ -91,5 +106,13 @@ export default function App() {
         onFocusNode={handleFocusNode}
       />
     </div>
+  );
+}
+
+export default function App() {
+  return (
+    <LoginGate>
+      <Studio />
+    </LoginGate>
   );
 }
