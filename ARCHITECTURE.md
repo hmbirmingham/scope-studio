@@ -291,9 +291,32 @@ byte-identical on every request; nodes follow relevance-descending, question
 last. Ordering nodes for cache reuse instead would give up the
 lost-in-the-middle ordering to help only queries that happen to share leading
 nodes, while a re-ask with the same retrieval already gets a full prefix hit.
-Measured on a 16 GB M4 with `qwen3.5:9b`: a cached prompt reaches the first
-token in 0.3–0.5 s; a fresh 1,700–2,000-token prompt takes 15–20 s at roughly
-100 tokens/s of prefill, so prompt length, not model choice, sets local TTFT.
+Measured on a 16 GB M4: a fresh 1,600–2,000-token prompt takes 10–15 s at
+roughly 100–200 tokens/s of prefill, while an already-cached prompt reaches the
+first token in 0.1–0.3 s. Prompt length, not model size, sets local TTFT.
+
+**Prefill while the question is still being typed.** Because the question comes
+last, everything above it is a reusable prefix. `POST /api/chat/prepare`
+retrieves for the draft and prefills that prompt in the background, answering in
+~50 ms with the nodes it would read so the UI can show the work in progress;
+the draft is not logged as a query. Pressing enter then costs only the
+question's own tokens: **TTFT 9.7 s → 0.12 s** on the live corpus. A reworded
+question reuses the prefilled block whenever that block still covers the nodes
+the new wording selects, so rephrasing does not discard the prefill; if the new
+wording needs evidence the block lacks, the context is rebuilt and the cold path
+applies.
+
+**Conversations keep their context block.** A follow-up appends to the existing
+prompt rather than rebuilding it, and nodes the earlier context lacked are
+appended as a further block, because rebuilding would discard the cached prefix
+— the expensive part — to save tokens that are cheap. A fresh block starts only
+when the prompt outgrows its budget.
+
+**The local model is a plain transformer on purpose.** A transformer's KV cache
+can be rewound to the point where a prompt diverges; the hybrid linear-attention
+layers in `qwen3.5:9b` can only append, so a reworded question over a cached
+context costs 2.95 s there against 0.12 s on `qwen3:8b`. The default is
+`qwen3:8b` for that reason, overridable with `OLLAMA_CHAT_MODEL`.
 
 ---
 
