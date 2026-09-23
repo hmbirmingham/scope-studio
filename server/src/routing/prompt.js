@@ -26,37 +26,62 @@ function ordered(selected, nodeOrder) {
   return [...selected].sort((a, b) => b.score - a.score);
 }
 
-function xmlBody(nodes, query) {
+function xmlContext(nodes, startIndex) {
   const sources = nodes.map(({ node }, i) => {
     const project = node.project ? ` project="${node.project}"` : '';
-    return `<source index="${i + 1}" type="${node.type}"${project}>\n${node.content}\n</source>`;
+    return `<source index="${startIndex + i + 1}" type="${node.type}"${project}>\n${node.content}\n</source>`;
   });
-  const context = sources.length > 0 ? sources.join('\n') : NO_CONTEXT;
-  return `<context>\n${context}\n</context>\n\n<question>\n${query}\n</question>`;
+  return `<context>\n${sources.length > 0 ? sources.join('\n') : NO_CONTEXT}\n</context>`;
 }
 
-function markdownBody(nodes, query) {
+function markdownContext(nodes, startIndex) {
   const sources = nodes.map(({ node }, i) => {
     const label = node.project ? `${node.type} · ${node.project}` : node.type;
-    return `### [${i + 1}] ${label}\n\n${node.content}`;
+    return `### [${startIndex + i + 1}] ${label}\n\n${node.content}`;
   });
-  const context = sources.length > 0 ? sources.join('\n\n---\n\n') : NO_CONTEXT;
-  return `## Context\n\n${context}\n\n## Question\n\n${query}`;
+  return `## Context\n\n${sources.length > 0 ? sources.join('\n\n---\n\n') : NO_CONTEXT}`;
+}
+
+// The context block and the question are built separately so a block that was
+// already prefilled can be reused verbatim under a reworded question — the
+// model then re-reads only the question.
+export function buildContextBlock(sources, config, startIndex = 0) {
+  return config.prompt_structure === 'strict_xml'
+    ? xmlContext(sources, startIndex)
+    : markdownContext(sources, startIndex);
+}
+
+export function buildQuestionBlock(query, config) {
+  return config.prompt_structure === 'strict_xml'
+    ? `<question>\n${query}\n</question>`
+    : `## Question\n\n${query}`;
+}
+
+export function composeMessages(contextBlock, query, config) {
+  const system = SYSTEM_PROMPTS[config.prompt_structure];
+  if (!system) throw new Error(`unknown prompt_structure: ${config.prompt_structure}`);
+  return [
+    { role: 'system', content: system },
+    { role: 'user', content: `${contextBlock}\n\n${buildQuestionBlock(query, config)}` },
+  ];
 }
 
 // Returns the nodes in prompt order too: citation [n] refers to sources[n - 1].
 export function buildMessages({ query, selected, config }) {
-  const structure = config.prompt_structure;
-  const system = SYSTEM_PROMPTS[structure];
-  if (!system) throw new Error(`unknown prompt_structure: ${structure}`);
-
   const sources = ordered(selected, config.node_order);
-  const body = structure === 'strict_xml' ? xmlBody(sources, query) : markdownBody(sources, query);
-  return {
-    messages: [
-      { role: 'system', content: system },
-      { role: 'user', content: body },
-    ],
-    sources,
-  };
+  const contextBlock = buildContextBlock(sources, config);
+  return { messages: composeMessages(contextBlock, query, config), sources, contextBlock };
+}
+
+// A follow-up turn appended to an existing conversation: everything above stays
+// byte-identical, so the model re-reads nothing. Nodes the earlier context did
+// not carry are numbered on from it, keeping citations stable across the thread.
+export function buildFollowUp(query, config, { sources = [], startIndex = 0 } = {}) {
+  if (!SYSTEM_PROMPTS[config.prompt_structure]) {
+    throw new Error(`unknown prompt_structure: ${config.prompt_structure}`);
+  }
+  const question = buildQuestionBlock(query, config);
+  return sources.length === 0
+    ? question
+    : `${buildContextBlock(sources, config, startIndex)}\n\n${question}`;
 }
