@@ -4,17 +4,19 @@ import InspectorOverlay from './components/InspectorOverlay';
 import KnowledgeGraphCanvas from './components/KnowledgeGraphCanvas';
 import LoginGate from './components/LoginGate';
 import Sidebar from './components/Sidebar';
+import SourcesOverlay from './components/SourcesOverlay';
 import { edgeKey } from './graph/GraphEngine';
 import { useChat } from './hooks/useChat';
 import { useGraphData } from './hooks/useGraphData';
 import './App.css';
 
 function Studio() {
-  const { graph, state, error } = useGraphData(true);
+  const { graph, state, error, refresh } = useGraphData(true);
   const canvasRef = useRef(null);
 
   const [activeProject, setActiveProject] = useState(null);
   const [scope, setScope] = useState(null);
+  const [sourcesOpen, setSourcesOpen] = useState(false);
   const [preferences, setPreferences] = useState({});
 
   const chat = useChat({ project: activeProject });
@@ -73,6 +75,7 @@ function Studio() {
         activeProject={activeProject}
         onSelectProject={handleSelectProject}
         onOpenProjectSettings={(project) => setScope({ kind: 'project', project })}
+        onOpenSources={() => setSourcesOpen(true)}
       />
 
       <main className="stage">
@@ -88,11 +91,15 @@ function Studio() {
         {state === 'loading' && <div className="stage-note">Loading your map…</div>}
         {state === 'error' && <div className="stage-note is-error">{error}</div>}
         {state === 'ready' && graph.nodes.length === 0 && (
-          <div className="stage-note">No nodes yet — connect GitHub and ingest a repository.</div>
+          <button type="button" className="stage-note is-action" onClick={() => setSourcesOpen(true)}>
+            No nodes yet — connect GitHub and pick repositories to ingest.
+          </button>
         )}
       </main>
 
       <ChatPanel project={activeProject} chat={chat} onNarrow={handleSelectProject} />
+
+      <SourcesOverlay open={sourcesOpen} onClose={() => setSourcesOpen(false)} onIngested={refresh} />
 
       <InspectorOverlay
         scope={scope}

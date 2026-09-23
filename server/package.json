@@ -7,15 +7,14 @@
     "start": "node src/index.js",
     "dev": "node --watch src/index.js",
     "test": "node --test --test-concurrency=1 \"test/**/*.test.js\"",
-    "test:unit": "node --test \"test/unit/*.test.js\"",
+    "test:unit": "node --test \"test/unit/**/*.test.js\"",
     "migrate": "node src/db/migrate.js",
     "embed": "node src/db/embed-missing.js",
     "centroids": "node src/db/build-centroids.js"
   },
   "keywords": [],
   "author": "Hynes Birmingham",
-  "license": "UNLICENSED",
-  "private": true,
+  "license": "ISC",
   "type": "module",
   "dependencies": {
     "connect-pg-simple": "^10.0.0",
