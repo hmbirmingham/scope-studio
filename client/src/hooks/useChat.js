@@ -6,17 +6,22 @@ import { readNdjson } from '../lib/ndjson';
 const PREPARE_DEBOUNCE_MS = 400;
 const MIN_DRAFT = 8;
 
-async function postJson(path, body, signal) {
+// The key is the user's: held in memory for this session, sent per request,
+// never written to storage here or on the server.
+async function postJson(path, body, { apiKey, signal } = {}) {
   const response = await fetch(path, {
     method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
+    headers: {
+      'Content-Type': 'application/json',
+      ...(apiKey ? { 'x-anthropic-api-key': apiKey } : {}),
+    },
     body: JSON.stringify(body),
     signal,
   });
   return { ok: response.ok, status: response.status, body: response };
 }
 
-export function useChat({ project }) {
+export function useChat({ project, apiKey, tier }) {
   const [turns, setTurns] = useState([]);
   const [draft, setDraft] = useState('');
   // What the server would read for the question being typed, with its prefill
@@ -38,8 +43,8 @@ export function useChat({ project }) {
       try {
         const { ok, body } = await postJson(
           '/api/chat/prepare',
-          { query: text, project, conversationId: conversationRef.current },
-          controller.signal
+          { query: text, project, tier, conversationId: conversationRef.current },
+          { apiKey, signal: controller.signal }
         );
         if (ok && !answeringRef.current) setPreview(await body.json());
       } catch {
@@ -52,7 +57,7 @@ export function useChat({ project }) {
       clearTimeout(timer);
       controller.abort();
     };
-  }, [draft, project]);
+  }, [draft, project, tier, apiKey]);
 
   const send = useCallback(async () => {
     const text = draft.trim();
@@ -67,14 +72,15 @@ export function useChat({ project }) {
 
     const answer = { role: 'assistant', text: '', sources: [], routing: null, metrics: null };
     try {
-      const { ok, body } = await postJson('/api/chat', {
-        query: text,
-        project,
-        conversationId: conversationRef.current,
-      });
+      const { ok, body } = await postJson(
+        '/api/chat',
+        { query: text, project, tier, conversationId: conversationRef.current },
+        { apiKey }
+      );
       if (!ok) {
+        // The refusal is shown as the answer to that question; repeating it in
+        // the error bar would say the same thing twice.
         const problem = await body.json();
-        setError(problem.error);
         setTurns((prev) => [...prev, { ...answer, refused: problem.code, text: problem.error, routing: problem.routing }]);
         return;
       }
@@ -105,7 +111,7 @@ export function useChat({ project }) {
       setStatus('idle');
       answeringRef.current = false;
     }
-  }, [draft, project]);
+  }, [draft, project, tier, apiKey]);
 
   // What the canvas should light up right now: the question being typed wins,
   // then the answer being written, then the last answer given.
