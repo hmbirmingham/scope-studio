@@ -733,3 +733,57 @@ body {
   font-family: inherit;
   cursor: pointer;
 }
+
+/* --- tier choice and cloud key ----------------------------------------- */
+.tier-row {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  padding: 8px 16px;
+  border-bottom: 1px solid var(--border);
+}
+
+.tier-btn {
+  padding: 3px 10px;
+  background: none;
+  border: 1px solid var(--border2);
+  border-radius: 999px;
+  color: var(--t2);
+  font-family: inherit;
+  font-size: 11px;
+  cursor: pointer;
+}
+
+.tier-btn.is-on {
+  background: rgba(79, 172, 254, 0.12);
+  border-color: rgba(79, 172, 254, 0.4);
+  color: var(--t1);
+}
+
+.tier-hint { margin-left: auto; color: var(--t3); font-size: 10px; }
+
+.answer-cost { margin-top: 6px; color: var(--t3); font-family: var(--mono); font-size: 10px; }
+
+.key-note { color: var(--t2); font-size: 11px; line-height: 1.5; margin-bottom: 8px; }
+
+.key-input {
+  width: 100%;
+  padding: 8px 10px;
+  background: rgba(0, 0, 0, 0.3);
+  border: 1px solid var(--border2);
+  border-radius: 6px;
+  color: var(--t1);
+  font-family: var(--mono);
+  font-size: 11px;
+}
+
+.key-clear {
+  margin-top: 6px;
+  background: none;
+  border: none;
+  color: var(--t2);
+  font-family: inherit;
+  font-size: 10px;
+  cursor: pointer;
+  padding: 0;
+}

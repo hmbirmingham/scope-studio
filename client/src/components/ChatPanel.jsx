@@ -20,6 +20,16 @@ function modelName(routing) {
 
 // The wait is the work: while the model prefills, the panel names the sources
 // it is reading and what they cost, instead of showing a spinner.
+const TIERS = [
+  { value: null, label: 'Auto' },
+  { value: 'local_7b', label: 'Local' },
+  { value: 'cloud_frontier', label: 'Cloud' },
+];
+
+function money(usd) {
+  return usd >= 0.01 ? `$${usd.toFixed(2)}` : `${(usd * 100).toFixed(2)}¢`;
+}
+
 function ContextStrip({ nodes, metrics, routing, ambiguity, onNarrow }) {
   if (!nodes || nodes.length === 0) return null;
   return (
@@ -39,6 +49,9 @@ function ContextStrip({ nodes, metrics, routing, ambiguity, onNarrow }) {
           </li>
         ))}
       </ol>
+      {routing?.decision === 'cloud' && (
+        <div className="context-note">Answering in the cloud on your key · {routing.model?.replace('anthropic/', '')}</div>
+      )}
       {routing?.contextReused && <div className="context-note">Continuing on the same context</div>}
       {routing?.prefilled && <div className="context-note">Already prefilled</div>}
       {ambiguity && (
@@ -68,7 +81,7 @@ function Sources({ sources }) {
   );
 }
 
-export default function ChatPanel({ project, chat, onNarrow }) {
+export default function ChatPanel({ project, chat, onNarrow, tier, onTierChange, hasKey }) {
   const { turns, draft, setDraft, send, status, error, preview, live, routing, metrics, ambiguity } = chat;
   const model = modelName(routing);
 
@@ -87,6 +100,21 @@ export default function ChatPanel({ project, chat, onNarrow }) {
         </span>
       </header>
 
+      <div className="tier-row">
+        {TIERS.map((option) => (
+          <button
+            type="button"
+            key={option.label}
+            className={`tier-btn ${tier === option.value ? 'is-on' : ''}`}
+            onClick={() => onTierChange(option.value)}
+            title={option.value === 'cloud_frontier' && !hasKey ? 'Add your API key in Sources first' : undefined}
+          >
+            {option.label}
+          </button>
+        ))}
+        {!hasKey && <span className="tier-hint">cloud needs your key</span>}
+      </div>
+
       <div className="chat-log">
         {turns.length === 0 && !live && <p className="chat-empty">Ask your map.</p>}
         {turns.map((turn, index) => (
@@ -94,6 +122,9 @@ export default function ChatPanel({ project, chat, onNarrow }) {
             <div className="chat-who">{turn.role === 'user' ? 'Hynes' : modelName(turn.routing)}</div>
             <div className={`chat-body ${turn.refused ? 'is-refused' : ''}`}>{turn.text}</div>
             {turn.role === 'assistant' && <Sources sources={turn.sources} />}
+            {turn.metrics?.costUsd > 0 && (
+              <div className="answer-cost">{money(turn.metrics.costUsd)} · {turn.metrics.outputTokens} tokens</div>
+            )}
           </div>
         ))}
         {live && (

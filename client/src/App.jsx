@@ -17,9 +17,12 @@ function Studio() {
   const [activeProject, setActiveProject] = useState(null);
   const [scope, setScope] = useState(null);
   const [sourcesOpen, setSourcesOpen] = useState(false);
+  // Held in memory for this session only: never localStorage, never the server.
+  const [apiKey, setApiKey] = useState('');
+  const [tier, setTier] = useState(null);
   const [preferences, setPreferences] = useState({});
 
-  const chat = useChat({ project: activeProject });
+  const chat = useChat({ project: activeProject, apiKey, tier });
 
   const nodesById = useMemo(
     () => new Map(graph.nodes.map((node) => [node.id, node])),
@@ -97,9 +100,22 @@ function Studio() {
         )}
       </main>
 
-      <ChatPanel project={activeProject} chat={chat} onNarrow={handleSelectProject} />
+      <ChatPanel
+        project={activeProject}
+        chat={chat}
+        onNarrow={handleSelectProject}
+        tier={tier}
+        onTierChange={setTier}
+        hasKey={Boolean(apiKey)}
+      />
 
-      <SourcesOverlay open={sourcesOpen} onClose={() => setSourcesOpen(false)} onIngested={refresh} />
+      <SourcesOverlay
+        open={sourcesOpen}
+        onClose={() => setSourcesOpen(false)}
+        onIngested={refresh}
+        apiKey={apiKey}
+        onApiKeyChange={setApiKey}
+      />
 
       <InspectorOverlay
         scope={scope}
