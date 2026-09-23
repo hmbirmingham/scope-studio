@@ -19,7 +19,6 @@ function Studio() {
   const [scope, setScope] = useState(null);
   const [sourcesOpen, setSourcesOpen] = useState(false);
   const [panelOpen, setPanelOpen] = useState(true);
-  const [panelTab, setPanelTab] = useState('map');
   // Held in memory for this session only: never localStorage, never the server.
   const [apiKey, setApiKey] = useState('');
   const [tier, setTier] = useState(null);
@@ -31,11 +30,6 @@ function Studio() {
     project: activeProject,
     apiKey,
     tier,
-    // A proposed edit is the thing to look at next.
-    onEdits: () => {
-      setPanelTab('edits');
-      setPanelOpen(true);
-    },
   });
 
   const nodesById = useMemo(
@@ -113,8 +107,6 @@ function Studio() {
 
       <OutputPanel
         open={panelOpen}
-        tab={panelTab}
-        onTab={setPanelTab}
         onClose={() => setPanelOpen(false)}
         canvasRef={canvasRef}
         graph={graph}
@@ -122,11 +114,6 @@ function Studio() {
         traversedKeys={traversedKeys}
         preferences={preferences}
         onSelectNode={(node) => setScope({ kind: 'node', node })}
-        spotlight={chat.spotlight}
-        edits={chat.edits}
-        runs={chat.runs}
-        onDecideEdit={chat.decideEdit}
-        onDecideRun={chat.decideRun}
       />
 
       <SourcesOverlay

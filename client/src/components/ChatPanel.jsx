@@ -1,89 +1,174 @@
-const STATUS_LABEL = {
-  idle: 'ready',
-  reading: 'reading your map',
-  answering: 'answering',
-};
+import Disclosure from './Disclosure';
 
-function percent(ratio) {
-  return `${Math.round((1 - ratio) * 100)}%`;
-}
-
-// The map payload carries a label; the chat payload carries the node itself,
-// whose first line is that same label.
-function sourceLabel(node) {
-  return node.label ?? node.content?.split('\n')[0] ?? node.id;
-}
-
-function modelName(routing) {
-  return routing?.model?.replace('ollama/', '') ?? 'local';
-}
-
-// The wait is the work: while the model prefills, the panel names the sources
-// it is reading and what they cost, instead of showing a spinner.
 const TIERS = [
   { value: null, label: 'Auto' },
   { value: 'local_7b', label: 'Local' },
   { value: 'cloud_frontier', label: 'Cloud' },
 ];
 
+const WORKING = { reading: 'Reading your map', answering: 'Answering' };
+
 function money(usd) {
   return usd >= 0.01 ? `$${usd.toFixed(2)}` : `${(usd * 100).toFixed(2)}¢`;
 }
 
-function ContextStrip({ nodes, metrics, routing, ambiguity, onNarrow }) {
-  if (!nodes || nodes.length === 0) return null;
-  return (
-    <div className="context-strip">
-      <div className="context-head">
-        <span>Reading {nodes.length} {nodes.length === 1 ? 'source' : 'sources'}</span>
-        {metrics?.efficiencyRatio != null && (
-          <span className="context-saving">{percent(metrics.efficiencyRatio)} fewer tokens</span>
-        )}
-      </div>
-      <ol className="context-list">
-        {nodes.map((node, index) => (
-          <li key={node.id} className={node.privacy === 'local' ? 'is-local' : ''}>
-            <span className="context-index">[{index + 1}]</span>
-            <span className="context-label">{sourceLabel(node)}</span>
-            {node.privacy === 'local' && <span className="context-flag">local only</span>}
-          </li>
-        ))}
-      </ol>
-      {routing?.decision === 'cloud' && (
-        <div className="context-note">Answering in the cloud on your key · {routing.model?.replace('anthropic/', '')}</div>
-      )}
-      {routing?.contextReused && <div className="context-note">Continuing on the same context</div>}
-      {routing?.prefilled && <div className="context-note">Already prefilled</div>}
-      {ambiguity && (
-        <div className="context-chips">
-          <span className="context-chips-label">Narrow to</span>
-          {ambiguity.map((entry) => (
-            <button type="button" key={entry.project} onClick={() => onNarrow(entry.project)}>
-              {entry.project.split('/').pop()}
-            </button>
-          ))}
-        </div>
-      )}
-    </div>
-  );
+function sourceLabel(node) {
+  return node.label ?? node.content?.split('\n')[0] ?? node.id;
 }
 
-function Sources({ sources }) {
-  if (!sources || sources.length === 0) return null;
+function modelName(routing) {
+  return routing?.model?.replace(/^(ollama|anthropic)\//, '') ?? null;
+}
+
+function SourceList({ nodes }) {
   return (
-    <ol className="answer-sources">
-      {sources.map((node, index) => (
+    <ol className="source-list">
+      {nodes.map((node, index) => (
         <li key={node.id}>
-          <span className="context-index">[{index + 1}]</span> {sourceLabel(node)}
+          <span className="source-index">[{index + 1}]</span>
+          <span className="source-label">{sourceLabel(node)}</span>
+          {node.privacy === 'local' && <span className="source-flag">local only</span>}
         </li>
       ))}
     </ol>
   );
 }
 
+function Sources({ nodes, metrics, routing }) {
+  if (!nodes || nodes.length === 0) return null;
+  const saved = metrics?.efficiencyRatio != null ? `${Math.round((1 - metrics.efficiencyRatio) * 100)}% fewer tokens` : null;
+  const note = routing?.contextReused ? 'same context' : routing?.prefilled ? 'prefilled' : null;
+
+  return (
+    <Disclosure
+      summary={`Read ${nodes.length} ${nodes.length === 1 ? 'source' : 'sources'}`}
+      detail={[saved, note].filter(Boolean).join(' · ')}
+    >
+      <SourceList nodes={nodes} />
+    </Disclosure>
+  );
+}
+
+function Diff({ search, replace }) {
+  return (
+    <pre className="diff">
+      {search.split('\n').map((line, index) => (
+        <div className="diff-line is-removed" key={`r${index}`}>
+          <span className="diff-sign">-</span>
+          {line}
+        </div>
+      ))}
+      {replace.split('\n').map((line, index) => (
+        <div className="diff-line is-added" key={`a${index}`}>
+          <span className="diff-sign">+</span>
+          {line}
+        </div>
+      ))}
+    </pre>
+  );
+}
+
+const EDIT_TONE = { proposed: 'pending', applied: 'good', failed: 'warn', unresolved: 'warn', unverified: 'warn' };
+
+function EditRow({ edit, onDecide }) {
+  const detail = {
+    proposed: 'needs your approval',
+    applied: 'pull request opened',
+    rejected: 'discarded',
+    failed: 'not applied',
+    unresolved: 'no project',
+    unverified: 'not verified',
+  }[edit.state];
+
+  return (
+    <Disclosure
+      summary={`Proposed an edit to ${edit.path}`}
+      detail={detail}
+      tone={EDIT_TONE[edit.state]}
+      open={edit.state === 'proposed'}
+    >
+      <Diff search={edit.search} replace={edit.replace} />
+      {edit.problem && <div className="row-note is-warn">{edit.problem}</div>}
+      {edit.state === 'unverified' && (
+        <div className="row-note is-warn">Not applied: {edit.note}. Ask again and say "copy the exact lines".</div>
+      )}
+      {edit.state === 'unresolved' && (
+        <div className="row-note is-warn">That path is not in your map, so there is no repository to apply it to.</div>
+      )}
+      {edit.state === 'failed' && <div className="row-note is-warn">{edit.error}</div>}
+      {edit.state === 'applied' && (
+        <a className="row-note is-good" href={edit.appliedTo} target="_blank" rel="noreferrer">
+          Opened a pull request →
+        </a>
+      )}
+      {edit.state === 'proposed' && (
+        <div className="row-actions">
+          <button type="button" className="row-approve" onClick={() => onDecide(edit.id, 'approve')}>
+            Approve — open a pull request
+          </button>
+          <button type="button" className="row-reject" onClick={() => onDecide(edit.id, 'reject')}>
+            Discard
+          </button>
+        </div>
+      )}
+    </Disclosure>
+  );
+}
+
+const RUN_TONE = { proposed: 'pending', succeeded: 'good', failed: 'warn', unbound: 'warn', undeclared: 'warn' };
+
+function RunRow({ run, onDecide }) {
+  const detail = {
+    proposed: 'needs your approval',
+    running: 'running…',
+    succeeded: `exit 0 · ${(run.durationMs / 1000).toFixed(1)}s`,
+    failed: `exit ${run.exitCode}`,
+    rejected: 'discarded',
+    unbound: 'no working copy',
+    undeclared: 'not a script here',
+  }[run.state];
+
+  return (
+    <Disclosure
+      summary={run.command}
+      detail={detail}
+      tone={RUN_TONE[run.state]}
+      open={run.state === 'proposed' || run.state === 'failed'}
+    >
+      {run.cwd && <div className="row-note">in {run.cwd}</div>}
+      {run.problem && <div className="row-note is-warn">{run.problem}</div>}
+      {run.state === 'unbound' && (
+        <div className="row-note is-warn">
+          This project has no working copy yet — open its settings from the sidebar (⋮) and point it
+          at the folder.
+        </div>
+      )}
+      {run.state === 'undeclared' && (
+        <div className="row-note is-warn">
+          This project does not declare that script.
+          {run.available?.length > 0 && ` It has: ${run.available.join(', ')}.`}
+        </div>
+      )}
+      {run.state === 'proposed' && (
+        <div className="row-actions">
+          <button type="button" className="row-approve" onClick={() => onDecide(run.id, 'approve')}>
+            Approve — run it
+          </button>
+          <button type="button" className="row-reject" onClick={() => onDecide(run.id, 'reject')}>
+            Discard
+          </button>
+        </div>
+      )}
+      {run.output && <pre className="run-output">{run.output}</pre>}
+    </Disclosure>
+  );
+}
+
 export default function ChatPanel({ project, chat, onNarrow, tier, onTierChange, hasKey, panelOpen, onOpenPanel }) {
-  const { turns, draft, setDraft, send, status, error, preview, live, routing, metrics, ambiguity } = chat;
-  const model = modelName(routing);
+  const { turns, edits, runs, draft, setDraft, send, status, error, preview, live, routing, metrics, ambiguity } = chat;
+  const model = modelName(routing) ?? (tier === 'cloud_frontier' ? 'cloud' : 'local');
+  const pendingEdits = edits.filter((edit) => !['applied', 'rejected'].includes(edit.state));
+  const pendingRuns = runs.filter((run) => run.state !== 'rejected');
 
   function handleSubmit(event) {
     event.preventDefault();
@@ -91,80 +176,114 @@ export default function ChatPanel({ project, chat, onNarrow, tier, onTierChange,
   }
 
   return (
-    <aside className="chat-panel">
-      <header className="chat-head">
-        <span className="chat-title">{project ?? 'All maps'}</span>
-        <span className="chat-model">
-          <span className={`model-dot ${status === 'idle' ? '' : 'is-busy'}`} />
-          {status === 'idle' ? model : STATUS_LABEL[status]}
-        </span>
-      </header>
-
-      <div className="tier-row">
-        {TIERS.map((option) => (
-          <button
-            type="button"
-            key={option.label}
-            className={`tier-btn ${tier === option.value ? 'is-on' : ''}`}
-            onClick={() => onTierChange(option.value)}
-            title={option.value === 'cloud_frontier' && !hasKey ? 'Add your API key in Sources first' : undefined}
-          >
-            {option.label}
-          </button>
-        ))}
-        {!hasKey && <span className="tier-hint">cloud needs your key</span>}
-        {!panelOpen && (
-          <button type="button" className="tier-btn panel-reopen" onClick={onOpenPanel}>
-            Show map
-          </button>
-        )}
-      </div>
-
+    <section className="chat">
       <div className="chat-log">
-        {turns.length === 0 && !live && <p className="chat-empty">Ask your map.</p>}
-        {turns.map((turn, index) => (
-          <div className={`chat-message is-${turn.role}`} key={index}>
-            <div className="chat-who">{turn.role === 'user' ? 'Hynes' : modelName(turn.routing)}</div>
-            <div className={`chat-body ${turn.refused ? 'is-refused' : ''}`}>{turn.text}</div>
-            {turn.role === 'assistant' && <Sources sources={turn.sources} />}
-            {turn.metrics?.costUsd > 0 && (
-              <div className="answer-cost">{money(turn.metrics.costUsd)} · {turn.metrics.outputTokens} tokens</div>
-            )}
-          </div>
-        ))}
+        {turns.length === 0 && !live && (
+          <p className="chat-empty">Ask your map. Nothing is written or run without your approval.</p>
+        )}
+
+        {turns.map((turn, index) =>
+          turn.role === 'user' ? (
+            <div className="turn is-user" key={index}>
+              <div className="bubble">{turn.text}</div>
+            </div>
+          ) : (
+            <div className="turn is-assistant" key={index}>
+              {turn.sources?.length > 0 && (
+                <Sources nodes={turn.sources} metrics={turn.metrics} routing={turn.routing} />
+              )}
+              <div className={`answer ${turn.refused ? 'is-refused' : ''}`}>{turn.text}</div>
+              {turn.metrics?.costUsd > 0 && (
+                <div className="answer-meta">
+                  {money(turn.metrics.costUsd)} · {turn.metrics.outputTokens} tokens
+                </div>
+              )}
+            </div>
+          )
+        )}
+
         {live && (
-          <div className="chat-message is-assistant">
-            <div className="chat-who">{model}</div>
-            <div className="chat-body">
-              {live.text || <span className="chat-waiting">reading the sources…</span>}
+          <div className="turn is-assistant">
+            <Sources nodes={live.sources} metrics={live.metrics} routing={live.routing} />
+            <div className="answer">
+              {live.text}
+              <span className="caret" />
             </div>
           </div>
         )}
+
+        {/* Proposals live in the conversation, where they were made. */}
+        {pendingRuns.map((run) => (
+          <RunRow key={run.id} run={run} onDecide={chat.decideRun} />
+        ))}
+        {pendingEdits.map((edit) => (
+          <EditRow key={edit.id} edit={edit} onDecide={chat.decideEdit} />
+        ))}
+
+        {status !== 'idle' && !live?.text && (
+          <div className="working">
+            <span className="working-dot" />
+            {WORKING[status]}
+            {preview?.nodes?.length > 0 && ` · ${preview.nodes.length} sources`}
+          </div>
+        )}
+        {!live && preview?.nodes?.length > 0 && status === 'idle' && (
+          <Sources nodes={preview.nodes} metrics={metrics} routing={routing} />
+        )}
+        {ambiguity && status === 'idle' && (
+          <div className="narrow">
+            <span>Narrow to</span>
+            {ambiguity.map((entry) => (
+              <button type="button" key={entry.project} onClick={() => onNarrow(entry.project)}>
+                {entry.project.split('/').pop()}
+              </button>
+            ))}
+          </div>
+        )}
+        {error && <div className="row-note is-warn">{error}</div>}
       </div>
 
-      {(preview || live) && (
-        <ContextStrip
-          nodes={preview?.nodes ?? live?.sources}
-          metrics={metrics}
-          routing={routing}
-          ambiguity={ambiguity}
-          onNarrow={onNarrow}
-        />
-      )}
-      {error && <div className="chat-error">{error}</div>}
-
-      <form className="chat-input" onSubmit={handleSubmit}>
+      <form className="composer" onSubmit={handleSubmit}>
         <textarea
           rows={1}
           value={draft}
+          // Grows with what is written, like a composer rather than a field.
+          ref={(node) => {
+            if (!node) return;
+            node.style.height = 'auto';
+            node.style.height = `${Math.min(node.scrollHeight, 200)}px`;
+          }}
           onChange={(event) => setDraft(event.target.value)}
           onKeyDown={(event) => {
             if (event.key === 'Enter' && !event.shiftKey) handleSubmit(event);
           }}
-          placeholder="Ask your map"
+          placeholder={project ? `Ask about ${project.split('/').pop()}` : 'Ask your map'}
         />
-        <button type="submit" aria-label="Send" disabled={status !== 'idle'}>↑</button>
+        <div className="composer-bar">
+          <div className="tiers">
+            {TIERS.map((option) => (
+              <button
+                type="button"
+                key={option.label}
+                className={`tier ${tier === option.value ? 'is-on' : ''}`}
+                onClick={() => onTierChange(option.value)}
+              >
+                {option.label}
+              </button>
+            ))}
+          </div>
+          <span className="composer-model">{model}</span>
+          {!hasKey && tier === 'cloud_frontier' && <span className="composer-hint">needs your key</span>}
+          {!panelOpen && (
+            <button type="button" className="composer-link" onClick={onOpenPanel}>
+              map
+            </button>
+          )}
+          <button type="submit" className="composer-send" aria-label="Send" disabled={status !== 'idle'}>
+            ⏎
+          </button>
+        </div>
       </form>
-    </aside>
+    </section>
   );
 }
