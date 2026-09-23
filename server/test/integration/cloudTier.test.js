@@ -103,7 +103,12 @@ describe('cloud tier', () => {
     const [request] = anthropic.state.requests;
     assert.ok(request.system.startsWith('You are Scope Studio'), 'the system prompt goes in its own field');
     assert.ok(request.messages.every((message) => message.role !== 'system'));
-    assert.match(request.messages[0].content, /## Context/, 'the cloud tier uses the markdown structure');
+    const [cached, question] = request.messages[0].content;
+    assert.match(cached.text, /## Context/, 'the cloud tier uses the markdown structure');
+    assert.deepEqual(cached.cache_control, { type: 'ephemeral' }, 'the stable context block is the cache breakpoint');
+    assert.match(question.text, /^## Question/, 'the volatile question sits after the breakpoint');
+    assert.equal(question.cache_control, undefined);
+    assert.equal(request.max_tokens, 2048, 'a runaway answer is bounded');
     assert.equal(request.stream, true);
     assert.equal(anthropic.state.authHeaders[0], KEY, 'the key is forwarded, never substituted');
     assert.equal(ollama.state.chatRequests.length, 0, 'nothing went to the local model');
@@ -160,15 +165,29 @@ describe('cloud tier', () => {
     assert.match(lines.at(-1).error, /API key was rejected/);
   });
 
-  test('costUsd prices input and output separately, and is null for an unknown model', () => {
-    const price = priceFor('claude-opus-5');
-    const cost = costUsd('claude-opus-5', { input_tokens: 1_000_000, output_tokens: 1_000_000 });
-    assert.equal(cost, price.input + price.output);
-    assert.equal(costUsd('some-model-we-do-not-price', { input_tokens: 10 }), null);
+  test('costUsd prices fresh input, cache writes, cache reads and output at their own rates', () => {
+    const model = 'claude-sonnet-5';
+    const price = priceFor(model);
+    assert.equal(costUsd(model, { input_tokens: 1_000_000, output_tokens: 1_000_000 }), price.input + price.output);
     assert.equal(
-      costUsd('claude-opus-5', { input_tokens: 0, cache_read_input_tokens: 1_000_000, output_tokens: 0 }),
-      price.input,
-      'cache reads are counted as input rather than guessed at'
+      costUsd(model, { cache_creation_input_tokens: 1_000_000 }),
+      price.input * 1.25,
+      'a cache write costs a quarter more than fresh input'
     );
+    assert.equal(
+      costUsd(model, { cache_read_input_tokens: 1_000_000 }),
+      price.input * 0.1,
+      'a cache read costs a tenth — this is the margin lever'
+    );
+    assert.equal(costUsd('some-model-we-do-not-price', { input_tokens: 10 }), null);
+  });
+
+  test('a repeated context is billed as a cache read, not fresh input', () => {
+    const model = 'claude-sonnet-5';
+    const contextTokens = 1800;
+    const cold = costUsd(model, { input_tokens: contextTokens, output_tokens: 150 });
+    const warm = costUsd(model, { cache_read_input_tokens: contextTokens, output_tokens: 150 });
+    assert.ok(warm < cold, `follow-up ${warm} should cost less than first turn ${cold}`);
+    assert.ok(cold / warm > 1.9, `caching should roughly halve a follow-up (ratio ${(cold / warm).toFixed(2)})`);
   });
 });

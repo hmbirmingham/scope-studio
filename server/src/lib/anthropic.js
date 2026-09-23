@@ -3,7 +3,10 @@ import Anthropic from '@anthropic-ai/sdk';
 // The cloud tier runs on the user's own key, sent per request and never
 // stored: it does not touch the session, the database, or a log line.
 
-export const DEFAULT_CLOUD_MODEL = 'claude-opus-5';
+// Sonnet by default: on a measured ~1,800-token prompt it answers for about
+// 40% of Opus's price, which is the difference between a metered tier that
+// pays for itself and one that does not. CLOUD_CHAT_MODEL overrides it.
+export const DEFAULT_CLOUD_MODEL = 'claude-sonnet-5';
 
 // USD per million tokens. Metered tiers need the cost of a query at the time
 // it ran, and input and output are priced differently, so the split cannot be
@@ -14,10 +17,15 @@ const PRICES = {
   'claude-haiku-4-5': { input: 1, output: 5 },
 };
 
-// Answers are grounded in retrieved context and run against a weekly budget,
-// so the ceiling is deliberately low; the Sprint 7 benchmark is what should
-// tune this and the effort level against measured answer quality.
-const MAX_TOKENS = 8192;
+// Measured answers run 40-280 tokens. This is headroom, not a target: it
+// bounds what a single runaway answer can cost.
+const MAX_TOKENS = 2048;
+
+// Cache writes cost 1.25x input, reads 0.1x, so a context block read twice has
+// already paid for itself. Our conversations keep that block byte-identical
+// across turns, which is exactly the shape caching rewards.
+const CACHE_WRITE_MULTIPLIER = 1.25;
+const CACHE_READ_MULTIPLIER = 0.1;
 
 export function cloudChatModel() {
   return process.env.CLOUD_CHAT_MODEL || DEFAULT_CLOUD_MODEL;
@@ -31,14 +39,43 @@ export function priceFor(model) {
   return PRICES[model] ?? null;
 }
 
-// Cache reads are cheaper than fresh input, but they are counted as input
-// here rather than guessed at — the number stays honest, if slightly high.
 export function costUsd(model, usage) {
   const price = priceFor(model);
   if (!price || !usage) return null;
-  const input = (usage.input_tokens ?? 0) + (usage.cache_read_input_tokens ?? 0) + (usage.cache_creation_input_tokens ?? 0);
+  const fresh = usage.input_tokens ?? 0;
+  const written = usage.cache_creation_input_tokens ?? 0;
+  const read = usage.cache_read_input_tokens ?? 0;
   const output = usage.output_tokens ?? 0;
-  return (input * price.input + output * price.output) / 1_000_000;
+  return (
+    (fresh * price.input +
+      written * price.input * CACHE_WRITE_MULTIPLIER +
+      read * price.input * CACHE_READ_MULTIPLIER +
+      output * price.output) /
+    1_000_000
+  );
+}
+
+// The context block is the expensive, stable part of the prompt and the
+// question is the cheap, volatile one. Splitting the first user turn between
+// them puts the cache breakpoint after the context, so every later turn on the
+// same context pays a tenth of its input price.
+export function withCacheBreakpoint(messages, marker) {
+  const first = messages.findIndex((message) => message.role === 'user');
+  if (first === -1 || !marker) return messages;
+  const content = messages[first].content;
+  if (typeof content !== 'string') return messages;
+  const at = content.indexOf(marker);
+  if (at <= 0) return messages;
+
+  const copy = [...messages];
+  copy[first] = {
+    role: 'user',
+    content: [
+      { type: 'text', text: content.slice(0, at), cache_control: { type: 'ephemeral' } },
+      { type: 'text', text: content.slice(at) },
+    ],
+  };
+  return copy;
 }
 
 // Our prompts carry the system instruction as the first message; the Messages
@@ -63,9 +100,9 @@ export function createClient(apiKey) {
 // Yields `{ text }` per delta and finally `{ done: true, usage, stopReason }`,
 // matching the shape the local client yields so the route streams either the
 // same way.
-export async function* streamChat({ apiKey, model = cloudChatModel(), messages, signal }) {
+export async function* streamChat({ apiKey, model = cloudChatModel(), messages, cacheMarker, signal }) {
   const client = createClient(apiKey);
-  const { system, rest } = splitSystem(messages);
+  const { system, rest } = splitSystem(withCacheBreakpoint(messages, cacheMarker));
 
   const stream = client.messages.stream(
     {

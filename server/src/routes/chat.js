@@ -67,7 +67,11 @@ function invalid({ query, tier }) {
 // continuing an existing conversation when its context still covers the
 // question, so the prefix stays cached.
 // Both tiers stream the same shape, so the route does not care which answered.
-async function* generate({ decision, model, messages, apiKey, signal }) {
+// Where the cacheable prefix ends: everything above the question is stable
+// across a conversation, so that is where the cache breakpoint goes.
+const CACHE_MARKERS = { strict_xml: '<question>', markdown: '## Question' };
+
+async function* generate({ decision, model, messages, apiKey, cacheMarker, signal }) {
   if (decision === 'local') {
     for await (const chunk of streamLocal({ model, messages, options: LOCAL_OPTIONS, signal })) {
       if (chunk.message?.content) yield { text: chunk.message.content };
@@ -77,7 +81,7 @@ async function* generate({ decision, model, messages, apiKey, signal }) {
     }
     return;
   }
-  for await (const event of streamCloud({ apiKey, model, messages, signal })) {
+  for await (const event of streamCloud({ apiKey, model, messages, cacheMarker, signal })) {
     if (event.text) yield { text: event.text };
     if (event.done) {
       yield {
@@ -155,6 +159,7 @@ async function planTurn(ownerId, sessionId, { query, project, tier, overrides, c
     model,
     status,
     route,
+    config,
     gathered,
     messages,
     sources,
@@ -292,6 +297,7 @@ router.post('/', async (req, res) => {
       model,
       messages: plan.messages,
       apiKey,
+      cacheMarker: CACHE_MARKERS[plan.config.prompt_structure],
       signal: upstream.signal,
     })) {
       if (event.text) {

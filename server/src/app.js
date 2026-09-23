@@ -8,6 +8,7 @@ import nodesRouter from './routes/nodes.js';
 import githubPluginRouter from './routes/plugins/github.js';
 import graphRouter from './routes/graph.js';
 import queryRouter from './routes/query.js';
+import usageRouter from './routes/usage.js';
 
 const PgSessionStore = connectPgSimple(session);
 
@@ -41,6 +42,7 @@ function createApp(env) {
   app.use('/api/nodes', nodesRouter);
   app.use('/api/plugins/github', githubPluginRouter);
   app.use('/api/query', queryRouter);
+  app.use('/api/usage', usageRouter);
 
   return app;
 }

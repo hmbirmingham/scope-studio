@@ -322,6 +322,29 @@ recover the input/output split from a total afterwards. Model and effort
 default to `claude-opus-5` at medium effort and are the two cost levers for the
 Sprint 7 benchmark to tune against measured answer quality.
 
+**Unit economics of a cloud answer.** A measured answer on the live corpus is
+about 1,800 input tokens and 150 output tokens. At that shape:
+
+| | per answer | per answer, 4-turn conversation with the context cached |
+|---|---|---|
+| `claude-opus-5` | $0.0128 | $0.0072 |
+| `claude-sonnet-5` (default) | $0.0051 | $0.0029 |
+| `claude-haiku-4-5` | $0.0026 | $0.0015 |
+
+The default is Sonnet because the metered tiers are priced in answers per
+month, not in model prestige: at Student's $2.25 of monthly capacity, Opus
+uncached buys 176 answers and Sonnet with caching buys about 776. Caching is
+what makes the conversation cheap — the context block is byte-identical across
+turns by construction (§ Conversations keep their context block), so every turn
+after the first pays a tenth of its input price, and the 1.25× write has paid
+for itself by the second turn.
+
+Two caps bound the worst case rather than trusting the average: the context
+budget (4,000 tokens on the cloud tier) and `max_tokens` (2,048, against
+measured answers of 40–280). A single Sonnet query therefore cannot exceed
+about $0.03. `GET /api/usage` reports recorded spend per owner, with the
+monthly projection that a metered price has to clear.
+
 **The local model is a plain transformer on purpose.** A transformer's KV cache
 can be rewound to the point where a prompt diverges; the hybrid linear-attention
 layers in `qwen3.5:9b` can only append, so a reworded question over a cached
