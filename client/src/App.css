@@ -627,3 +627,109 @@ body {
 
 .map-item-count { margin-left: 6px; color: var(--t3); font-family: var(--mono); font-size: 10px; }
 .map-item-local { margin-left: 5px; color: var(--amber); font-size: 8px; }
+
+/* --- sources / ingest --------------------------------------------------- */
+.sidebar-section {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+
+.sidebar-add {
+  background: none;
+  border: none;
+  color: var(--t2);
+  font-size: 14px;
+  cursor: pointer;
+  padding: 0 4px;
+}
+
+.sidebar-add:hover { color: var(--t1); }
+
+.inspector.sources { width: 420px; }
+
+.inspector-block-title {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+
+.sources-action {
+  padding: 4px 10px;
+  background: linear-gradient(135deg, var(--g1), var(--g2));
+  border: none;
+  border-radius: 6px;
+  color: #fff;
+  font-family: inherit;
+  font-size: 11px;
+  cursor: pointer;
+}
+
+.sources-action:disabled {
+  background: rgba(255, 255, 255, 0.06);
+  color: var(--t3);
+  cursor: default;
+}
+
+.sources-connect {
+  display: inline-block;
+  padding: 8px 14px;
+  background: linear-gradient(135deg, var(--g1), var(--g2));
+  border-radius: 8px;
+  color: #fff;
+  font-size: 12px;
+  text-decoration: none;
+}
+
+.sources-list {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  max-height: 320px;
+  overflow-y: auto;
+  margin-top: 10px;
+}
+
+.sources-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 8px;
+  border-radius: 6px;
+  font-size: 12px;
+  cursor: pointer;
+}
+
+.sources-row:hover { background: rgba(255, 255, 255, 0.04); }
+.sources-row.is-ingested .sources-name { color: var(--t2); }
+.sources-name { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.sources-flag { color: var(--amber); font-size: 10px; }
+.sources-count { color: var(--t3); font-family: var(--mono); font-size: 10px; }
+
+.sources-bar {
+  height: 3px;
+  background: rgba(255, 255, 255, 0.07);
+  border-radius: 999px;
+  overflow: hidden;
+}
+
+.sources-bar span {
+  display: block;
+  height: 100%;
+  background: linear-gradient(90deg, var(--g1), var(--g3));
+  transition: width 0.4s ease;
+}
+
+.sources-progress { margin-top: 10px; }
+.sources-progress-text { margin-top: 6px; color: var(--t2); font-size: 11px; }
+.sources-done { margin-top: 10px; color: var(--green); font-size: 11px; }
+.sources-error { margin: 10px 0; color: var(--red); font-size: 11px; }
+
+.stage-note.is-action {
+  background: none;
+  border: 1px solid var(--border2);
+  border-radius: 8px;
+  padding: 10px 16px;
+  font-family: inherit;
+  cursor: pointer;
+}

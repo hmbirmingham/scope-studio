@@ -88,6 +88,18 @@ export async function upsertNodeByExternalId({
   return rows[0];
 }
 
+// Which projects are already on the map, for the repository picker.
+export async function listProjects(ownerId) {
+  const { rows } = await getPool().query(
+    `SELECT project, count(*)::int AS nodes
+     FROM nodes
+     WHERE owner_id = $1 AND project IS NOT NULL
+     GROUP BY project`,
+    [ownerId]
+  );
+  return rows;
+}
+
 export async function listNodesMissingEmbedding() {
   const { rows } = await getPool().query('SELECT id, content FROM nodes WHERE embedding IS NULL');
   return rows;
