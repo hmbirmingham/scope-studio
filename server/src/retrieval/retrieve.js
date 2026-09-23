@@ -8,6 +8,7 @@ import {
   EXPANSION_SEEDS,
   LEXICAL_CANDIDATES,
   LEXICAL_MIN_MATCH,
+  RARE_TERM_MAX_DF,
   SUPERSEDE_DEMOTION,
   fuseAndScore,
   resolveConfig,
@@ -24,6 +25,7 @@ const STOPWORDS = new Set([
   'did', 'get', 'let', 'say', 'she', 'too', 'use', 'what', 'does', 'this', 'that', 'with',
   'from', 'have', 'they', 'will', 'your', 'when', 'where', 'which', 'there', 'their', 'about',
   'would', 'could', 'should', 'into', 'than', 'then', 'them', 'these', 'those', 'over', 'why',
+  'self',
 ]);
 
 // Edge semantics per ADR §2.3: traversal is forward only (seed is the source).
@@ -81,23 +83,40 @@ async function denseCandidates(pool, ownerId, vector) {
   return rows.map(({ similarity, ...node }) => ({ node, similarity: Number(similarity) }));
 }
 
-// A node must match several query terms to count as a lexical hit; a single
-// shared common word is noise that RRF would otherwise reward.
+// A lexical hit needs several matched terms — a single shared common word is
+// noise RRF would otherwise reward — unless the matched term is rare across
+// this owner's nodes: "flask" in 3 of 900 files is the answer, not noise.
 async function lexicalCandidates(pool, ownerId, query) {
   const terms = toLexicalTerms(query);
   if (terms.length === 0) return [];
   const minMatch = Math.min(LEXICAL_MIN_MATCH, terms.length);
   const { rows } = await pool.query(
-    `SELECT ${columns('nodes')}, ${supersededSql('nodes')},
+    `WITH df AS (
+       SELECT t.term, count(n.id)::int AS docs
+       FROM unnest($3::text[]) AS t(term)
+       LEFT JOIN nodes n ON n.owner_id = $5 AND n.content_tsv @@ to_tsquery('simple', t.term)
+       GROUP BY t.term
+     ),
+     rare AS (
+       SELECT string_agg(term, ' | ') AS tsquery
+       FROM df
+       WHERE docs > 0
+         AND docs <= GREATEST(1, floor((SELECT count(*) FROM nodes WHERE owner_id = $5) * $6::float8))
+     )
+     SELECT ${columns('nodes')}, ${supersededSql('nodes')},
             ts_rank_cd(content_tsv, to_tsquery('simple', $1)) AS rank
      FROM nodes
      WHERE owner_id = $5
        AND content_tsv @@ to_tsquery('simple', $1)
-       AND (SELECT count(*) FROM unnest($3::text[]) AS t(term)
-            WHERE content_tsv @@ to_tsquery('simple', t.term)) >= $4
+       AND (
+         (SELECT count(*) FROM unnest($3::text[]) AS t(term)
+          WHERE content_tsv @@ to_tsquery('simple', t.term)) >= $4
+         OR ((SELECT tsquery FROM rare) IS NOT NULL
+             AND content_tsv @@ to_tsquery('simple', (SELECT tsquery FROM rare)))
+       )
      ORDER BY rank DESC
      LIMIT $2`,
-    [terms.join(' | '), LEXICAL_CANDIDATES, terms, minMatch, ownerId]
+    [terms.join(' | '), LEXICAL_CANDIDATES, terms, minMatch, ownerId, RARE_TERM_MAX_DF]
   );
   return rows.map(({ rank, ...node }) => ({ node, rank: Number(rank) }));
 }
