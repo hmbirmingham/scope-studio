@@ -1,7 +1,8 @@
 import { randomUUID } from 'node:crypto';
 import { Router } from 'express';
 import requireAuth from '../middleware/requireAuth.js';
-import { cloudChatModel, costUsd, describeError, streamChat as streamCloud } from '../lib/anthropic.js';
+import { costUsd, describeError, streamChat as streamCloud } from '../lib/anthropic.js';
+import { cloudEffortFor, resolveCloudModel } from '../billing/plans.js';
 import { localChatModel, localModelStatus, streamChat as streamLocal } from '../lib/ollama.js';
 import {
   gatherCandidates,
@@ -24,6 +25,7 @@ import {
 import { buildFollowUp, buildMessages, composeMessages } from '../routing/prompt.js';
 import { decideRoute, provisionalTier } from '../routing/route.js';
 import { beginGeneration, endGeneration, warmCache } from '../routing/warm.js';
+import { getUserPlan } from '../models/userStore.js';
 
 // The cloud tier runs on the user's own key, sent per request in this header
 // and never stored — not in the session, not in the database, not in a log.
@@ -71,7 +73,7 @@ function invalid({ query, tier }) {
 // across a conversation, so that is where the cache breakpoint goes.
 const CACHE_MARKERS = { strict_xml: '<question>', markdown: '## Question' };
 
-async function* generate({ decision, model, messages, apiKey, cacheMarker, signal }) {
+async function* generate({ decision, model, effort, messages, apiKey, cacheMarker, signal }) {
   if (decision === 'local') {
     for await (const chunk of streamLocal({ model, messages, options: LOCAL_OPTIONS, signal })) {
       if (chunk.message?.content) yield { text: chunk.message.content };
@@ -81,7 +83,7 @@ async function* generate({ decision, model, messages, apiKey, cacheMarker, signa
     }
     return;
   }
-  for await (const event of streamCloud({ apiKey, model, messages, cacheMarker, signal })) {
+  for await (const event of streamCloud({ apiKey, model, effort, messages, cacheMarker, signal })) {
     if (event.text) yield { text: event.text };
     if (event.done) {
       yield {
@@ -230,9 +232,12 @@ router.post('/', async (req, res) => {
 
   const ownerId = req.session.userId;
   const apiKey = req.get(API_KEY_HEADER);
-  const plan = await planTurn(ownerId, req.sessionID, req.body, { cloudAvailable: Boolean(apiKey) });
+  const [userPlan, plan] = await Promise.all([
+    getUserPlan(ownerId),
+    planTurn(ownerId, req.sessionID, req.body, { cloudAvailable: Boolean(apiKey) }),
+  ]);
   const { route, sources, metrics } = plan;
-  const model = route.decision === 'local' ? plan.model : cloudChatModel();
+  const model = route.decision === 'local' ? plan.model : resolveCloudModel(userPlan);
   const conversationId = req.body.conversationId ?? randomUUID();
 
   const queryId = randomUUID();
@@ -297,6 +302,7 @@ router.post('/', async (req, res) => {
       model,
       messages: plan.messages,
       apiKey,
+      effort: cloudEffortFor(userPlan),
       cacheMarker: CACHE_MARKERS[plan.config.prompt_structure],
       signal: upstream.signal,
     })) {
@@ -345,7 +351,18 @@ router.post('/', async (req, res) => {
 
   // Written after the last token, so the metrics inserts never delay the answer.
   try {
-    await record({ modelUsed, ttftMs, totalResponseMs, outputTokens, costUsd: cost }, true);
+    await record(
+      {
+        modelUsed,
+        ttftMs,
+        totalResponseMs,
+        outputTokens,
+        costUsd: cost,
+        // Whose money paid for this answer: only platform spend is margin.
+        billedTo: route.decision === 'cloud' ? (apiKey ? 'user_key' : 'platform') : null,
+      },
+      true
+    );
   } catch (err) {
     console.error(`failed to log metrics for query ${queryId}: ${err.message}`);
   }

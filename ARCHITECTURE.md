@@ -327,17 +327,26 @@ about 1,800 input tokens and 150 output tokens. At that shape:
 
 | | per answer | per answer, 4-turn conversation with the context cached |
 |---|---|---|
-| `claude-opus-5` | $0.0128 | $0.0072 |
-| `claude-sonnet-5` (default) | $0.0051 | $0.0029 |
+| `claude-sonnet-5` (every plan) | $0.0051 | $0.0029 |
 | `claude-haiku-4-5` | $0.0026 | $0.0015 |
+| `claude-opus-5` (not offered) | $0.0128 | $0.0072 |
 
-The default is Sonnet because the metered tiers are priced in answers per
-month, not in model prestige: at Student's $2.25 of monthly capacity, Opus
-uncached buys 176 answers and Sonnet with caching buys about 776. Caching is
-what makes the conversation cheap — the context block is byte-identical across
-turns by construction (§ Conversations keep their context block), so every turn
-after the first pays a tenth of its input price, and the 1.25× write has paid
-for itself by the second turn.
+**No plan routes to Opus.** The metered tiers are sold in answers per month,
+not in model prestige: at Student's $2.25 of monthly capacity, Opus uncached
+buys 176 answers where Sonnet with caching buys about 776. `CLOUD_CHAT_MODEL`
+can only name a model the product offers, so Opus cannot be configured back in
+by accident. Caching is what makes a conversation cheap — the context block is
+byte-identical across turns by construction (§ Conversations keep their context
+block), so every turn after the first pays a tenth of its input price, and the
+1.25× write has paid for itself by the second turn.
+
+**Plans** (`billing/plans.js`, one edit changes pricing everywhere): Free is
+local-only and unlimited; Key-Pro runs on the user's own key, so there is no
+allowance to meter; Student and Engineer both answer on Sonnet, and Engineer's
+premium is depth and volume — a larger allowance and `high` effort — rather
+than a more expensive model. Every answer records **who paid** (`billed_to`):
+spend on a user's own key is not margin, and a total that mixes the two cannot
+be separated afterwards.
 
 Two caps bound the worst case rather than trusting the average: the context
 budget (4,000 tokens on the cloud tier) and `max_tokens` (2,048, against
