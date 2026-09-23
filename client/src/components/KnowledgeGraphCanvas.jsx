@@ -84,6 +84,7 @@ export default function KnowledgeGraphCanvas({
     focusProject: (project) => engineRef.current?.focusOnProject(project),
     focusNode: (id) => engineRef.current?.focusOnNode(id),
     select: (id) => engineRef.current?.setSelected(id),
+    fit: () => engineRef.current?.fitView(),
   }));
 
   return (

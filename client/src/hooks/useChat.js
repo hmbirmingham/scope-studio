@@ -21,7 +21,11 @@ async function postJson(path, body, { apiKey, signal } = {}) {
   return { ok: response.ok, status: response.status, body: response };
 }
 
+// One conversation per thread — a project, or "all maps". Switching threads
+// puts the other one away and brings this one back; it does not carry the last
+// project's work into the next question.
 export function useChat({ project, apiKey, tier, onEdits }) {
+  const threadKey = project ?? 'all';
   const [turns, setTurns] = useState([]);
   const [draft, setDraft] = useState('');
   // What the server would read for the question being typed, with its prefill
@@ -35,17 +39,34 @@ export function useChat({ project, apiKey, tier, onEdits }) {
 
   const conversationRef = useRef(null);
   const answeringRef = useRef(false);
+  const threadsRef = useRef(new Map());
+  const currentThread = useRef(threadKey);
+  const latest = useRef(null);
   const onEditsRef = useRef(onEdits);
 
   useEffect(() => {
     onEditsRef.current = onEdits;
   });
 
-  // Switching project starts a new context block: the previous repository's
-  // files have no business in the next question.
   useEffect(() => {
-    conversationRef.current = null;
-  }, [project]);
+    latest.current = { turns, edits, runs, conversationId: conversationRef.current };
+  });
+
+  // Switching thread: keep what was there, show what belongs here.
+  useEffect(() => {
+    if (currentThread.current === threadKey) return;
+    threadsRef.current.set(currentThread.current, latest.current);
+
+    const next = threadsRef.current.get(threadKey) ?? { turns: [], edits: [], runs: [], conversationId: null };
+    setTurns(next.turns);
+    setEdits(next.edits);
+    setRuns(next.runs);
+    setPreview(null);
+    setLive(null);
+    setError(null);
+    conversationRef.current = next.conversationId;
+    currentThread.current = threadKey;
+  }, [threadKey]);
 
   useEffect(() => {
     const text = draft.trim();
@@ -166,10 +187,23 @@ export function useChat({ project, apiKey, tier, onEdits }) {
     setRuns((prev) => prev.map((run) => (run.id === id ? { ...(body.run ?? run), problem } : run)));
   }, []);
 
+  // A new question, with nothing behind it.
+  const newThread = useCallback(() => {
+    setTurns([]);
+    setEdits([]);
+    setRuns([]);
+    setPreview(null);
+    setLive(null);
+    setError(null);
+    setDraft('');
+    conversationRef.current = null;
+  }, []);
+
   return {
     turns,
     edits,
     runs,
+    newThread,
     decideEdit,
     decideRun,
     draft,
