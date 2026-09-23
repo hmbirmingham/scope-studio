@@ -60,6 +60,52 @@ function EditCard({ edit, onDecide }) {
   );
 }
 
+function RunCard({ run, onDecide }) {
+  return (
+    <article className={`edit-card is-${run.state}`}>
+      <header className="edit-head">
+        <span className="edit-path">{run.command}</span>
+        <span className="edit-project">{run.project ?? ''}</span>
+      </header>
+      {run.cwd && <div className="run-cwd">in {run.cwd}</div>}
+
+      {run.problem && <div className="edit-note is-warn">{run.problem}</div>}
+      {run.state === 'proposed' && (
+        <div className="edit-actions">
+          <button type="button" className="edit-approve" onClick={() => onDecide(run.id, 'approve')}>
+            Approve — run it
+          </button>
+          <button type="button" className="edit-reject" onClick={() => onDecide(run.id, 'reject')}>
+            Discard
+          </button>
+        </div>
+      )}
+      {run.state === 'running' && <div className="edit-note">Running…</div>}
+      {run.state === 'unbound' && (
+        <div className="edit-note is-warn">
+          This project has no working copy on this machine yet — open its settings from the sidebar
+          (⋮) and point it at the folder.
+        </div>
+      )}
+      {run.state === 'undeclared' && (
+        <div className="edit-note is-warn">
+          This project does not declare that script.
+          {run.available?.length > 0 && ` It has: ${run.available.join(', ')}.`}
+        </div>
+      )}
+      {run.state === 'rejected' && <div className="edit-note">Discarded.</div>}
+      {(run.state === 'succeeded' || run.state === 'failed') && (
+        <>
+          <div className={`edit-note ${run.state === 'failed' ? 'is-warn' : 'is-good'}`}>
+            exit {run.exitCode} · {(run.durationMs / 1000).toFixed(1)}s
+          </div>
+          <pre className="run-output">{run.output || '(no output)'}</pre>
+        </>
+      )}
+    </article>
+  );
+}
+
 function Sources({ nodes }) {
   if (!nodes || nodes.length === 0) {
     return <p className="panel-empty">Ask something — the sources it reads appear here.</p>;
@@ -95,15 +141,19 @@ export default function OutputPanel({
   onSelectNode,
   spotlight,
   edits,
+  runs,
   onDecideEdit,
+  onDecideRun,
 }) {
   if (!open) return null;
-  const pending = edits.filter((edit) => edit.state === 'proposed').length;
+  const pending =
+    edits.filter((edit) => edit.state === 'proposed').length +
+    runs.filter((run) => run.state === 'proposed').length;
 
   const TABS = [
     { key: 'map', label: 'Map' },
     { key: 'sources', label: 'Sources' },
-    { key: 'edits', label: pending > 0 ? `Edits · ${pending}` : 'Edits' },
+    { key: 'edits', label: pending > 0 ? `Actions · ${pending}` : 'Actions' },
   ];
 
   return (
@@ -146,13 +196,21 @@ export default function OutputPanel({
 
       {tab === 'edits' && (
         <div className="panel-body">
-          {edits.length === 0 ? (
+          {edits.length === 0 && runs.length === 0 ? (
             <p className="panel-empty">
-              Ask for a change — "add a docstring to quantify_colonies" — and the diff lands here for
-              your approval. Nothing is written until you approve it.
+              Ask for a change — "add a docstring to quantify_colonies" — or ask it to run the tests.
+              The diff or the command lands here for your approval. Nothing is written or run until
+              you approve it.
             </p>
           ) : (
-            edits.map((edit) => <EditCard key={edit.id} edit={edit} onDecide={onDecideEdit} />)
+            <>
+              {runs.map((run) => (
+                <RunCard key={run.id} run={run} onDecide={onDecideRun} />
+              ))}
+              {edits.map((edit) => (
+                <EditCard key={edit.id} edit={edit} onDecide={onDecideEdit} />
+              ))}
+            </>
           )}
         </div>
       )}

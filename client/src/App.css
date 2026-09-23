@@ -929,3 +929,21 @@ body {
 .edit-note { display: block; padding: 10px 12px; border-top: 1px solid var(--border); font-size: 11px; color: var(--t2); }
 .edit-note.is-warn { color: var(--amber); }
 .edit-note.is-good { color: var(--green); text-decoration: none; }
+
+.run-cwd { padding: 0 12px 8px; color: var(--t3); font-family: var(--mono); font-size: 10px; }
+
+.run-output {
+  margin: 0;
+  padding: 10px 12px;
+  max-height: 260px;
+  overflow: auto;
+  border-top: 1px solid var(--border);
+  background: rgba(0, 0, 0, 0.3);
+  font-family: var(--mono);
+  font-size: 10px;
+  line-height: 1.6;
+  white-space: pre-wrap;
+}
+
+.edit-card.is-succeeded { border-color: rgba(34, 197, 94, 0.4); }
+.edit-card.is-running { border-color: rgba(79, 172, 254, 0.5); }

@@ -25,6 +25,8 @@ import {
 import { buildFollowUp, buildMessages, composeMessages } from '../routing/prompt.js';
 import { decideRoute, provisionalTier } from '../routing/route.js';
 import { parseEdits, presentProposal, recordProposals } from '../editing/proposals.js';
+import { declaredScripts, parseRuns, presentRun, recordRuns } from '../editing/commands.js';
+import { getProjectSettings } from '../models/projectSettings.js';
 import { beginGeneration, endGeneration, warmCache } from '../routing/warm.js';
 import { getUserPlan } from '../models/userStore.js';
 
@@ -129,7 +131,7 @@ async function planTurn(ownerId, sessionId, { query, project, tier, overrides, c
   const routingDecisionMs = Math.round(probeMs + performance.now() - decideStart);
 
   const config = resolveConfig(route.tier, overrides);
-  const continued = continuation(conversation, { selected: packed.selected, tier: route.tier });
+  const continued = continuation(conversation, { selected: packed.selected, tier: route.tier, project });
   const prefilled = continued ? null : coveringDraft(draftKey(ownerId, sessionId), { selected: packed.selected, tier: route.tier });
   let messages;
   let sources;
@@ -331,9 +333,29 @@ router.post('/', async (req, res) => {
     ? recordProposals({ ownerId, queryId, conversationId, edits, sources })
     : [];
 
+  const names = failure ? [] : parseRuns(answer);
+  const proposedRuns = [];
+  if (names.length) {
+    // A script runs in the project's working copy; without one bound there is
+    // nowhere to run it, and the card says so rather than guessing a directory.
+    const runProject = req.body.project ?? sources[0]?.node.project ?? null;
+    const settings = runProject ? await getProjectSettings(ownerId, runProject) : null;
+    proposedRuns.push(
+      ...recordRuns({
+        ownerId,
+        conversationId,
+        project: runProject,
+        localPath: settings?.localPath ?? null,
+        scripts: settings?.localPath ? await declaredScripts(settings.localPath) : [],
+        names,
+      })
+    );
+  }
+
   const totalResponseMs = Math.round(performance.now() - started);
   if (!upstream.signal.aborted) {
     if (proposed.length) send({ type: 'edits', queryId, edits: proposed.map(presentProposal) });
+    if (proposedRuns.length) send({ type: 'runs', queryId, runs: proposedRuns.map(presentRun) });
     if (failure) send({ type: 'error', queryId, error: describeError(failure) });
     else {
       send({
@@ -351,6 +373,7 @@ router.post('/', async (req, res) => {
   if (!failure && answer) {
     saveConversation(conversationId, ownerId, {
       tier: route.tier,
+      project: req.body.project ?? null,
       sources,
       messages: [...plan.messages, { role: 'assistant', content: answer }],
       contextTokens: plan.contextTokens,

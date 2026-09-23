@@ -46,6 +46,29 @@ describe('conversation store', () => {
     assert.equal(continuation(null, { selected: [], tier: 'local_7b' }), null);
   });
 
+  test('a question that shares nothing with the context starts a fresh block', () => {
+    saveConversation('c1', 'owner-1', entryFor(['a', 'b']));
+    const entry = getConversation('c1', 'owner-1');
+    assert.equal(
+      continuation(entry, { selected: [source('x'), source('y')], tier: 'local_7b' }),
+      null,
+      'the thread moved on — carrying the old files along is what leaks one project into another'
+    );
+    assert.ok(continuation(entry, { selected: [source('a'), source('x')], tier: 'local_7b' }), 'still on subject');
+  });
+
+  test('switching project starts a fresh block', () => {
+    saveConversation('c1', 'owner-1', { ...entryFor(['a']), project: 'hmb/plates' });
+    const entry = getConversation('c1', 'owner-1');
+    assert.ok(continuation(entry, { selected: [source('a')], tier: 'local_7b', project: 'hmb/plates' }));
+    assert.equal(
+      continuation(entry, { selected: [source('a')], tier: 'local_7b', project: 'hmb/firmware' }),
+      null,
+      'a different project is a different subject'
+    );
+    assert.equal(continuation(entry, { selected: [source('a')], tier: 'local_7b' }), null, 'and so is all-maps');
+  });
+
   test('a prompt past the budget starts a fresh context block', () => {
     const long = entryFor(['a']);
     long.messages = [{ role: 'user', content: 'x'.repeat(6001 * 4) }];

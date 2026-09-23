@@ -7,6 +7,7 @@ import Sidebar from './components/Sidebar';
 import SourcesOverlay from './components/SourcesOverlay';
 import { edgeKey } from './graph/GraphEngine';
 import { useChat } from './hooks/useChat';
+import { useProjectSettings } from './hooks/useProjectSettings';
 import { useGraphData } from './hooks/useGraphData';
 import './App.css';
 
@@ -23,6 +24,8 @@ function Studio() {
   const [apiKey, setApiKey] = useState('');
   const [tier, setTier] = useState(null);
   const [preferences, setPreferences] = useState({});
+
+  const projectSettings = useProjectSettings(true);
 
   const chat = useChat({
     project: activeProject,
@@ -121,7 +124,9 @@ function Studio() {
         onSelectNode={(node) => setScope({ kind: 'node', node })}
         spotlight={chat.spotlight}
         edits={chat.edits}
+        runs={chat.runs}
         onDecideEdit={chat.decideEdit}
+        onDecideRun={chat.decideRun}
       />
 
       <SourcesOverlay
@@ -137,6 +142,9 @@ function Studio() {
         onClose={() => setScope(null)}
         relations={scope?.kind === 'node' ? relationsFor(scope.node.id) : []}
         stats={scope?.kind === 'project' ? projectStats(scope.project) : null}
+        settings={scope?.kind === 'project' ? projectSettings.settingsFor(scope.project) : null}
+        settingsError={projectSettings.error}
+        onBindPath={projectSettings.bind}
         preference={scope?.kind === 'node' ? preferences[scope.node.id] ?? null : null}
         onSetPreference={(id, preference) =>
           setPreferences((prev) => ({ ...prev, [id]: preference }))
