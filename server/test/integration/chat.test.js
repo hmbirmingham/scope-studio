@@ -2,7 +2,9 @@ import assert from 'node:assert/strict';
 import { after, before, beforeEach, describe, test } from 'node:test';
 import { setTimeout as sleep } from 'node:timers/promises';
 import { localChatModel, parseNdjson } from '../../src/lib/ollama.js';
+import { resetConversations } from '../../src/routing/conversation.js';
 import { SYSTEM_PROMPTS } from '../../src/routing/prompt.js';
+import { resetWarmState } from '../../src/routing/warm.js';
 import { deadUrl, startFakeOllama } from '../fakeOllama.js';
 import { ensureCentroids, registeredSession, session, startServer } from '../helpers.js';
 
@@ -24,6 +26,14 @@ describe('chat routing and streaming', () => {
     const lines = [];
     for await (const line of parseNdjson(response.body)) lines.push({ ...line, at: performance.now() });
     return lines;
+  }
+
+  async function waitFor(condition, label) {
+    for (let i = 0; i < 100; i++) {
+      if (condition()) return;
+      await sleep(20);
+    }
+    throw new Error(`timed out waiting for ${label}`);
   }
 
   // Metrics land after the last token, off the response path — poll for them.
@@ -64,10 +74,18 @@ describe('chat routing and streaming', () => {
         privacy: 'local',
       });
     }
-    ids = { quantify: quantify.id };
+    const deploy = (await api('POST', '/api/nodes', {
+      type: 'file',
+      content: 'docs/deploy.md\n\nDeploying to Railway: provision Postgres with pgvector, set DATABASE_URL, then run migrations.',
+      project: 'hmb/infra',
+      privacy: 'cloud',
+    })).data;
+    ids = { quantify: quantify.id, deploy: deploy.id };
   });
 
   beforeEach(() => {
+    resetConversations();
+    resetWarmState();
     process.env.OLLAMA_URL = fake.url;
     Object.assign(fake.state, {
       models: ['nomic-embed-text:latest', localChatModel()],
@@ -100,6 +118,9 @@ describe('chat routing and streaming', () => {
       tier: 'local_7b',
       reason: 'context_size',
       provisionalTier: 'local_7b',
+      contextReused: false,
+      prefilled: false,
+      nodesAdded: 1,
       model: `ollama/${localChatModel()}`,
     });
     assert.equal(context.nodes[0].id, ids.quantify);
@@ -254,9 +275,95 @@ describe('chat routing and streaming', () => {
     assert.equal(row.output_tokens, null, 'the model never reported a final count');
   });
 
+
+  test('prepare returns the nodes it would read and prefills the exact prompt the answer uses', async () => {
+    const query = 'what does quantify_colonies return';
+    const { status, data } = await api('POST', '/api/chat/prepare', { query });
+    assert.equal(status, 200);
+    assert.equal(data.routing.decision, 'local');
+    assert.equal(data.routing.contextReused, false);
+    assert.equal(data.nodes[0].id, ids.quantify);
+    assert.ok('ambiguity' in data);
+    assert.equal(data.warming, true);
+
+    await waitFor(() => fake.state.chatRequests.length === 1, 'the warm-up to reach Ollama');
+    const warm = fake.state.chatRequests[0];
+    assert.equal(warm.options.num_predict, 1, 'warm-up prefills the prompt and stops');
+
+    const lines = await readLines(await chat({ query }));
+    assert.equal(lines.at(-1).type, 'done');
+    const real = fake.state.chatRequests[1];
+    assert.deepEqual(real.messages, warm.messages, 'the warm-up prefilled exactly the prompt the answer uses');
+    assert.equal(real.options.num_predict, undefined);
+
+    const { rows } = await server.pool.query('SELECT count(*)::int AS c FROM query_metrics WHERE query_text = $1', [query]);
+    assert.equal(rows[0].c, 1, 'a draft being prepared is not logged as a query');
+  });
+
+  test('a follow-up appends to the same context block instead of rebuilding it', async () => {
+    const conversationId = 'conv-follow-up';
+    const first = await readLines(await chat({ query: 'what does quantify_colonies return', conversationId }));
+    assert.equal(first[0].routing.contextReused, false);
+    assert.equal(first[0].conversationId, conversationId);
+
+    const second = await readLines(await chat({ query: 'and what does it return for empty plates', conversationId }));
+    assert.equal(second[0].routing.contextReused, true);
+    assert.equal(second.at(-1).type, 'done');
+
+    const [firstRequest, secondRequest] = fake.state.chatRequests;
+    assert.equal(secondRequest.messages.length, 4, 'system, context+question, answer, follow-up');
+    assert.equal(
+      secondRequest.messages[1].content,
+      firstRequest.messages[1].content,
+      'the context block stays byte-identical, which is what the KV cache matches on'
+    );
+    assert.equal(secondRequest.messages[2].role, 'assistant');
+    assert.equal(secondRequest.messages[3].content, '<question>\nand what does it return for empty plates\n</question>');
+  });
+
+  test('a reworded question reuses the block that was already prefilled', async () => {
+    await api('POST', '/api/chat/prepare', { query: 'what does quantify_colonies ret' });
+    await waitFor(() => fake.state.chatRequests.length === 1, 'the warm-up to reach Ollama');
+
+    const lines = await readLines(await chat({ query: 'what does quantify_colonies return exactly' }));
+    assert.equal(lines[0].routing.prefilled, true);
+    const [warm, real] = fake.state.chatRequests;
+    const contextOf = (request) => request.messages[1].content.split('<question>')[0];
+    assert.equal(contextOf(real), contextOf(warm), 'same context block, only the question differs');
+    assert.notEqual(real.messages[1].content, warm.messages[1].content);
+  });
+
+  test('a follow-up needing a new node appends it, keeping the cached prefix', async () => {
+    const conversationId = 'conv-add';
+    await readLines(await chat({ query: 'what does quantify_colonies return', conversationId }));
+    const second = await readLines(
+      await chat({ query: 'deploying Railway Postgres pgvector DATABASE_URL migrations', conversationId })
+    );
+    assert.equal(second[0].routing.contextReused, true);
+    assert.ok(second[0].nodes.some((node) => node.id === ids.deploy), 'the newly relevant node is in context');
+
+    const [firstRequest, secondRequest] = fake.state.chatRequests;
+    assert.equal(secondRequest.messages.length, 4, 'appended, not rebuilt');
+    assert.equal(secondRequest.messages[1].content, firstRequest.messages[1].content);
+    assert.match(secondRequest.messages[3].content, /<source index="2"[^>]*>\ndocs\/deploy\.md/, 'citations number on from the first block');
+  });
+
+  test('no warm-up runs while an answer is generating', async () => {
+    fake.state.pauseAfterFirstMs = 500;
+    const streaming = chat({ query: 'quantify_colonies watershed output path' }).then(readLines);
+    await waitFor(() => fake.state.chatRequests.length === 1, 'generation to start');
+
+    const { data } = await api('POST', '/api/chat/prepare', { query: 'what does quantify_colonies return exactly' });
+    assert.equal(data.warming, false, 'a warm-up would queue behind the answer on the same model');
+    assert.equal(fake.state.chatRequests.length, 1);
+    assert.equal((await streaming).at(-1).type, 'done');
+  });
+
   test('validation and authentication', async () => {
     assert.equal((await api('POST', '/api/chat', {})).status, 400);
     assert.equal((await api('POST', '/api/chat', { query: 'x', tier: 'huge' })).status, 400);
     assert.equal((await session(server.base)('POST', '/api/chat', { query: 'x' })).status, 401);
+    assert.equal((await api('POST', '/api/chat/prepare', {})).status, 400);
+    assert.equal((await session(server.base)('POST', '/api/chat/prepare', { query: 'x' })).status, 401);
   });
 });
