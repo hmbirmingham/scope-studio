@@ -6,6 +6,7 @@ import authRouter from './routes/auth.js';
 import chatRouter from './routes/chat.js';
 import nodesRouter from './routes/nodes.js';
 import githubPluginRouter from './routes/plugins/github.js';
+import graphRouter from './routes/graph.js';
 import queryRouter from './routes/query.js';
 
 const PgSessionStore = connectPgSimple(session);
@@ -36,6 +37,7 @@ function createApp(env) {
   app.get('/health', (req, res) => res.json({ status: 'ok' }));
   app.use('/api/auth', authRouter);
   app.use('/api/chat', chatRouter);
+  app.use('/api/graph', graphRouter);
   app.use('/api/nodes', nodesRouter);
   app.use('/api/plugins/github', githubPluginRouter);
   app.use('/api/query', queryRouter);
