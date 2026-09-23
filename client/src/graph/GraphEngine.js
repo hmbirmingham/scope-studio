@@ -158,7 +158,7 @@ export class GraphEngine {
     if (nodes.length === 0) return null;
     let minX = Infinity, maxX = -Infinity, minY = Infinity, maxY = -Infinity;
     for (const node of nodes) {
-      const radius = nodeRadius(node.token_length);
+      const radius = nodeRadius(node.tokenLength);
       minX = Math.min(minX, node.x - radius);
       maxX = Math.max(maxX, node.x + radius);
       minY = Math.min(minY, node.y - radius);
@@ -262,7 +262,7 @@ export class GraphEngine {
     let found = null;
     for (const node of this.nodesById.values()) {
       const point = this.worldToScreen(node.x, node.y);
-      const radius = nodeRadius(node.token_length) * this.camera.scale;
+      const radius = nodeRadius(node.tokenLength) * this.camera.scale;
       if (Math.hypot(screenX - point.x, screenY - point.y) <= radius + 6) found = node;
     }
     return found;
@@ -370,7 +370,7 @@ export class GraphEngine {
 
   drawNode(ctx, node) {
     const point = this.worldToScreen(node.x, node.y);
-    const radius = nodeRadius(node.token_length) * this.camera.scale;
+    const radius = nodeRadius(node.tokenLength) * this.camera.scale;
     if (point.x < -radius || point.x > this.width + radius) return;
     if (point.y < -radius || point.y > this.height + radius) return;
 

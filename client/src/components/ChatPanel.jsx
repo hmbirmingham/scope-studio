@@ -1,15 +1,80 @@
-import { useState } from 'react';
+const STATUS_LABEL = {
+  idle: 'ready',
+  reading: 'reading your map',
+  answering: 'answering',
+};
 
-export default function ChatPanel({ project }) {
-  const [messages, setMessages] = useState([]);
-  const [draft, setDraft] = useState('');
+function percent(ratio) {
+  return `${Math.round((1 - ratio) * 100)}%`;
+}
+
+// The map payload carries a label; the chat payload carries the node itself,
+// whose first line is that same label.
+function sourceLabel(node) {
+  return node.label ?? node.content?.split('\n')[0] ?? node.id;
+}
+
+function modelName(routing) {
+  return routing?.model?.replace('ollama/', '') ?? 'local';
+}
+
+// The wait is the work: while the model prefills, the panel names the sources
+// it is reading and what they cost, instead of showing a spinner.
+function ContextStrip({ nodes, metrics, routing, ambiguity, onNarrow }) {
+  if (!nodes || nodes.length === 0) return null;
+  return (
+    <div className="context-strip">
+      <div className="context-head">
+        <span>Reading {nodes.length} {nodes.length === 1 ? 'source' : 'sources'}</span>
+        {metrics?.efficiencyRatio != null && (
+          <span className="context-saving">{percent(metrics.efficiencyRatio)} fewer tokens</span>
+        )}
+      </div>
+      <ol className="context-list">
+        {nodes.map((node, index) => (
+          <li key={node.id} className={node.privacy === 'local' ? 'is-local' : ''}>
+            <span className="context-index">[{index + 1}]</span>
+            <span className="context-label">{sourceLabel(node)}</span>
+            {node.privacy === 'local' && <span className="context-flag">local only</span>}
+          </li>
+        ))}
+      </ol>
+      {routing?.contextReused && <div className="context-note">Continuing on the same context</div>}
+      {routing?.prefilled && <div className="context-note">Already prefilled</div>}
+      {ambiguity && (
+        <div className="context-chips">
+          <span className="context-chips-label">Narrow to</span>
+          {ambiguity.map((entry) => (
+            <button type="button" key={entry.project} onClick={() => onNarrow(entry.project)}>
+              {entry.project.split('/').pop()}
+            </button>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function Sources({ sources }) {
+  if (!sources || sources.length === 0) return null;
+  return (
+    <ol className="answer-sources">
+      {sources.map((node, index) => (
+        <li key={node.id}>
+          <span className="context-index">[{index + 1}]</span> {sourceLabel(node)}
+        </li>
+      ))}
+    </ol>
+  );
+}
+
+export default function ChatPanel({ project, chat, onNarrow }) {
+  const { turns, draft, setDraft, send, status, error, preview, live, routing, metrics, ambiguity } = chat;
+  const model = modelName(routing);
 
   function handleSubmit(event) {
     event.preventDefault();
-    const text = draft.trim();
-    if (!text) return;
-    setMessages((prev) => [...prev, { role: 'user', text }]);
-    setDraft('');
+    send();
   }
 
   return (
@@ -17,29 +82,52 @@ export default function ChatPanel({ project }) {
       <header className="chat-head">
         <span className="chat-title">{project ?? 'All maps'}</span>
         <span className="chat-model">
-          <span className="model-dot" />
-          retrieval only
+          <span className={`model-dot ${status === 'idle' ? '' : 'is-busy'}`} />
+          {status === 'idle' ? model : STATUS_LABEL[status]}
         </span>
       </header>
 
       <div className="chat-log">
-        {messages.length === 0 && <p className="chat-empty">Ask your map.</p>}
-        {messages.map((message, index) => (
-          <div className="chat-message" key={index}>
-            <div className="chat-who">Hynes</div>
-            <div className="chat-body">{message.text}</div>
+        {turns.length === 0 && !live && <p className="chat-empty">Ask your map.</p>}
+        {turns.map((turn, index) => (
+          <div className={`chat-message is-${turn.role}`} key={index}>
+            <div className="chat-who">{turn.role === 'user' ? 'Hynes' : modelName(turn.routing)}</div>
+            <div className={`chat-body ${turn.refused ? 'is-refused' : ''}`}>{turn.text}</div>
+            {turn.role === 'assistant' && <Sources sources={turn.sources} />}
           </div>
         ))}
+        {live && (
+          <div className="chat-message is-assistant">
+            <div className="chat-who">{model}</div>
+            <div className="chat-body">
+              {live.text || <span className="chat-waiting">reading the sources…</span>}
+            </div>
+          </div>
+        )}
       </div>
+
+      {(preview || live) && (
+        <ContextStrip
+          nodes={preview?.nodes ?? live?.sources}
+          metrics={metrics}
+          routing={routing}
+          ambiguity={ambiguity}
+          onNarrow={onNarrow}
+        />
+      )}
+      {error && <div className="chat-error">{error}</div>}
 
       <form className="chat-input" onSubmit={handleSubmit}>
         <textarea
           rows={1}
           value={draft}
           onChange={(event) => setDraft(event.target.value)}
+          onKeyDown={(event) => {
+            if (event.key === 'Enter' && !event.shiftKey) handleSubmit(event);
+          }}
           placeholder="Ask your map"
         />
-        <button type="submit" aria-label="Send">↑</button>
+        <button type="submit" aria-label="Send" disabled={status !== 'idle'}>↑</button>
       </form>
     </aside>
   );
