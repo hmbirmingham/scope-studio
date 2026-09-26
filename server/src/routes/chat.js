@@ -18,6 +18,7 @@ import {
   coveringDraft,
   draftKey,
   getConversation,
+  readsAsFollowUp,
   retrievalQuery,
   saveConversation,
   saveDraft,
@@ -110,14 +111,13 @@ async function planTurn(ownerId, sessionId, { query, project, tier, overrides, c
 
   const conversation = getConversation(conversationId, ownerId);
   const provisional = provisionalTier({ localAvailable, preferredTier: tier });
-  const gathered = await gatherCandidates({
-    ownerId,
-    query: retrievalQuery(conversation, text),
-    project,
-    tier: provisional,
-    overrides,
-    embed: status.running,
-  });
+  const gather = (query) =>
+    gatherCandidates({ ownerId, query, project, tier: provisional, overrides, embed: status.running });
+  // A question that stands on its own is retrieved on its own, so a change of
+  // subject finds its own sources; only when that finds nothing, or the wording
+  // leans on the previous turn, does the previous question join the query.
+  let gathered = conversation && !readsAsFollowUp(text) ? await gather(text) : null;
+  if (!gathered || gathered.candidates.length === 0) gathered = await gather(retrievalQuery(conversation, text));
 
   const decideStart = performance.now();
   let packed = packForTier(gathered.candidates, provisional, overrides);

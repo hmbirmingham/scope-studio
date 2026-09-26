@@ -4,6 +4,7 @@ import { projectAmbiguity } from '../../src/routing/ambiguity.js';
 import {
   getConversation,
   resetConversations,
+  readsAsFollowUp,
   retrievalQuery,
   continuation,
   saveConversation,
@@ -81,6 +82,21 @@ describe('conversation store', () => {
     const entry = getConversation('c1', 'owner-1');
     assert.equal(retrievalQuery(entry, 'and for empty plates'), 'what does it return and for empty plates');
     assert.equal(retrievalQuery(null, 'and for empty plates'), 'and for empty plates');
+  });
+});
+
+describe('readsAsFollowUp', () => {
+  test('wording that leans on the previous turn is a follow-up', () => {
+    for (const q of ['and where is that set?', 'what does it return for empty plates', 'why is this slow',
+      'what about the firmware', 'but how are they deployed', 'show me the same for huskybook', 'also check the tests']) {
+      assert.equal(readsAsFollowUp(q), true, q);
+    }
+  });
+  test('a question that stands on its own is not', () => {
+    for (const q of ['describe a tree', 'what does quantify_colonies return', 'which repositories use Flask',
+      'how is the USART peripheral configured', 'iterate over the items']) {
+      assert.equal(readsAsFollowUp(q), false, q);
+    }
   });
 });
 

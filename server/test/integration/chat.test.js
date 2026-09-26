@@ -337,7 +337,7 @@ describe('chat routing and streaming', () => {
     const conversationId = 'conv-add';
     await readLines(await chat({ query: 'what does quantify_colonies return', conversationId }));
     const second = await readLines(
-      await chat({ query: 'deploying Railway Postgres pgvector DATABASE_URL migrations', conversationId })
+      await chat({ query: 'and how is that deployed to Railway with Postgres and pgvector', conversationId })
     );
     assert.equal(second[0].routing.contextReused, true);
     assert.ok(second[0].nodes.some((node) => node.id === ids.deploy), 'the newly relevant node is in context');
@@ -346,6 +346,19 @@ describe('chat routing and streaming', () => {
     assert.equal(secondRequest.messages.length, 4, 'appended, not rebuilt');
     assert.equal(secondRequest.messages[1].content, firstRequest.messages[1].content);
     assert.match(secondRequest.messages[3].content, /<source index="2"[^>]*>\ndocs\/deploy\.md/, 'citations number on from the first block');
+  });
+
+  test('a change of subject retrieves on its own and starts a fresh block', async () => {
+    const conversationId = 'conv-new-subject';
+    await readLines(await chat({ query: 'what does quantify_colonies return', conversationId }));
+    const second = await readLines(
+      await chat({ query: 'deploying to Railway: provision Postgres with pgvector and run migrations', conversationId })
+    );
+    assert.equal(second[0].routing.contextReused, false, 'nothing from the previous subject is carried along');
+    assert.ok(second[0].nodes.some((node) => node.id === ids.deploy), 'the new subject finds its own source');
+    assert.ok(!second[0].nodes.some((node) => node.id === ids.quantify), 'the old subject is not retrieved again');
+    const [, secondRequest] = fake.state.chatRequests;
+    assert.equal(secondRequest.messages.length, 2, 'system and a fresh context+question, not an appended thread');
   });
 
   test('no warm-up runs while an answer is generating', async () => {
