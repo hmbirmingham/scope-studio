@@ -100,6 +100,17 @@ export function retrievalQuery(entry, query) {
   return entry?.lastQuestion ? `${entry.lastQuestion} ${query}` : query;
 }
 
+// Words that only make sense against what came before. A question with none of
+// them is read on its own first: prefixing the previous question to every turn
+// made a change of subject retrieve the old subject's files again, so the
+// "shares nothing, start fresh" rule in continuation() could never fire.
+const REFERRING = /\b(it|its|it's|that|this|these|those|they|them|their|there|he|she|his|her|same|above|previous|earlier|instead|also|else|again|more)\b/i;
+const CONTINUING = /^\s*(and|but|so|then|also|or|what about|how about|why not|ok|okay)\b/i;
+
+export function readsAsFollowUp(query) {
+  return REFERRING.test(query) || CONTINUING.test(query);
+}
+
 export function resetConversations() {
   conversations.clear();
   drafts.clear();
