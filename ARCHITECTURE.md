@@ -506,6 +506,31 @@ never uses the word). Larger budgets do not help within `max_nodes = 5`;
 smaller chunks for the local tier, or a budget-aware pack that trades one
 large chunk for two small ones, are the next experiments.
 
+**Tried after v0.3 and rejected, 2026-09-24.** Both aimed at the remaining
+local misses; neither ships.
+
+- *Budget-aware packing.* Chunk sizes are uniform (median 738 tokens, three
+  quarters above 700), so there is no smaller chunk to trade for, and the
+  wanted chunk is the same size as those that beat it. A per-file cap (at
+  most one or two chunks of any file) left local hit rate at 80% and cut
+  cloud to 90% at one per file; budgets of 1,600 and 2,300 tokens either
+  lost a query or changed nothing.
+- *English stemming in the lexical index.* Stems alone rescued one local
+  miss ("dosing schedule" meets `dose`) but dropped the answer one rank in
+  five queries on both tiers (MRR 0.72 → 0.67 local, 0.74 → 0.67 cloud) and
+  lost one cloud expectation: "tests", "testing" and "tested" become one
+  term, and a runbook repeating it outranks the workflow file that answers.
+  Indexing exact words at weight A and stems at weight B was worse still
+  (cloud 95% → 90%). `ts_rank_cd` is frequency-weighted, and stemming raises
+  the frequency of exactly the common words that already crowd the pack.
+
+What the two results say together: the remaining local misses are not a
+packing or a lexical problem. The wanted chunk clears the floor and ranks
+fourth or fifth among chunks of near-identical similarity (0.66–0.73). The
+next lever that could reach them is a reranking pass over the top ten,
+which costs a model call per query and belongs in a latency budget decision,
+not a constant change.
+
 **What this sample size can and cannot show** is unchanged from v0.2: a
 15-point change in hit rate is a signal at 20 queries, a 5-point change is
 one query, and learning-to-rank still needs 200+ labelled queries. The
