@@ -36,6 +36,7 @@ export function useChat({ project, apiKey, tier, webSearch = false, onEdits }) {
   const [error, setError] = useState(null);
   const [edits, setEdits] = useState([]);
   const [runs, setRuns] = useState([]);
+  const [actions, setActions] = useState([]);
 
   const conversationRef = useRef(null);
   const answeringRef = useRef(false);
@@ -49,7 +50,7 @@ export function useChat({ project, apiKey, tier, webSearch = false, onEdits }) {
   });
 
   useEffect(() => {
-    latest.current = { turns, edits, runs, conversationId: conversationRef.current };
+    latest.current = { turns, edits, runs, actions, conversationId: conversationRef.current };
   });
 
   // Switching thread: keep what was there, show what belongs here.
@@ -57,10 +58,11 @@ export function useChat({ project, apiKey, tier, webSearch = false, onEdits }) {
     if (currentThread.current === threadKey) return;
     threadsRef.current.set(currentThread.current, latest.current);
 
-    const next = threadsRef.current.get(threadKey) ?? { turns: [], edits: [], runs: [], conversationId: null };
+    const next = threadsRef.current.get(threadKey) ?? { turns: [], edits: [], runs: [], actions: [], conversationId: null };
     setTurns(next.turns);
     setEdits(next.edits);
     setRuns(next.runs);
+    setActions(next.actions ?? []);
     setPreview(null);
     setLive(null);
     setError(null);
@@ -143,6 +145,8 @@ export function useChat({ project, apiKey, tier, webSearch = false, onEdits }) {
         } else if (line.type === 'runs') {
           setRuns((prev) => [...prev, ...line.runs]);
           onEditsRef.current?.(line.runs);
+        } else if (line.type === 'actions') {
+          setActions((prev) => [...prev, ...line.actions]);
         } else if (line.type === 'done') {
           answer.metrics = { ...answer.metrics, ...line.metrics };
           answer.web = line.web ?? [];
@@ -193,10 +197,24 @@ export function useChat({ project, apiKey, tier, webSearch = false, onEdits }) {
   }, []);
 
   // A new question, with nothing behind it.
+  // Approving is what opens it; the server re-checks the rule for its kind.
+  const decideAction = useCallback(async (id, decision) => {
+    setActions((prev) => prev.map((a) => (a.id === id ? { ...a, state: decision === 'approve' ? 'opening' : a.state } : a)));
+    const response = await fetch(`/api/actions/${id}/${decision}`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({}),
+    });
+    const body = await response.json().catch(() => ({}));
+    const error = response.ok ? null : body.error ?? `could not ${decision} that`;
+    setActions((prev) => prev.map((a) => (a.id === id ? { ...(body.action ?? a), error: error ?? body.action?.error ?? null } : a)));
+  }, []);
+
   const newThread = useCallback(() => {
     setTurns([]);
     setEdits([]);
     setRuns([]);
+    setActions([]);
     setPreview(null);
     setLive(null);
     setError(null);
@@ -208,9 +226,11 @@ export function useChat({ project, apiKey, tier, webSearch = false, onEdits }) {
     turns,
     edits,
     runs,
+    actions,
     newThread,
     decideEdit,
     decideRun,
+    decideAction,
     draft,
     setDraft,
     send,

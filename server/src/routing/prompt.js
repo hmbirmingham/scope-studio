@@ -15,6 +15,12 @@ the replacement lines
 - When the user asks you to run, test or benchmark something, name the project's own script on its own line:
 <run>test</run>
 Only a script the project declares in package.json can run, it runs in the project's working copy, and only after the user approves it. You are shown the output afterwards.
+- When the user asks you to look something up, open a page or an app, or show them a file, put one action per line:
+<open kind="search">words to search for</open>
+<open kind="url">https://exact.address/page</open>
+<open kind="app">Safari</open>
+<open kind="file">path/inside/the/project</open>
+It opens on the user's screen only after they approve it. You do not see the result.
 - Never abbreviate inside SEARCH. No "...", no "rest of the function", no summarising comments: copy the exact lines you are replacing, and keep the block small — a few lines around the change, not the whole file. Nothing is applied until the user approves it.`;
 
 const RULES = `- Answer from the context. Cite the excerpts you use inline by number, like [1] or [2][3].
