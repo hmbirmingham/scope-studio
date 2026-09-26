@@ -27,6 +27,7 @@ import { buildFollowUp, buildMessages, composeMessages } from '../routing/prompt
 import { CLOUD_TIER, decideRoute, provisionalTier } from '../routing/route.js';
 import { parseEdits, presentProposal, recordProposals } from '../editing/proposals.js';
 import { declaredScripts, parseRuns, presentRun, recordRuns } from '../editing/commands.js';
+import { parseActions, presentAction, recordActions } from '../editing/actions.js';
 import { getProjectSettings } from '../models/projectSettings.js';
 import { beginGeneration, endGeneration, warmCache } from '../routing/warm.js';
 import { getUserPlan } from '../models/userStore.js';
@@ -395,10 +396,27 @@ router.post('/', async (req, res) => {
     );
   }
 
+  // Actions open things on screen; like runs they are held for approval, and a
+  // file action needs the project's working copy to resolve its path against.
+  const found = failure ? [] : parseActions(answer);
+  let proposedActions = [];
+  if (found.length) {
+    const actionProject = req.body.project ?? sources[0]?.node.project ?? null;
+    const settings = actionProject ? await getProjectSettings(ownerId, actionProject) : null;
+    proposedActions = await recordActions({
+      ownerId,
+      conversationId,
+      project: actionProject,
+      localPath: settings?.localPath ?? null,
+      found,
+    });
+  }
+
   const totalResponseMs = Math.round(performance.now() - started);
   if (!upstream.signal.aborted) {
     if (proposed.length) send({ type: 'edits', queryId, edits: proposed.map(presentProposal) });
     if (proposedRuns.length) send({ type: 'runs', queryId, runs: proposedRuns.map(presentRun) });
+    if (proposedActions.length) send({ type: 'actions', queryId, actions: proposedActions.map(presentAction) });
     if (failure) send({ type: 'error', queryId, error: describeError(failure) });
     else {
       send({

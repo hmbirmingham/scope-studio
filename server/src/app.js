@@ -7,6 +7,7 @@ import chatRouter from './routes/chat.js';
 import editsRouter from './routes/edits.js';
 import projectsRouter from './routes/projects.js';
 import runsRouter from './routes/runs.js';
+import actionsRouter from './routes/actions.js';
 import nodesRouter from './routes/nodes.js';
 import githubPluginRouter from './routes/plugins/github.js';
 import graphRouter from './routes/graph.js';
@@ -44,6 +45,7 @@ function createApp(env) {
   app.use('/api/edits', editsRouter);
   app.use('/api/projects', projectsRouter);
   app.use('/api/runs', runsRouter);
+  app.use('/api/actions', actionsRouter);
   app.use('/api/graph', graphRouter);
   app.use('/api/nodes', nodesRouter);
   app.use('/api/plugins/github', githubPluginRouter);

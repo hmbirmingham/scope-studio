@@ -35,6 +35,7 @@ export async function startServer() {
   return {
     base,
     pool,
+    app,
     async close() {
       await new Promise((resolve) => server.close(resolve));
       await pool.end();

@@ -34,6 +34,15 @@ function SourceList({ nodes }) {
   );
 }
 
+// Action tags become approval cards; showing the raw tag as well says it twice.
+// A tag still being streamed is hidden from its opening bracket on.
+function withoutActionTags(text) {
+  return (text ?? '')
+    .replace(/<open\s+kind="[^"]*"\s*>[\s\S]*?<\/open>\n?/g, '')
+    .replace(/<open\b[^]*$/, '')
+    .trim();
+}
+
 // Pages the answer cited, and while it works, what it is searching for.
 function WebSources({ searches, web, omittedPrivate }) {
   const skipped =
@@ -145,6 +154,38 @@ function EditRow({ edit, onDecide }) {
 
 const RUN_TONE = { proposed: 'pending', succeeded: 'good', failed: 'warn', unbound: 'warn', undeclared: 'warn' };
 
+const ACTION_TONE = { proposed: 'pending', opened: 'good', failed: 'warn', refused: 'warn' };
+
+// Something to open on this Mac's screen: a search, a page, an app, or a file.
+function ActionRow({ action, onDecide }) {
+  const detail = {
+    proposed: 'needs your approval',
+    opening: 'opening…',
+    opened: 'opened',
+    failed: 'could not open',
+    refused: 'will not open',
+    rejected: 'discarded',
+  }[action.state];
+
+  return (
+    <Disclosure summary={action.label} detail={detail} tone={ACTION_TONE[action.state]} open={action.state === 'proposed'}>
+      {action.kind === 'url' && <div className="row-note">{action.target}</div>}
+      {action.problem && <div className="row-note is-warn">{action.problem}</div>}
+      {action.error && <div className="row-note is-warn">{action.error}</div>}
+      {action.state === 'proposed' && (
+        <div className="row-actions">
+          <button type="button" className="row-approve" onClick={() => onDecide(action.id, 'approve')}>
+            Approve — open it
+          </button>
+          <button type="button" className="row-reject" onClick={() => onDecide(action.id, 'reject')}>
+            Discard
+          </button>
+        </div>
+      )}
+    </Disclosure>
+  );
+}
+
 function RunRow({ run, onDecide }) {
   const detail = {
     proposed: 'needs your approval',
@@ -197,6 +238,7 @@ export default function ChatPanel({ project, chat, onNarrow, tier, onTierChange,
   const model = modelName(routing) ?? (tier === 'cloud_frontier' ? 'cloud' : 'local');
   const pendingEdits = edits.filter((edit) => !['applied', 'rejected'].includes(edit.state));
   const pendingRuns = runs.filter((run) => run.state !== 'rejected');
+  const pendingActions = (chat.actions ?? []).filter((action) => action.state !== 'rejected');
 
   function handleSubmit(event) {
     event.preventDefault();
@@ -220,7 +262,7 @@ export default function ChatPanel({ project, chat, onNarrow, tier, onTierChange,
               {turn.sources?.length > 0 && (
                 <Sources nodes={turn.sources} metrics={turn.metrics} routing={turn.routing} />
               )}
-              <div className={`answer ${turn.refused ? 'is-refused' : ''}`}>{turn.text}</div>
+              <div className={`answer ${turn.refused ? 'is-refused' : ''}`}>{withoutActionTags(turn.text)}</div>
               <WebSources web={turn.web} omittedPrivate={turn.omittedPrivate} />
               {turn.metrics?.costUsd > 0 && (
                 <div className="answer-meta">
@@ -236,7 +278,7 @@ export default function ChatPanel({ project, chat, onNarrow, tier, onTierChange,
             <Sources nodes={live.sources} metrics={live.metrics} routing={live.routing} />
             <WebSources searches={live.searches} omittedPrivate={live.omittedPrivate} />
             <div className="answer">
-              {live.text}
+              {withoutActionTags(live.text)}
               <span className="caret" />
             </div>
           </div>
@@ -245,6 +287,9 @@ export default function ChatPanel({ project, chat, onNarrow, tier, onTierChange,
         {/* Proposals live in the conversation, where they were made. */}
         {pendingRuns.map((run) => (
           <RunRow key={run.id} run={run} onDecide={chat.decideRun} />
+        ))}
+        {pendingActions.map((action) => (
+          <ActionRow key={action.id} action={action} onDecide={chat.decideAction} />
         ))}
         {pendingEdits.map((edit) => (
           <EditRow key={edit.id} edit={edit} onDecide={chat.decideEdit} />
