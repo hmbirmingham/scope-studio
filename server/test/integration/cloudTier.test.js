@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { after, before, beforeEach, describe, test } from 'node:test';
 import { setTimeout as sleep } from 'node:timers/promises';
-import { costUsd, priceFor } from '../../src/lib/anthropic.js';
+import { costUsd, priceFor, webCitations } from '../../src/lib/anthropic.js';
 import { parseNdjson } from '../../src/lib/ollama.js';
 import { resetConversations } from '../../src/routing/conversation.js';
 import { resetWarmState } from '../../src/routing/warm.js';
@@ -65,7 +65,10 @@ describe('cloud tier', () => {
   beforeEach(() => {
     resetConversations();
     resetWarmState();
-    Object.assign(anthropic.state, { requests: [], authHeaders: [], text: ['Cloud ', 'answer.'], status: 200, outputTokens: 40 });
+    Object.assign(anthropic.state, {
+      requests: [], authHeaders: [], text: ['Cloud ', 'answer.'], status: 200, outputTokens: 40,
+      search: null, pauseAfterSearch: false,
+    });
     Object.assign(ollama.state, { chatRequests: [], tokens: ['Local ', 'answer.'], pauseAfterFirstMs: 0, failAfterFirst: null });
   });
 
@@ -189,5 +192,111 @@ describe('cloud tier', () => {
     const warm = costUsd(model, { cache_read_input_tokens: contextTokens, output_tokens: 150 });
     assert.ok(warm < cold, `follow-up ${warm} should cost less than first turn ${cold}`);
     assert.ok(cold / warm > 1.9, `caching should roughly halve a follow-up (ratio ${(cold / warm).toFixed(2)})`);
+  });
+
+  describe('web search', () => {
+    const search = { query: 'railway pgvector setup', url: 'https://example.com/pgvector', title: 'pgvector on Railway' };
+
+    test('searches on the cloud tier, streams what it searched, cites the pages, and bills the search', async () => {
+      anthropic.state.search = search;
+      const response = await chat(
+        { query: 'how does the ingestion pipeline chunk and prune files', webSearch: true },
+        { 'x-anthropic-api-key': KEY }
+      );
+      assert.equal(response.status, 200);
+      const lines = await readLines(response);
+
+      assert.equal(lines[0].routing.decision, 'cloud', 'web search makes it a cloud answer without choosing a tier');
+      const [request] = anthropic.state.requests;
+      assert.deepEqual(request.tools, [{ type: 'web_search_20260209', name: 'web_search', max_uses: 3 }]);
+
+      assert.deepEqual(lines.filter((l) => l.type === 'searching').map((l) => l.query), [search.query]);
+      const done = lines.at(-1);
+      assert.equal(done.type, 'done');
+      assert.deepEqual(done.web, [{ url: search.url, title: search.title }]);
+
+      const withoutSearch = costUsd('claude-sonnet-5', { input_tokens: 1200, output_tokens: 40 });
+      assert.ok(Math.abs(done.metrics.costUsd - withoutSearch - 0.01) < 1e-9, 'one search adds a cent');
+    });
+
+    test('a paused search turn is resumed and finishes as one answer', async () => {
+      Object.assign(anthropic.state, { search, pauseAfterSearch: true });
+      const lines = await readLines(
+        await chat({ query: 'how does the ingestion pipeline chunk files', webSearch: true }, { 'x-anthropic-api-key': KEY })
+      );
+      assert.equal(anthropic.state.requests.length, 2, 'the paused turn was sent back once');
+      const resumed = anthropic.state.requests[1].messages.at(-1);
+      assert.equal(resumed.role, 'assistant');
+      assert.ok(resumed.content.some((block) => block.type === 'server_tool_use'), 'sent back exactly as it stood');
+      assert.equal(lines.filter((l) => l.type === 'token').map((l) => l.text).join(''), 'Cloud answer.');
+      assert.deepEqual(lines.at(-1).web, [{ url: search.url, title: search.title }]);
+      const done = lines.at(-1);
+      assert.equal(done.metrics.promptTokens, 2400, 'usage from both requests is counted');
+    });
+
+    test('nodes marked private are left out of a web answer, which says how many it skipped', async () => {
+      anthropic.state.search = search;
+      const response = await chat(
+        { query: 'stepper calibration constants for the unreleased stage secret motor', webSearch: true },
+        { 'x-anthropic-api-key': KEY }
+      );
+      assert.equal(response.status, 200, 'answered, not refused');
+      const lines = await readLines(response);
+      const [context] = lines;
+      assert.equal(context.routing.decision, 'cloud');
+      assert.ok(context.nodes.every((node) => node.privacy !== 'local'), 'no private node in context');
+      assert.ok(!context.nodes.some((node) => node.id === ids.secret));
+      assert.ok(context.omittedPrivate >= 1, 'the private node it would have read is counted');
+
+      // The question itself goes out, as every cloud question does; the private
+      // file must not, neither by path nor inside the context block.
+      const sent = JSON.stringify(anthropic.state.requests);
+      assert.ok(!sent.includes('firmware/secret_motor.c'), 'the private file never reached Anthropic');
+      const first = anthropic.state.requests[0].messages[0].content;
+      const text = typeof first === 'string' ? first : first.map((block) => block.text).join('');
+      const contextPart = text.split('## Question')[0];
+      assert.match(contextPart, /## Context/, 'there is a context section to inspect');
+      assert.ok(!/stepper calibration constants/.test(contextPart), 'nor its contents, in the context');
+      assert.equal(lines.at(-1).type, 'done');
+    });
+
+    test('a web answer with nothing private to skip reports zero', async () => {
+      anthropic.state.search = search;
+      const [context] = await readLines(
+        await chat({ query: 'how does the ingestion pipeline chunk files', webSearch: true }, { 'x-anthropic-api-key': KEY })
+      );
+      assert.equal(context.omittedPrivate, 0);
+    });
+
+    test('without web search, private context still forces the local tier as before', async () => {
+      const response = await chat(
+        { query: 'stepper calibration constants for the unreleased stage secret motor', tier: 'cloud_frontier' },
+        { 'x-anthropic-api-key': KEY }
+      );
+      const [context] = await readLines(response);
+      assert.equal(context.routing.decision, 'local');
+      assert.equal(context.routing.reason, 'privacy_flag');
+      assert.equal(anthropic.state.requests.length, 0);
+    });
+
+    test('without a key it says web search needs one', async () => {
+      const response = await chat({ query: 'how does the ingestion pipeline chunk files', webSearch: true });
+      assert.equal(response.status, 503);
+      assert.match((await response.json()).error, /Web search runs on the cloud tier/);
+    });
+
+    test('webSearch must be a boolean', async () => {
+      assert.equal((await chat({ query: 'x', webSearch: 'yes' })).status, 400);
+    });
+
+    test('citations are deduplicated by URL and ignore non-web citations', () => {
+      const citation = (url, title) => ({ type: 'web_search_result_location', url, title, cited_text: '', encrypted_index: '' });
+      const cited = webCitations([
+        { type: 'text', text: 'a', citations: [citation('https://a', 'A'), citation('https://b', null)] },
+        { type: 'text', text: 'b', citations: [citation('https://a', 'A'), { type: 'char_location', cited_text: '' }] },
+        { type: 'server_tool_use', name: 'web_search', input: {} },
+      ]);
+      assert.deepEqual(cited, [{ url: 'https://a', title: 'A' }, { url: 'https://b', title: 'https://b' }]);
+    });
   });
 });
