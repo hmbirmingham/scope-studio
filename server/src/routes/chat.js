@@ -103,7 +103,7 @@ async function* generate({ decision, model, effort, messages, apiKey, cacheMarke
   }
 }
 
-async function planTurn(ownerId, sessionId, { query, project, tier, overrides, conversationId }, { cloudAvailable }) {
+async function planTurn(ownerId, sessionId, { query, project, tier, overrides, conversationId, cloudOnly = false }, { cloudAvailable }) {
   const text = query.trim();
   const model = localChatModel();
 
@@ -114,13 +114,27 @@ async function planTurn(ownerId, sessionId, { query, project, tier, overrides, c
 
   const conversation = getConversation(conversationId, ownerId);
   const provisional = provisionalTier({ localAvailable, preferredTier: tier });
-  const gather = (query) =>
-    gatherCandidates({ ownerId, query, project, tier: provisional, overrides, embed: status.running });
+  const gather = (query, onlyCloud = cloudOnly) =>
+    gatherCandidates({ ownerId, query, project, tier: provisional, overrides, embed: status.running, cloudOnly: onlyCloud });
   // A question that stands on its own is retrieved on its own, so a change of
   // subject finds its own sources; only when that finds nothing, or the wording
   // leans on the previous turn, does the previous question join the query.
-  let gathered = conversation && !readsAsFollowUp(text) ? await gather(text) : null;
-  if (!gathered || gathered.candidates.length === 0) gathered = await gather(retrievalQuery(conversation, text));
+  let asked = conversation && !readsAsFollowUp(text) ? text : null;
+  let gathered = asked ? await gather(asked) : null;
+  if (!gathered || gathered.candidates.length === 0) {
+    asked = retrievalQuery(conversation, text);
+    gathered = await gather(asked);
+  }
+
+  // With private nodes left out, say how many the answer would otherwise have
+  // read, so it is never silently thinner than it looks.
+  let omittedPrivate = 0;
+  if (cloudOnly) {
+    const everything = await gather(asked, false);
+    omittedPrivate = packForTier(everything.candidates, provisional, overrides).selected.filter(
+      ({ node }) => node.privacy === 'local'
+    ).length;
+  }
 
   const decideStart = performance.now();
   let packed = packForTier(gathered.candidates, provisional, overrides);
@@ -175,6 +189,7 @@ async function planTurn(ownerId, sessionId, { query, project, tier, overrides, c
     contextTokens,
     metrics,
     routingDecisionMs,
+    omittedPrivate,
     reused: Boolean(continued),
     routing: {
       decision: route.decision,
@@ -238,11 +253,11 @@ router.post('/', async (req, res) => {
 
   const ownerId = req.session.userId;
   const apiKey = req.get(API_KEY_HEADER);
-  // Searching the web happens on Anthropic's side, so it is a cloud answer: the
-  // question goes out as a cloud request would, and private context still
-  // forces local, which then refuses the search rather than leak anything.
+  // Searching the web happens on Anthropic's side, so it is a cloud answer.
+  // Nodes marked private are left out of its retrieval entirely; everything
+  // else is used, and the answer says how many private nodes it skipped.
   const webSearch = req.body.webSearch === true;
-  const turn = webSearch ? { ...req.body, tier: CLOUD_TIER } : req.body;
+  const turn = webSearch ? { ...req.body, tier: CLOUD_TIER, cloudOnly: true } : req.body;
   const [userPlan, plan] = await Promise.all([
     getUserPlan(ownerId),
     planTurn(ownerId, req.sessionID, turn, { cloudAvailable: Boolean(apiKey) }),
@@ -269,6 +284,8 @@ router.post('/', async (req, res) => {
       },
     });
 
+  // Unreachable while retrieval leaves private nodes out, and kept that way on
+  // purpose: if one ever got through, the search is refused, not sent.
   if (webSearch && route.decision === 'local') {
     await record({}, false);
     return res.status(409).json({
@@ -311,6 +328,7 @@ router.post('/', async (req, res) => {
     nodes: sources.map(presentNode),
     ambiguity: projectAmbiguity(plan.gathered.candidates),
     metrics,
+    ...(webSearch ? { omittedPrivate: plan.omittedPrivate } : {}),
   });
 
   let ttftMs = null;

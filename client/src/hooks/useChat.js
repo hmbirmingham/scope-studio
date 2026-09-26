@@ -126,6 +126,7 @@ export function useChat({ project, apiKey, tier, webSearch = false, onEdits }) {
           answer.routing = line.routing;
           answer.metrics = line.metrics;
           answer.ambiguity = line.ambiguity;
+          answer.omittedPrivate = line.omittedPrivate ?? 0;
           setStatus('answering');
           setLive({ ...answer });
         } else if (line.type === 'token') {

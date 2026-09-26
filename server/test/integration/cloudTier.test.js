@@ -234,16 +234,49 @@ describe('cloud tier', () => {
       assert.equal(done.metrics.promptTokens, 2400, 'usage from both requests is counted');
     });
 
-    test('private context refuses the search instead of sending it out', async () => {
+    test('nodes marked private are left out of a web answer, which says how many it skipped', async () => {
       anthropic.state.search = search;
       const response = await chat(
         { query: 'stepper calibration constants for the unreleased stage secret motor', webSearch: true },
         { 'x-anthropic-api-key': KEY }
       );
-      assert.equal(response.status, 409);
-      const body = await response.json();
-      assert.equal(body.code, 'web_search_private');
-      assert.equal(anthropic.state.requests.length, 0, 'Anthropic received nothing');
+      assert.equal(response.status, 200, 'answered, not refused');
+      const lines = await readLines(response);
+      const [context] = lines;
+      assert.equal(context.routing.decision, 'cloud');
+      assert.ok(context.nodes.every((node) => node.privacy !== 'local'), 'no private node in context');
+      assert.ok(!context.nodes.some((node) => node.id === ids.secret));
+      assert.ok(context.omittedPrivate >= 1, 'the private node it would have read is counted');
+
+      // The question itself goes out, as every cloud question does; the private
+      // file must not, neither by path nor inside the context block.
+      const sent = JSON.stringify(anthropic.state.requests);
+      assert.ok(!sent.includes('firmware/secret_motor.c'), 'the private file never reached Anthropic');
+      const first = anthropic.state.requests[0].messages[0].content;
+      const text = typeof first === 'string' ? first : first.map((block) => block.text).join('');
+      const contextPart = text.split('## Question')[0];
+      assert.match(contextPart, /## Context/, 'there is a context section to inspect');
+      assert.ok(!/stepper calibration constants/.test(contextPart), 'nor its contents, in the context');
+      assert.equal(lines.at(-1).type, 'done');
+    });
+
+    test('a web answer with nothing private to skip reports zero', async () => {
+      anthropic.state.search = search;
+      const [context] = await readLines(
+        await chat({ query: 'how does the ingestion pipeline chunk files', webSearch: true }, { 'x-anthropic-api-key': KEY })
+      );
+      assert.equal(context.omittedPrivate, 0);
+    });
+
+    test('without web search, private context still forces the local tier as before', async () => {
+      const response = await chat(
+        { query: 'stepper calibration constants for the unreleased stage secret motor', tier: 'cloud_frontier' },
+        { 'x-anthropic-api-key': KEY }
+      );
+      const [context] = await readLines(response);
+      assert.equal(context.routing.decision, 'local');
+      assert.equal(context.routing.reason, 'privacy_flag');
+      assert.equal(anthropic.state.requests.length, 0);
     });
 
     test('without a key it says web search needs one', async () => {
