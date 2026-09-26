@@ -22,6 +22,7 @@ function Studio() {
   // Held in memory for this session only: never localStorage, never the server.
   const [apiKey, setApiKey] = useState('');
   const [tier, setTier] = useState(null);
+  const [webSearch, setWebSearch] = useState(false);
   const [preferences, setPreferences] = useState({});
 
   const projectSettings = useProjectSettings(true);
@@ -30,6 +31,7 @@ function Studio() {
     project: activeProject,
     apiKey,
     tier,
+    webSearch,
   });
 
   const nodesById = useMemo(
@@ -99,6 +101,8 @@ function Studio() {
           onNarrow={handleSelectProject}
           tier={tier}
           onTierChange={setTier}
+          webSearch={webSearch}
+          onWebSearchChange={setWebSearch}
           hasKey={Boolean(apiKey)}
         />
         {!panelOpen && (

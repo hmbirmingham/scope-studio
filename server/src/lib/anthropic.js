@@ -23,6 +23,26 @@ const MAX_TOKENS = 2048;
 const CACHE_WRITE_MULTIPLIER = 1.25;
 const CACHE_READ_MULTIPLIER = 0.1;
 
+// Web search is billed per search on top of tokens: $10 per thousand.
+const WEB_SEARCH_USD = 0.01;
+// Bounds what one question can spend on searching, and how long it can run.
+const WEB_SEARCH_MAX_USES = 3;
+// A server-side search can pause a long turn; the request is re-sent to let it
+// finish. Past this many continuations the answer ends where it is.
+const MAX_CONTINUATIONS = 3;
+
+// The dynamic-filtering search runs on the newer models only; Haiku keeps the
+// basic tool.
+const WEB_SEARCH_TOOL = {
+  'claude-sonnet-5': 'web_search_20260209',
+  'claude-opus-5': 'web_search_20260209',
+  'claude-haiku-4-5': 'web_search_20250305',
+};
+
+export function webSearchTool(model) {
+  return { type: WEB_SEARCH_TOOL[model] ?? 'web_search_20250305', name: 'web_search', max_uses: WEB_SEARCH_MAX_USES };
+}
+
 export function priceFor(model) {
   return PRICES[model] ?? null;
 }
@@ -34,13 +54,44 @@ export function costUsd(model, usage) {
   const written = usage.cache_creation_input_tokens ?? 0;
   const read = usage.cache_read_input_tokens ?? 0;
   const output = usage.output_tokens ?? 0;
+  const searches = usage.server_tool_use?.web_search_requests ?? 0;
   return (
     (fresh * price.input +
       written * price.input * CACHE_WRITE_MULTIPLIER +
       read * price.input * CACHE_READ_MULTIPLIER +
       output * price.output) /
-    1_000_000
+      1_000_000 +
+    searches * WEB_SEARCH_USD
   );
+}
+
+// Usage from several requests (a paused search turn is re-sent) summed into one.
+export function addUsage(total, usage) {
+  if (!usage) return total;
+  const sum = (key) => (total?.[key] ?? 0) + (usage[key] ?? 0);
+  return {
+    input_tokens: sum('input_tokens'),
+    output_tokens: sum('output_tokens'),
+    cache_creation_input_tokens: sum('cache_creation_input_tokens'),
+    cache_read_input_tokens: sum('cache_read_input_tokens'),
+    server_tool_use: {
+      web_search_requests:
+        (total?.server_tool_use?.web_search_requests ?? 0) + (usage.server_tool_use?.web_search_requests ?? 0),
+    },
+  };
+}
+
+// The pages an answer actually cited, deduplicated by URL, in citation order.
+export function webCitations(content) {
+  const seen = new Map();
+  for (const block of content ?? []) {
+    if (block.type !== 'text') continue;
+    for (const citation of block.citations ?? []) {
+      if (citation.type !== 'web_search_result_location' || seen.has(citation.url)) continue;
+      seen.set(citation.url, { url: citation.url, title: citation.title ?? citation.url });
+    }
+  }
+  return [...seen.values()];
 }
 
 // The context block is the expensive, stable part of the prompt and the
@@ -87,30 +138,51 @@ export function createClient(apiKey) {
 
 // Yields `{ text }` per delta and finally `{ done: true, usage, stopReason }`,
 // matching the shape the local client yields so the route streams either the
-// same way.
-export async function* streamChat({ apiKey, model, effort, messages, cacheMarker, signal }) {
+// same way. With `webSearch`, also `{ searching: query }` as each search runs
+// and `{ citations }` before done.
+export async function* streamChat({ apiKey, model, effort, messages, cacheMarker, signal, webSearch = false }) {
   const client = createClient(apiKey);
   const { system, rest } = splitSystem(withCacheBreakpoint(messages, cacheMarker));
+  const conversation = [...rest];
+  const content = [];
+  let usage = null;
+  let final;
 
-  const stream = client.messages.stream(
-    {
-      model,
-      max_tokens: MAX_TOKENS,
-      system,
-      messages: rest,
-      output_config: { effort: process.env.CLOUD_EFFORT || effort },
-    },
-    { signal }
-  );
+  for (let turn = 0; turn <= MAX_CONTINUATIONS; turn++) {
+    const stream = client.messages.stream(
+      {
+        model,
+        max_tokens: MAX_TOKENS,
+        system,
+        messages: conversation,
+        output_config: { effort: process.env.CLOUD_EFFORT || effort },
+        ...(webSearch ? { tools: [webSearchTool(model)] } : {}),
+      },
+      { signal }
+    );
 
-  for await (const event of stream) {
-    if (event.type === 'content_block_delta' && event.delta.type === 'text_delta') {
-      yield { text: event.delta.text };
+    for await (const event of stream) {
+      if (event.type === 'content_block_delta' && event.delta.type === 'text_delta') {
+        yield { text: event.delta.text };
+      }
+      if (event.type === 'content_block_stop') {
+        const block = stream.currentMessage?.content?.[event.index];
+        if (block?.type === 'server_tool_use' && block.name === 'web_search' && block.input?.query) {
+          yield { searching: block.input.query };
+        }
+      }
     }
+
+    final = await stream.finalMessage();
+    usage = addUsage(usage, final.usage);
+    content.push(...final.content);
+    // A paused server-tool turn is resumed by sending it back as it stands.
+    if (final.stop_reason !== 'pause_turn') break;
+    conversation.push({ role: 'assistant', content: final.content });
   }
 
-  const final = await stream.finalMessage();
-  yield { done: true, usage: final.usage, stopReason: final.stop_reason };
+  if (webSearch) yield { citations: webCitations(content) };
+  yield { done: true, usage, stopReason: final.stop_reason };
 }
 
 // A refusal or an auth failure should read as a sentence, not a stack trace.

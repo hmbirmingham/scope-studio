@@ -24,7 +24,7 @@ async function postJson(path, body, { apiKey, signal } = {}) {
 // One conversation per thread — a project, or "all maps". Switching threads
 // puts the other one away and brings this one back; it does not carry the last
 // project's work into the next question.
-export function useChat({ project, apiKey, tier, onEdits }) {
+export function useChat({ project, apiKey, tier, webSearch = false, onEdits }) {
   const threadKey = project ?? 'all';
   const [turns, setTurns] = useState([]);
   const [draft, setDraft] = useState('');
@@ -104,11 +104,11 @@ export function useChat({ project, apiKey, tier, onEdits }) {
     setDraft('');
     setTurns((prev) => [...prev, { role: 'user', text }]);
 
-    const answer = { role: 'assistant', text: '', sources: [], routing: null, metrics: null };
+    const answer = { role: 'assistant', text: '', sources: [], routing: null, metrics: null, searches: [], web: [] };
     try {
       const { ok, body } = await postJson(
         '/api/chat',
-        { query: text, project, tier, conversationId: conversationRef.current },
+        { query: text, project, tier, webSearch, conversationId: conversationRef.current },
         { apiKey }
       );
       if (!ok) {
@@ -131,6 +131,9 @@ export function useChat({ project, apiKey, tier, onEdits }) {
         } else if (line.type === 'token') {
           answer.text += line.text;
           setLive({ ...answer });
+        } else if (line.type === 'searching') {
+          answer.searches = [...answer.searches, line.query];
+          setLive({ ...answer });
         } else if (line.type === 'edits') {
           // Proposed, not applied: the panel shows them for approval, and the
           // arrival itself is what opens that tab.
@@ -141,6 +144,7 @@ export function useChat({ project, apiKey, tier, onEdits }) {
           onEditsRef.current?.(line.runs);
         } else if (line.type === 'done') {
           answer.metrics = { ...answer.metrics, ...line.metrics };
+          answer.web = line.web ?? [];
         } else if (line.type === 'error') {
           setError(line.error);
         }
@@ -153,7 +157,7 @@ export function useChat({ project, apiKey, tier, onEdits }) {
       setStatus('idle');
       answeringRef.current = false;
     }
-  }, [draft, project, tier, apiKey]);
+  }, [draft, project, tier, webSearch, apiKey]);
 
   // What the canvas should light up right now: the question being typed wins,
   // then the answer being written, then the last answer given.

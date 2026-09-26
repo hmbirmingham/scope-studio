@@ -34,6 +34,27 @@ function SourceList({ nodes }) {
   );
 }
 
+// Pages the answer cited, and while it works, what it is searching for.
+function WebSources({ searches, web }) {
+  if (!web?.length && !searches?.length) return null;
+  return (
+    <div className="web-sources">
+      {web?.length > 0
+        ? web.map((page, i) => (
+            <a key={page.url} href={page.url} target="_blank" rel="noreferrer noopener" title={page.url}>
+              <span className="web-index">{i + 1}</span>
+              {page.title}
+            </a>
+          ))
+        : searches.map((query, i) => (
+            <span key={i} className="web-searching">
+              Searching “{query}”
+            </span>
+          ))}
+    </div>
+  );
+}
+
 function Sources({ nodes, metrics, routing }) {
   if (!nodes || nodes.length === 0) return null;
   const saved = metrics?.efficiencyRatio != null ? `${Math.round((1 - metrics.efficiencyRatio) * 100)}% fewer tokens` : null;
@@ -164,7 +185,7 @@ function RunRow({ run, onDecide }) {
   );
 }
 
-export default function ChatPanel({ project, chat, onNarrow, tier, onTierChange, hasKey }) {
+export default function ChatPanel({ project, chat, onNarrow, tier, onTierChange, webSearch, onWebSearchChange, hasKey }) {
   const { turns, edits, runs, draft, setDraft, send, status, error, preview, live, routing, metrics, ambiguity } = chat;
   const model = modelName(routing) ?? (tier === 'cloud_frontier' ? 'cloud' : 'local');
   const pendingEdits = edits.filter((edit) => !['applied', 'rejected'].includes(edit.state));
@@ -193,6 +214,7 @@ export default function ChatPanel({ project, chat, onNarrow, tier, onTierChange,
                 <Sources nodes={turn.sources} metrics={turn.metrics} routing={turn.routing} />
               )}
               <div className={`answer ${turn.refused ? 'is-refused' : ''}`}>{turn.text}</div>
+              <WebSources web={turn.web} />
               {turn.metrics?.costUsd > 0 && (
                 <div className="answer-meta">
                   {money(turn.metrics.costUsd)} · {turn.metrics.outputTokens} tokens
@@ -205,6 +227,7 @@ export default function ChatPanel({ project, chat, onNarrow, tier, onTierChange,
         {live && (
           <div className="turn is-assistant">
             <Sources nodes={live.sources} metrics={live.metrics} routing={live.routing} />
+            <WebSources searches={live.searches} />
             <div className="answer">
               {live.text}
               <span className="caret" />
@@ -272,8 +295,17 @@ export default function ChatPanel({ project, chat, onNarrow, tier, onTierChange,
               </button>
             ))}
           </div>
+          <button
+            type="button"
+            className={`tier web-toggle ${webSearch ? 'is-on' : ''}`}
+            aria-pressed={webSearch}
+            title="Search the web for this answer. Runs on the cloud tier with your key; private context refuses it."
+            onClick={() => onWebSearchChange(!webSearch)}
+          >
+            Web
+          </button>
           <span className="composer-model">{model}</span>
-          {!hasKey && tier === 'cloud_frontier' && <span className="composer-hint">needs your key</span>}
+          {!hasKey && (tier === 'cloud_frontier' || webSearch) && <span className="composer-hint">needs your key</span>}
           <button type="submit" className="composer-send" aria-label="Send" disabled={status !== 'idle'}>
             ⏎
           </button>

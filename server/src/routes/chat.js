@@ -24,7 +24,7 @@ import {
   saveDraft,
 } from '../routing/conversation.js';
 import { buildFollowUp, buildMessages, composeMessages } from '../routing/prompt.js';
-import { decideRoute, provisionalTier } from '../routing/route.js';
+import { CLOUD_TIER, decideRoute, provisionalTier } from '../routing/route.js';
 import { parseEdits, presentProposal, recordProposals } from '../editing/proposals.js';
 import { declaredScripts, parseRuns, presentRun, recordRuns } from '../editing/commands.js';
 import { getProjectSettings } from '../models/projectSettings.js';
@@ -62,8 +62,9 @@ function unavailableMessage(route, status, model) {
   return `${lead} ${localFix(status, model)}`;
 }
 
-function invalid({ query, tier }) {
+function invalid({ query, tier, webSearch }) {
   if (!query || typeof query !== 'string' || !query.trim()) return 'query is required';
+  if (webSearch !== undefined && typeof webSearch !== 'boolean') return 'webSearch must be true or false';
   if (tier && !TIER_CONFIGS[tier]) return `tier must be one of: ${Object.keys(TIER_CONFIGS).join(', ')}`;
   return null;
 }
@@ -77,7 +78,7 @@ function invalid({ query, tier }) {
 // across a conversation, so that is where the cache breakpoint goes.
 const CACHE_MARKERS = { strict_xml: '<question>', markdown: '## Question' };
 
-async function* generate({ decision, model, effort, messages, apiKey, cacheMarker, signal }) {
+async function* generate({ decision, model, effort, messages, apiKey, cacheMarker, signal, webSearch }) {
   if (decision === 'local') {
     for await (const chunk of streamLocal({ model, messages, options: LOCAL_OPTIONS, signal })) {
       if (chunk.message?.content) yield { text: chunk.message.content };
@@ -87,8 +88,10 @@ async function* generate({ decision, model, effort, messages, apiKey, cacheMarke
     }
     return;
   }
-  for await (const event of streamCloud({ apiKey, model, effort, messages, cacheMarker, signal })) {
+  for await (const event of streamCloud({ apiKey, model, effort, messages, cacheMarker, signal, webSearch })) {
     if (event.text) yield { text: event.text };
+    if (event.searching) yield { searching: event.searching };
+    if (event.citations) yield { citations: event.citations };
     if (event.done) {
       yield {
         done: true,
@@ -235,9 +238,14 @@ router.post('/', async (req, res) => {
 
   const ownerId = req.session.userId;
   const apiKey = req.get(API_KEY_HEADER);
+  // Searching the web happens on Anthropic's side, so it is a cloud answer: the
+  // question goes out as a cloud request would, and private context still
+  // forces local, which then refuses the search rather than leak anything.
+  const webSearch = req.body.webSearch === true;
+  const turn = webSearch ? { ...req.body, tier: CLOUD_TIER } : req.body;
   const [userPlan, plan] = await Promise.all([
     getUserPlan(ownerId),
-    planTurn(ownerId, req.sessionID, req.body, { cloudAvailable: Boolean(apiKey) }),
+    planTurn(ownerId, req.sessionID, turn, { cloudAvailable: Boolean(apiKey) }),
   ]);
   const { route, sources, metrics } = plan;
   const model = route.decision === 'local' ? plan.model : resolveCloudModel(userPlan);
@@ -261,11 +269,24 @@ router.post('/', async (req, res) => {
       },
     });
 
+  if (webSearch && route.decision === 'local') {
+    await record({}, false);
+    return res.status(409).json({
+      error:
+        'Web search sends the question to Anthropic, and this one draws on private context, which only ever goes to the local model. Ask it without web search, or search for something that does not need the private repository.',
+      code: 'web_search_private',
+      queryId,
+    });
+  }
+
   if (route.blocked) {
     await record({}, false);
     return res.status(503).json({
       // Always the local model here: the hint is about what to install.
-      error: unavailableMessage(route, plan.status, plan.model),
+      error:
+        webSearch && route.blocked === 'cloud_unavailable'
+          ? `Web search runs on the cloud tier and needs your own Anthropic API key, sent in the ${API_KEY_HEADER} header; it is never stored.`
+          : unavailableMessage(route, plan.status, plan.model),
       code: route.blocked,
       queryId,
       routing: plan.routing,
@@ -298,6 +319,7 @@ router.post('/', async (req, res) => {
   let cost = null;
   let failure = null;
   let answer = '';
+  let citations = [];
   beginGeneration();
   try {
     for await (const event of generate({
@@ -308,7 +330,10 @@ router.post('/', async (req, res) => {
       effort: cloudEffortFor(userPlan),
       cacheMarker: CACHE_MARKERS[plan.config.prompt_structure],
       signal: upstream.signal,
+      webSearch,
     })) {
+      if (event.searching) send({ type: 'searching', query: event.searching });
+      if (event.citations) citations = event.citations;
       if (event.text) {
         ttftMs ??= Math.round(performance.now() - started);
         answer += event.text;
@@ -363,6 +388,7 @@ router.post('/', async (req, res) => {
         queryId,
         conversationId,
         metrics: { ttftMs, totalResponseMs, outputTokens, promptTokens, costUsd: cost },
+        ...(webSearch ? { web: citations } : {}),
       });
     }
     res.end();

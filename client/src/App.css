@@ -887,6 +887,19 @@ body {
 
 .composer-model { margin-left: auto; color: var(--t3); font-size: 11px; }
 .composer-hint { color: var(--amber); font-size: 10px; }
+.web-toggle { margin-left: 6px; }
+
+.web-sources { display: flex; flex-wrap: wrap; gap: 6px; margin: 8px 0 2px; }
+.web-sources a,
+.web-searching {
+  display: inline-flex; align-items: center; gap: 6px; max-width: 280px;
+  padding: 3px 8px; border-radius: 6px; font-size: 11px;
+  color: var(--t2); background: rgba(255, 255, 255, 0.04);
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis; text-decoration: none;
+}
+.web-sources a:hover { color: var(--t1); background: rgba(255, 255, 255, 0.07); }
+.web-index { color: var(--t3); font-variant-numeric: tabular-nums; }
+.web-searching { color: var(--t3); font-style: italic; }
 
 .composer-link {
   background: none;
