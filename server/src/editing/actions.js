@@ -148,6 +148,7 @@ export function presentAction(action) {
     state: action.state,
     problem: action.problem,
     error: action.error,
+    auto: Boolean(action.auto),
   };
 }
 
@@ -158,6 +159,24 @@ export function executeAction(action, { run = execFile } = {}) {
       resolveDone(err ? { ok: false, error: (stderr || err.message).trim() } : { ok: true });
     });
   });
+}
+
+// Display mode: the user has agreed, once, that actions may open without a
+// card each time. Every rule still applies, and one more: a web address opens
+// by itself only if the answer's web search cited it. An address the model
+// produced on its own could come from a page it read, so it still asks.
+export function autoOpens(action, { citedUrls = [] } = {}) {
+  if (action.state !== 'proposed') return false;
+  if (action.kind !== 'url') return true;
+  const cited = new Set(citedUrls.map((url) => new URL(url).href));
+  return cited.has(new URL(action.target).href);
+}
+
+export async function openNow(action, { run } = {}) {
+  action.state = 'opening';
+  const result = await executeAction(action, { run });
+  Object.assign(action, result.ok ? { state: 'opened', auto: true } : { state: 'failed', error: result.error });
+  return action;
 }
 
 export function resetActions() {

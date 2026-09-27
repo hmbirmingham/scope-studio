@@ -968,3 +968,18 @@ body {
 .map-open:hover { opacity: 1; border-color: rgba(79, 172, 254, 0.4); }
 
 .stage { position: relative; }
+
+.consent-backdrop {
+  position: fixed; inset: 0; z-index: 50; display: grid; place-items: center; padding: 16px;
+  background: rgba(0, 0, 0, 0.55);
+}
+.consent {
+  width: min(460px, 100%); padding: 20px 22px; border-radius: 12px;
+  background: var(--panel, #16161a); border: 1px solid rgba(255, 255, 255, 0.08); color: var(--t1);
+  font-size: 13px; line-height: 1.5;
+}
+.consent h2 { margin: 0 0 8px; font-size: 15px; font-weight: 600; }
+.consent p { margin: 0 0 8px; color: var(--t2); }
+.consent ul { margin: 0 0 10px; padding-left: 18px; color: var(--t2); }
+.consent li { margin: 2px 0; }
+.consent-never { color: var(--t1); }

@@ -13,6 +13,26 @@ export function isLocalRequest(req) {
   return LOOPBACK.has(req.socket.remoteAddress);
 }
 
+// Display mode is granted once per signed-in session, from this machine only,
+// and signing out clears it with the session.
+export function displayControlAllowed(req) {
+  return req.session.displayControl === true && isLocalRequest(req) && process.platform === 'darwin';
+}
+
+router.get('/consent', (req, res) => {
+  res.json({ displayControl: displayControlAllowed(req), available: isLocalRequest(req) && process.platform === 'darwin' });
+});
+
+router.put('/consent', (req, res) => {
+  const { displayControl } = req.body ?? {};
+  if (typeof displayControl !== 'boolean') return res.status(400).json({ error: 'displayControl must be true or false' });
+  if (displayControl && !isLocalRequest(req)) {
+    return res.status(403).json({ error: 'display control can only be granted on the machine running Scope Studio' });
+  }
+  req.session.displayControl = displayControl;
+  res.json({ displayControl: displayControlAllowed(req) });
+});
+
 router.get('/', (req, res) => {
   const { conversationId } = req.query;
   res.json({ actions: listActions(req.session.userId, { conversationId }).map(presentAction) });

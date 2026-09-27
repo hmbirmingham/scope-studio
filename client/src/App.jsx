@@ -1,4 +1,4 @@
-import { useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import ChatPanel from './components/ChatPanel';
 import InspectorOverlay from './components/InspectorOverlay';
 import LoginGate from './components/LoginGate';
@@ -23,6 +23,32 @@ function Studio() {
   const [apiKey, setApiKey] = useState('');
   const [tier, setTier] = useState(null);
   const [webSearch, setWebSearch] = useState(false);
+  // Display mode: granted once through the privacy prompt, held by the server
+  // in this signed-in session, withdrawn by turning it off or signing out.
+  const [displayControl, setDisplayControl] = useState(false);
+  const [displayAvailable, setDisplayAvailable] = useState(false);
+
+  useEffect(() => {
+    fetch('/api/actions/consent')
+      .then((response) => (response.ok ? response.json() : null))
+      .then((body) => {
+        if (!body) return;
+        setDisplayControl(body.displayControl);
+        setDisplayAvailable(body.available);
+      })
+      .catch(() => {});
+  }, []);
+
+  const changeDisplayControl = useCallback(async (next) => {
+    const response = await fetch('/api/actions/consent', {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ displayControl: next }),
+    });
+    const body = await response.json().catch(() => ({}));
+    setDisplayControl(response.ok ? body.displayControl : false);
+    return response.ok ? null : body.error ?? 'could not change display control';
+  }, []);
   const [preferences, setPreferences] = useState({});
 
   const projectSettings = useProjectSettings(true);
@@ -32,6 +58,7 @@ function Studio() {
     apiKey,
     tier,
     webSearch,
+    displayControl,
   });
 
   const nodesById = useMemo(
@@ -103,6 +130,9 @@ function Studio() {
           onTierChange={setTier}
           webSearch={webSearch}
           onWebSearchChange={setWebSearch}
+          displayControl={displayControl}
+          displayAvailable={displayAvailable}
+          onDisplayControlChange={changeDisplayControl}
           hasKey={Boolean(apiKey)}
         />
         {!panelOpen && (

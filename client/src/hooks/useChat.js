@@ -24,7 +24,7 @@ async function postJson(path, body, { apiKey, signal } = {}) {
 // One conversation per thread — a project, or "all maps". Switching threads
 // puts the other one away and brings this one back; it does not carry the last
 // project's work into the next question.
-export function useChat({ project, apiKey, tier, webSearch = false, onEdits }) {
+export function useChat({ project, apiKey, tier, webSearch = false, displayControl = false, onEdits }) {
   const threadKey = project ?? 'all';
   const [turns, setTurns] = useState([]);
   const [draft, setDraft] = useState('');
@@ -110,7 +110,7 @@ export function useChat({ project, apiKey, tier, webSearch = false, onEdits }) {
     try {
       const { ok, body } = await postJson(
         '/api/chat',
-        { query: text, project, tier, webSearch, conversationId: conversationRef.current },
+        { query: text, project, tier, webSearch, displayControl, conversationId: conversationRef.current },
         { apiKey }
       );
       if (!ok) {
@@ -162,7 +162,7 @@ export function useChat({ project, apiKey, tier, webSearch = false, onEdits }) {
       setStatus('idle');
       answeringRef.current = false;
     }
-  }, [draft, project, tier, webSearch, apiKey]);
+  }, [draft, project, tier, webSearch, displayControl, apiKey]);
 
   // What the canvas should light up right now: the question being typed wins,
   // then the answer being written, then the last answer given.

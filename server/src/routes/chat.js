@@ -27,7 +27,8 @@ import { buildFollowUp, buildMessages, composeMessages } from '../routing/prompt
 import { CLOUD_TIER, decideRoute, provisionalTier } from '../routing/route.js';
 import { parseEdits, presentProposal, recordProposals } from '../editing/proposals.js';
 import { declaredScripts, parseRuns, presentRun, recordRuns } from '../editing/commands.js';
-import { parseActions, presentAction, recordActions } from '../editing/actions.js';
+import { autoOpens, openNow, parseActions, presentAction, recordActions } from '../editing/actions.js';
+import { displayControlAllowed } from './actions.js';
 import { getProjectSettings } from '../models/projectSettings.js';
 import { beginGeneration, endGeneration, warmCache } from '../routing/warm.js';
 import { getUserPlan } from '../models/userStore.js';
@@ -63,8 +64,9 @@ function unavailableMessage(route, status, model) {
   return `${lead} ${localFix(status, model)}`;
 }
 
-function invalid({ query, tier, webSearch }) {
+function invalid({ query, tier, webSearch, displayControl }) {
   if (!query || typeof query !== 'string' || !query.trim()) return 'query is required';
+  if (displayControl !== undefined && typeof displayControl !== 'boolean') return 'displayControl must be true or false';
   if (webSearch !== undefined && typeof webSearch !== 'boolean') return 'webSearch must be true or false';
   if (tier && !TIER_CONFIGS[tier]) return `tier must be one of: ${Object.keys(TIER_CONFIGS).join(', ')}`;
   return null;
@@ -339,6 +341,8 @@ router.post('/', async (req, res) => {
   let failure = null;
   let answer = '';
   let citations = [];
+  // Asked for on this request, and granted for this session, from this machine.
+  const displayControl = req.body.displayControl === true && displayControlAllowed(req);
   beginGeneration();
   try {
     for await (const event of generate({
@@ -351,7 +355,17 @@ router.post('/', async (req, res) => {
       signal: upstream.signal,
       webSearch,
     })) {
-      if (event.searching) send({ type: 'searching', query: event.searching });
+      if (event.searching) {
+        send({ type: 'searching', query: event.searching });
+        // In display mode the search plays out on screen as it happens.
+        if (displayControl) {
+          const [shown] = await recordActions({
+            ownerId, conversationId, project: req.body.project ?? null, found: [{ kind: 'search', target: event.searching }],
+          });
+          if (shown.state === 'proposed') await openNow(shown, { run: req.app.locals.openRunner });
+          send({ type: 'actions', queryId, actions: [presentAction(shown)] });
+        }
+      }
       if (event.citations) citations = event.citations;
       if (event.text) {
         ttftMs ??= Math.round(performance.now() - started);
@@ -410,6 +424,12 @@ router.post('/', async (req, res) => {
       localPath: settings?.localPath ?? null,
       found,
     });
+    if (displayControl) {
+      const citedUrls = citations.map((page) => page.url);
+      for (const action of proposedActions) {
+        if (autoOpens(action, { citedUrls })) await openNow(action, { run: req.app.locals.openRunner });
+      }
+    }
   }
 
   const totalResponseMs = Math.round(performance.now() - started);
