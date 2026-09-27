@@ -1,3 +1,4 @@
+import { useState } from 'react';
 import Disclosure from './Disclosure';
 
 const TIERS = [
@@ -154,6 +155,30 @@ function EditRow({ edit, onDecide }) {
 
 const RUN_TONE = { proposed: 'pending', succeeded: 'good', failed: 'warn', unbound: 'warn', undeclared: 'warn' };
 
+// The privacy ask: what display mode will do on this Mac, and what it never does.
+function DisplayConsent({ onAllow, onCancel, problem }) {
+  return (
+    <div className="consent-backdrop" role="dialog" aria-modal="true" aria-labelledby="consent-title">
+      <div className="consent">
+        <h2 id="consent-title">Let Scope Studio use your display?</h2>
+        <p>While Display is on, answers open things on this Mac's screen without asking each time:</p>
+        <ul>
+          <li>web searches, including each search a web answer runs, in your browser;</li>
+          <li>apps you name, except Terminal and other apps that run commands;</li>
+          <li>files from the project's own folder, in a text editor;</li>
+          <li>pages a web answer cited. Any other address still asks first.</li>
+        </ul>
+        <p className="consent-never">It never clicks, types, or takes screenshots. Turn Display off, or sign out, to withdraw.</p>
+        {problem && <div className="row-note is-warn">{problem}</div>}
+        <div className="row-actions">
+          <button type="button" className="row-approve" onClick={onAllow}>Allow on this Mac</button>
+          <button type="button" className="row-reject" onClick={onCancel}>Not now</button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 const ACTION_TONE = { proposed: 'pending', opened: 'good', failed: 'warn', refused: 'warn' };
 
 // Something to open on this Mac's screen: a search, a page, an app, or a file.
@@ -161,7 +186,7 @@ function ActionRow({ action, onDecide }) {
   const detail = {
     proposed: 'needs your approval',
     opening: 'opening…',
-    opened: 'opened',
+    opened: action.auto ? 'opened on screen' : 'opened',
     failed: 'could not open',
     refused: 'will not open',
     rejected: 'discarded',
@@ -233,7 +258,25 @@ function RunRow({ run, onDecide }) {
   );
 }
 
-export default function ChatPanel({ project, chat, onNarrow, tier, onTierChange, webSearch, onWebSearchChange, hasKey }) {
+export default function ChatPanel({
+  project, chat, onNarrow, tier, onTierChange, webSearch, onWebSearchChange,
+  displayControl, displayAvailable, onDisplayControlChange, hasKey,
+}) {
+  const [asking, setAsking] = useState(false);
+  const [consentProblem, setConsentProblem] = useState(null);
+  const toggleDisplay = async () => {
+    if (displayControl) {
+      await onDisplayControlChange(false);
+      return;
+    }
+    setConsentProblem(null);
+    setAsking(true);
+  };
+  const allowDisplay = async () => {
+    const problem = await onDisplayControlChange(true);
+    if (problem) setConsentProblem(problem);
+    else setAsking(false);
+  };
   const { turns, edits, runs, draft, setDraft, send, status, error, preview, live, routing, metrics, ambiguity } = chat;
   const model = modelName(routing) ?? (tier === 'cloud_frontier' ? 'cloud' : 'local');
   const pendingEdits = edits.filter((edit) => !['applied', 'rejected'].includes(edit.state));
@@ -318,6 +361,7 @@ export default function ChatPanel({ project, chat, onNarrow, tier, onTierChange,
         {error && <div className="row-note is-warn">{error}</div>}
       </div>
 
+      {asking && <DisplayConsent onAllow={allowDisplay} onCancel={() => setAsking(false)} problem={consentProblem} />}
       <form className="composer" onSubmit={handleSubmit}>
         <textarea
           rows={1}
@@ -356,6 +400,17 @@ export default function ChatPanel({ project, chat, onNarrow, tier, onTierChange,
           >
             Web
           </button>
+          {displayAvailable && (
+            <button
+              type="button"
+              className={`tier ${displayControl ? 'is-on' : ''}`}
+              aria-pressed={displayControl}
+              title="Let answers open searches, pages, apps and files on this Mac's screen without asking each time."
+              onClick={toggleDisplay}
+            >
+              Display
+            </button>
+          )}
           <span className="composer-model">{model}</span>
           {!hasKey && (tier === 'cloud_frontier' || webSearch) && <span className="composer-hint">needs your key</span>}
           <button type="submit" className="composer-send" aria-label="Send" disabled={status !== 'idle'}>

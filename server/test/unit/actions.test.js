@@ -3,7 +3,7 @@ import { mkdtemp, mkdir, symlink, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { before, describe, test } from 'node:test';
-import { SEARCH_URL, executeAction, parseActions, planAction, recordActions } from '../../src/editing/actions.js';
+import { SEARCH_URL, autoOpens, executeAction, parseActions, planAction, recordActions } from '../../src/editing/actions.js';
 
 describe('parseActions', () => {
   test('reads each kind once, trimmed, and ignores anything else', () => {
@@ -104,5 +104,21 @@ describe('recordActions and executeAction', () => {
     const run = (file, args, options, done) => done(new Error('exit 1'), '', 'Unable to find application named Nope');
     const [action] = await recordActions({ ownerId: 'u', conversationId: 'c', found: [{ kind: 'app', target: 'Nope' }], platform: 'darwin' });
     assert.deepEqual(await executeAction(action, { run }), { ok: false, error: 'Unable to find application named Nope' });
+  });
+});
+
+describe('autoOpens', () => {
+  const action = (kind, target, state = 'proposed') => ({ kind, target, state });
+
+  test('in display mode searches, apps and files open by themselves', () => {
+    for (const kind of ['search', 'app', 'file']) assert.equal(autoOpens(action(kind, 'x')), true, kind);
+  });
+  test('a web address opens by itself only if the search cited it, compared as normalised URLs', () => {
+    assert.equal(autoOpens(action('url', 'https://example.com'), { citedUrls: ['https://example.com/'] }), true);
+    assert.equal(autoOpens(action('url', 'https://example.com/other'), { citedUrls: ['https://example.com/'] }), false);
+    assert.equal(autoOpens(action('url', 'https://example.com/')), false, 'nothing cited, nothing auto-opens');
+  });
+  test('refused or already-decided actions never open', () => {
+    for (const state of ['refused', 'rejected', 'opened', 'failed']) assert.equal(autoOpens(action('search', 'x', state)), false, state);
   });
 });
