@@ -2,11 +2,12 @@ import assert from 'node:assert/strict';
 import { after, before, beforeEach, describe, test } from 'node:test';
 import { setTimeout as sleep } from 'node:timers/promises';
 import { costUsd, priceFor, webCitations } from '../../src/lib/anthropic.js';
+import { weeklyAllowanceUsd } from '../../src/billing/plans.js';
 import { parseNdjson } from '../../src/lib/ollama.js';
 import { resetConversations } from '../../src/routing/conversation.js';
 import { resetWarmState } from '../../src/routing/warm.js';
 import { startFakeAnthropic } from '../fakeAnthropic.js';
-import { startFakeOllama } from '../fakeOllama.js';
+import { deadUrl, startFakeOllama } from '../fakeOllama.js';
 import { ensureCentroids, registeredSession, startServer } from '../helpers.js';
 
 const realOllama = process.env.OLLAMA_URL || 'http://localhost:11434';
@@ -28,6 +29,12 @@ describe('cloud tier', () => {
     return lines;
   }
 
+  async function setPlan(session, plan) {
+    const id = (await session('GET', '/api/auth/session')).data.userId;
+    await server.pool.query('UPDATE users SET plan = $1 WHERE id = $2', [plan, id]);
+    return id;
+  }
+
   async function metricsRow(queryId) {
     for (let i = 0; i < 100; i++) {
       const { rows } = await server.pool.query('SELECT * FROM query_metrics WHERE query_id = $1', [queryId]);
@@ -45,6 +52,8 @@ describe('cloud tier', () => {
     server = await startServer();
     await ensureCentroids(server.pool);
     api = await registeredSession(server.base);
+    // Choosing the cloud is Key Pro only; the plan-rule tests below use their own users.
+    await setPlan(api, 'key_pro');
 
     const create = async (body) => (await api('POST', '/api/nodes', body)).data;
     const doc = await create({
@@ -297,6 +306,119 @@ describe('cloud tier', () => {
         { type: 'server_tool_use', name: 'web_search', input: {} },
       ]);
       assert.deepEqual(cited, [{ url: 'https://a', title: 'A' }, { url: 'https://b', title: 'https://b' }]);
+    });
+  });
+
+  describe('plan rules', () => {
+    const PLATFORM = 'sk-ant-platform-test-not-real';
+    const question = 'how does the ingestion pipeline chunk and prune files';
+    const as = (session) => (body, headers = {}) =>
+      session.raw('POST', '/api/chat', body, { headers: { 'Content-Type': 'application/json', ...headers } });
+
+    async function userOn(plan) {
+      const session = await registeredSession(server.base);
+      const id = await setPlan(session, plan);
+      await session('POST', '/api/nodes', {
+        type: 'file',
+        content: 'docs/pipeline.md\n\nThe ingestion pipeline chunks files, embeds each chunk, and prunes deleted paths.',
+        project: 'hmb/docs',
+        privacy: 'cloud',
+      });
+      return { session, id, chat: as(session) };
+    }
+
+    async function withLocalDown(fn) {
+      const previous = process.env.OLLAMA_URL;
+      process.env.OLLAMA_URL = await deadUrl();
+      try {
+        return await fn();
+      } finally {
+        process.env.OLLAMA_URL = previous;
+      }
+    }
+
+    async function withPlatformKey(fn) {
+      process.env.PLATFORM_ANTHROPIC_API_KEY = PLATFORM;
+      try {
+        return await fn();
+      } finally {
+        delete process.env.PLATFORM_ANTHROPIC_API_KEY;
+      }
+    }
+
+    test('choosing Cloud or web search off Key Pro is refused, even with a valid key, and Anthropic hears nothing', async () => {
+      for (const plan of ['free', 'student', 'engineer']) {
+        const { chat: ask } = await userOn(plan);
+        for (const body of [{ query: question, tier: 'cloud_frontier' }, { query: question, webSearch: true }]) {
+          const response = await withPlatformKey(() => ask(body, { 'x-anthropic-api-key': KEY }));
+          assert.equal(response.status, 403, `${plan} ${JSON.stringify(body)}`);
+          const payload = await response.json();
+          assert.equal(payload.code, 'cloud_requires_key_pro');
+          assert.match(payload.error, /Key Pro/);
+          // Free is never told Auto will reach the cloud, because it will not.
+          assert.equal(/uses the cloud on its own/.test(payload.error), plan !== 'free', plan);
+        }
+      }
+      assert.equal(anthropic.state.requests.length, 0);
+    });
+
+    test('Student on Auto answers locally while the local model can, and the platform key is not used', async () => {
+      const { chat: ask } = await userOn('student');
+      const lines = await withPlatformKey(async () => readLines(await ask({ query: question })));
+      assert.equal(lines[0].routing.decision, 'local');
+      assert.equal(anthropic.state.requests.length, 0);
+    });
+
+    test('Student on Auto reaches the cloud on the platform key when the local model is down, billed to the platform', async () => {
+      const { chat: ask } = await userOn('student');
+      const lines = await withLocalDown(() => withPlatformKey(async () => readLines(await ask({ query: question }))));
+      const [context] = lines;
+      assert.equal(context.routing.decision, 'cloud');
+      assert.equal(context.routing.reason, 'no_ollama');
+      assert.equal(context.routing.model, 'anthropic/claude-sonnet-5');
+      assert.deepEqual(anthropic.state.authHeaders, [PLATFORM], 'the platform key, never a user key');
+      const row = await metricsRow(lines.at(-1).queryId);
+      assert.equal(row.billed_to, 'platform');
+      assert.ok(row.cost_usd > 0);
+    });
+
+    test('past half the week\'s allowance a platform answer moves to Haiku; a spent allowance stops the cloud', async () => {
+      const { chat: ask, id } = await userOn('student');
+      const allowance = weeklyAllowanceUsd('student');
+      const spend = (usd) =>
+        server.pool.query(
+          `INSERT INTO query_metrics (query_text, owner_id, tier, routing_decision, model_used, cost_usd, output_tokens, billed_to)
+           VALUES ('earlier', $1, 'cloud_frontier', 'cloud', 'anthropic/claude-sonnet-5', $2, 100, 'platform')`,
+          [id, usd]
+        );
+
+      await spend(allowance * 0.6);
+      const [half] = await withLocalDown(() => withPlatformKey(async () => readLines(await ask({ query: question }))));
+      assert.equal(half.routing.model, 'anthropic/claude-haiku-4-5');
+
+      await spend(allowance);
+      anthropic.state.requests = [];
+      const response = await withLocalDown(() => withPlatformKey(() => ask({ query: question })));
+      assert.equal(response.status, 503);
+      const payload = await response.json();
+      assert.equal(payload.code, 'allowance_exhausted');
+      assert.match(payload.error, /allowance is used/);
+      assert.equal(anthropic.state.requests.length, 0);
+    });
+
+    test('with no platform key configured, Student on Auto with the local model down gets the local message, not the cloud', async () => {
+      const { chat: ask } = await userOn('student');
+      const response = await withLocalDown(() => ask({ query: question }, { 'x-anthropic-api-key': KEY }));
+      assert.equal(response.status, 503);
+      assert.match((await response.json()).error, /local model is not available/);
+      assert.equal(anthropic.state.requests.length, 0, 'the user key was not used either');
+    });
+
+    test('Free on Auto with the local model down never reaches the cloud', async () => {
+      const { chat: ask } = await userOn('free');
+      const response = await withLocalDown(() => withPlatformKey(() => ask({ query: question }, { 'x-anthropic-api-key': KEY })));
+      assert.equal(response.status, 503);
+      assert.equal(anthropic.state.requests.length, 0);
     });
   });
 });

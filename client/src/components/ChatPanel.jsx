@@ -260,8 +260,12 @@ function RunRow({ run, onDecide }) {
 
 export default function ChatPanel({
   project, chat, onNarrow, tier, onTierChange, webSearch, onWebSearchChange,
-  displayControl, displayAvailable, onDisplayControlChange, hasKey,
+  displayControl, displayAvailable, onDisplayControlChange, hasKey, cloudPlan,
 }) {
+  const chooseCloud = cloudPlan?.chooseCloud !== false;
+  const KEY_PRO_ONLY = cloudPlan?.autoCloud
+    ? 'Key Pro only. Auto still uses the cloud when the local model cannot answer.'
+    : 'Key Pro only. This plan answers with the local model.';
   const [asking, setAsking] = useState(false);
   const [consentProblem, setConsentProblem] = useState(null);
   const toggleDisplay = async () => {
@@ -385,6 +389,8 @@ export default function ChatPanel({
                 type="button"
                 key={option.label}
                 className={`tier ${tier === option.value ? 'is-on' : ''}`}
+                disabled={option.value === 'cloud_frontier' && !chooseCloud}
+                title={option.value === 'cloud_frontier' && !chooseCloud ? KEY_PRO_ONLY : undefined}
                 onClick={() => onTierChange(option.value)}
               >
                 {option.label}
@@ -395,7 +401,8 @@ export default function ChatPanel({
             type="button"
             className={`tier web-toggle ${webSearch ? 'is-on' : ''}`}
             aria-pressed={webSearch}
-            title="Search the web for this answer. Runs on the cloud tier with your key; sources marked private are left out."
+            disabled={!chooseCloud}
+            title={chooseCloud ? 'Search the web for this answer. Runs on the cloud tier with your key; sources marked private are left out.' : KEY_PRO_ONLY}
             onClick={() => onWebSearchChange(!webSearch)}
           >
             Web
@@ -412,7 +419,12 @@ export default function ChatPanel({
             </button>
           )}
           <span className="composer-model">{model}</span>
-          {!hasKey && (tier === 'cloud_frontier' || webSearch) && <span className="composer-hint">needs your key</span>}
+          {chooseCloud && !hasKey && (tier === 'cloud_frontier' || webSearch) && <span className="composer-hint">needs your key</span>}
+          {!chooseCloud && cloudPlan?.autoCloud && cloudPlan.remainingUsd != null && (
+            <span className="composer-plan" title="Auto uses the cloud only when the local model cannot answer.">
+              cloud via Auto · ${cloudPlan.remainingUsd.toFixed(2)} left this week
+            </span>
+          )}
           <button type="submit" className="composer-send" aria-label="Send" disabled={status !== 'idle'}>
             ⏎
           </button>

@@ -1,5 +1,18 @@
 import { getPool } from '../db/pool.js';
-import { planFor, weeklyAllowanceUsd } from '../billing/plans.js';
+import { canAutoCloud, canChooseCloud, planFor, platformModel, weeklyAllowanceUsd } from '../billing/plans.js';
+
+// What the platform has paid for this user's cloud answers over the last seven
+// days: the figure the weekly allowance is checked against before every
+// platform-paid answer.
+export async function weeklyPlatformSpend(ownerId, pool = getPool()) {
+  const { rows } = await pool.query(
+    `SELECT COALESCE(sum(cost_usd) FILTER (WHERE billed_to = 'platform'), 0)::float8 AS spend
+     FROM query_metrics
+     WHERE owner_id = $1 AND created_at > now() - interval '7 days'`,
+    [ownerId]
+  );
+  return rows[0].spend;
+}
 
 // What a user actually costs to serve. Metered tiers are priced against this,
 // so it reads from the recorded per-query cost rather than an estimate.
@@ -21,12 +34,7 @@ export async function usageSummary(ownerId, { days = 7, plan = 'free' } = {}) {
     [ownerId, window]
   );
 
-  const { rows: week } = await pool.query(
-    `SELECT COALESCE(sum(cost_usd) FILTER (WHERE billed_to = 'platform'), 0)::float8 AS spend
-     FROM query_metrics
-     WHERE owner_id = $1 AND created_at > now() - interval '7 days'`,
-    [ownerId]
-  );
+  const thisWeek = await weeklyPlatformSpend(ownerId, pool);
 
   const { rows: byModel } = await pool.query(
     `SELECT model_used AS model, count(*)::int AS queries,
@@ -41,10 +49,13 @@ export async function usageSummary(ownerId, { days = 7, plan = 'free' } = {}) {
   const total = totals[0];
   const perDay = total.platform_spend / Number(days);
   const allowance = weeklyAllowanceUsd(plan);
-  const thisWeek = week[0].spend;
 
   return {
     plan,
+    // What this plan may do with the cloud, so the interface can say so before
+    // the server refuses.
+    chooseCloud: canChooseCloud(plan),
+    autoCloud: canAutoCloud(plan),
     windowDays: Number(days),
     queries: total.queries,
     cloudQueries: total.cloud_queries,
@@ -60,12 +71,16 @@ export async function usageSummary(ownerId, { days = 7, plan = 'free' } = {}) {
     projectedMonthlyUsd: perDay * 30,
     weekly: allowance === null
       ? { allowanceUsd: null, spentUsd: thisWeek, remainingUsd: null, note: 'runs on the user\'s own key' }
-      : {
-          allowanceUsd: allowance,
-          spentUsd: thisWeek,
-          remainingUsd: Math.max(allowance - thisWeek, 0),
-          exhausted: thisWeek >= allowance,
-        },
+      : allowance === 0
+        ? { allowanceUsd: 0, spentUsd: 0, remainingUsd: 0, note: 'local only' }
+        : {
+            allowanceUsd: allowance,
+            spentUsd: thisWeek,
+            remainingUsd: Math.max(allowance - thisWeek, 0),
+            exhausted: thisWeek >= allowance,
+            // Which model the next platform-paid answer would use.
+            nextModel: platformModel(thisWeek, allowance),
+          },
     byModel,
   };
 }

@@ -55,11 +55,19 @@ describe('usage and spend', () => {
     assert.ok(Math.abs(student.weekly.allowanceUsd - 2.25 / (30 / 7)) < 1e-9);
     assert.ok(Math.abs(student.weekly.spentUsd - 0.005) < 1e-9, 'only platform spend counts against it');
     assert.equal(student.weekly.exhausted, false);
+    assert.equal(student.chooseCloud, false, 'Student cannot pick the cloud');
+    assert.equal(student.autoCloud, true, 'but Auto may reach it');
+    assert.equal(student.weekly.nextModel, 'claude-sonnet-5', 'well under half the allowance');
 
     await server.pool.query("UPDATE users SET plan = 'key_pro' WHERE id = $1", [mine]);
     const keyPro = (await api('GET', '/api/usage')).data;
     assert.equal(keyPro.weekly.allowanceUsd, null);
     assert.match(keyPro.weekly.note, /own key/);
+    assert.equal(keyPro.chooseCloud, true);
+
+    await server.pool.query("UPDATE users SET plan = 'free' WHERE id = $1", [mine]);
+    const free = (await api('GET', '/api/usage')).data;
+    assert.deepEqual([free.chooseCloud, free.autoCloud, free.weekly.note], [false, false, 'local only']);
 
     await server.pool.query("UPDATE users SET plan = 'free' WHERE id = $1", [mine]);
   });

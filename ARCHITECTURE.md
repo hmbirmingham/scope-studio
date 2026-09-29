@@ -358,7 +358,7 @@ about 1,800 input tokens and 150 output tokens. At that shape:
 
 | | per answer | per answer, 4-turn conversation with the context cached |
 |---|---|---|
-| `claude-sonnet-5` (every plan) | $0.0051 | $0.0029 |
+| `claude-sonnet-5` | $0.0051 | $0.0029 |
 | `claude-haiku-4-5` | $0.0026 | $0.0015 |
 | `claude-opus-5` (not offered) | $0.0128 | $0.0072 |
 
@@ -371,13 +371,38 @@ byte-identical across turns by construction (§ Conversations keep their context
 block), so every turn after the first pays a tenth of its input price, and the
 1.25× write has paid for itself by the second turn.
 
-**Plans** (`billing/plans.js`, one edit changes pricing everywhere): Free is
-local-only and unlimited; Key-Pro runs on the user's own key, so there is no
-allowance to meter; Student and Engineer both answer on Sonnet, and Engineer's
-premium is depth and volume — a larger allowance and `high` effort — rather
-than a more expensive model. Every answer records **who paid** (`billed_to`):
-spend on a user's own key is not margin, and a total that mixes the two cannot
-be separated afterwards.
+**Measured, 2026-09-27: the estimate above does not survive a user's choices.**
+A comparison question with Cloud selected read eight sources and wrote a
+thousand-word answer: **$0.0425**, eight times the $0.005 per-answer shape the
+metered plans were priced on. Source count and answer length followed from
+what the user chose, so a platform-paid allowance that the user steers leaves
+the platform absorbing costs it does not control.
+
+**Plans** (`billing/plans.js`, one edit changes pricing everywhere). Who decides
+that an answer goes to the cloud is the line between plans, and every cloud
+call's key is chosen in one place (`billing/credential.js`):
+
+| Plan | Choose Cloud or web search | Auto may use the cloud | Who pays | Model |
+|---|---|---|---|---|
+| Free | no | no | — | — |
+| Student | no | only when the local model cannot answer, within $2.25/month | platform | Sonnet, then Haiku past half the week's allowance |
+| Engineer | no | same, within $6/month, effort `high` | platform | same |
+| Key Pro | yes | yes, when the local model cannot answer | the user's own key | Sonnet |
+
+- **Choosing the cloud is Key Pro only, as a hard block.** Off Key Pro an
+  explicit Cloud or web request is refused before anything is retrieved, and
+  the user's key header is never read, so it can never be sent.
+- **Auto is the most efficient path.** It answers locally whenever the local
+  model can, so a platform-paid answer happens only when local cannot — the
+  model is off, missing, or the machine cannot run it.
+- **The allowance is enforced, not reported.** Before a platform-paid answer
+  the week's platform spend is checked; spent means no cloud. Past half the
+  allowance the model moves from Sonnet to Haiku, about half the cost per
+  answer, so the allowance lasts the week.
+- Platform-paid answers need `PLATFORM_ANTHROPIC_API_KEY`; unset, Student and
+  Engineer answer locally only. There is never a default.
+- Every answer records **who paid** (`billed_to`): spend on a user's own key is
+  not margin, and a total that mixes the two cannot be separated afterwards.
 
 Two caps bound the worst case rather than trusting the average: the context
 budget (4,000 tokens on the cloud tier) and `max_tokens` (2,048, against

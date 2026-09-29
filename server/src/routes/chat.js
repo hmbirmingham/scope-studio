@@ -2,7 +2,9 @@ import { randomUUID } from 'node:crypto';
 import { Router } from 'express';
 import requireAuth from '../middleware/requireAuth.js';
 import { costUsd, describeError, streamChat as streamCloud } from '../lib/anthropic.js';
-import { cloudEffortFor, resolveCloudModel } from '../billing/plans.js';
+import { canAutoCloud, canChooseCloud } from '../billing/plans.js';
+import { resolveCloudCredential } from '../billing/credential.js';
+import { weeklyPlatformSpend } from '../models/usageStore.js';
 import { localChatModel, localModelStatus, streamChat as streamLocal } from '../lib/ollama.js';
 import {
   gatherCandidates,
@@ -62,6 +64,45 @@ function unavailableMessage(route, status, model) {
       ? 'This question draws on private context, which is only ever sent to the local model.'
       : 'The local model was requested but is not available.';
   return `${lead} ${localFix(status, model)}`;
+}
+
+// What a refused Cloud or web request says depends on what Auto can still do
+// for this plan: Student and Engineer reach the cloud through it, Free never.
+function keyProOnly(plan) {
+  const lead = 'Choosing Cloud or web search runs on Key Pro, with your own Anthropic key.';
+  return canAutoCloud(plan)
+    ? `${lead} Use Auto: it answers locally, and uses the cloud on its own when the local model cannot answer.`
+    : `${lead} This plan answers with the local model.`;
+}
+const ALLOWANCE_USED =
+  "This week's cloud allowance is used, and the local model is not available to answer instead.";
+
+// The credential for this request, from the plan: the user's own key on Key
+// Pro, the platform's key for an Auto answer on Student or Engineer while the
+// allowance lasts, or none. The week's platform spend is only read when the
+// plan could spend it.
+async function cloudCredentialFor(ownerId, userPlan, body, headerKey) {
+  const explicit = body.tier === CLOUD_TIER || body.webSearch === true;
+  const meters = !canChooseCloud(userPlan) && !explicit && canAutoCloud(userPlan);
+  return resolveCloudCredential({
+    plan: userPlan,
+    headerKey,
+    explicit,
+    weeklySpentUsd: meters ? await weeklyPlatformSpend(ownerId) : 0,
+  });
+}
+
+function blockedMessage({ route, credential, webSearch, status, model }) {
+  if (route.blocked === 'cloud_unavailable') {
+    if (credential.blocked === 'allowance_exhausted') return `${ALLOWANCE_USED} ${localFix(status, model)}`;
+    if (credential.billedTo === 'user_key' && webSearch) {
+      return `Web search runs on the cloud tier and needs your own Anthropic API key, sent in the ${API_KEY_HEADER} header; it is never stored.`;
+    }
+    if (credential.billedTo !== 'user_key' && route.reason === 'no_ollama') {
+      return `The local model is not available. ${localFix(status, model)}`;
+    }
+  }
+  return unavailableMessage(route, status, model);
 }
 
 function invalid({ query, tier, webSearch, displayControl }) {
@@ -213,8 +254,10 @@ router.post('/prepare', async (req, res) => {
   const problem = invalid(req.body);
   if (problem) return res.status(400).json({ error: problem });
 
+  const userPlan = await getUserPlan(req.session.userId);
+  const credential = await cloudCredentialFor(req.session.userId, userPlan, req.body, req.get(API_KEY_HEADER));
   const plan = await planTurn(req.session.userId, req.sessionID, req.body, {
-    cloudAvailable: Boolean(req.get(API_KEY_HEADER)),
+    cloudAvailable: Boolean(credential.apiKey),
   });
   if (plan.contextBlock) {
     saveDraft(draftKey(req.session.userId, req.sessionID), {
@@ -255,18 +298,25 @@ router.post('/', async (req, res) => {
   });
 
   const ownerId = req.session.userId;
-  const apiKey = req.get(API_KEY_HEADER);
+  const userPlan = await getUserPlan(ownerId);
+  const credential = await cloudCredentialFor(ownerId, userPlan, req.body, req.get(API_KEY_HEADER));
+  // A plan that may not choose the cloud is refused before anything is
+  // retrieved or sent: the hard block.
+  if (credential.blocked === 'cloud_requires_key_pro') {
+    return res.status(403).json({
+      error: req.body.webSearch === true ? `Web search runs on the cloud tier. ${keyProOnly(userPlan)}` : keyProOnly(userPlan),
+      code: 'cloud_requires_key_pro',
+    });
+  }
+  const apiKey = credential.apiKey;
   // Searching the web happens on Anthropic's side, so it is a cloud answer.
   // Nodes marked private are left out of its retrieval entirely; everything
   // else is used, and the answer says how many private nodes it skipped.
   const webSearch = req.body.webSearch === true;
   const turn = webSearch ? { ...req.body, tier: CLOUD_TIER, cloudOnly: true } : req.body;
-  const [userPlan, plan] = await Promise.all([
-    getUserPlan(ownerId),
-    planTurn(ownerId, req.sessionID, turn, { cloudAvailable: Boolean(apiKey) }),
-  ]);
+  const plan = await planTurn(ownerId, req.sessionID, turn, { cloudAvailable: Boolean(apiKey) });
   const { route, sources, metrics } = plan;
-  const model = route.decision === 'local' ? plan.model : resolveCloudModel(userPlan);
+  const model = route.decision === 'local' ? plan.model : credential.model;
   const conversationId = req.body.conversationId ?? randomUUID();
 
   const queryId = randomUUID();
@@ -303,11 +353,8 @@ router.post('/', async (req, res) => {
     await record({}, false);
     return res.status(503).json({
       // Always the local model here: the hint is about what to install.
-      error:
-        webSearch && route.blocked === 'cloud_unavailable'
-          ? `Web search runs on the cloud tier and needs your own Anthropic API key, sent in the ${API_KEY_HEADER} header; it is never stored.`
-          : unavailableMessage(route, plan.status, plan.model),
-      code: route.blocked,
+      error: blockedMessage({ route, credential, webSearch, status: plan.status, model: plan.model }),
+      code: credential.blocked === 'allowance_exhausted' && route.blocked === 'cloud_unavailable' ? 'allowance_exhausted' : route.blocked,
       queryId,
       routing: plan.routing,
       nodes: sources.map(({ node }) => ({ id: node.id, type: node.type, project: node.project, privacy: node.privacy })),
@@ -350,7 +397,7 @@ router.post('/', async (req, res) => {
       model,
       messages: plan.messages,
       apiKey,
-      effort: cloudEffortFor(userPlan),
+      effort: credential.effort,
       cacheMarker: CACHE_MARKERS[plan.config.prompt_structure],
       signal: upstream.signal,
       webSearch,
@@ -473,7 +520,9 @@ router.post('/', async (req, res) => {
         outputTokens,
         costUsd: cost,
         // Whose money paid for this answer: only platform spend is margin.
-        billedTo: route.decision === 'cloud' ? (apiKey ? 'user_key' : 'platform') : null,
+        // Whose money paid for this answer: only platform spend is margin, and
+        // only an Auto answer on Student or Engineer can be platform spend.
+        billedTo: route.decision === 'cloud' ? credential.billedTo : null,
       },
       true
     );

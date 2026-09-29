@@ -26,6 +26,23 @@ function Studio() {
   // Display mode: granted once through the privacy prompt, held by the server
   // in this signed-in session, withdrawn by turning it off or signing out.
   const [displayControl, setDisplayControl] = useState(false);
+  // What this plan may do with the cloud. The server enforces it; this only
+  // lets the composer say so before a request is refused.
+  const [cloudPlan, setCloudPlan] = useState({ chooseCloud: true, autoCloud: true, remainingUsd: null });
+
+  useEffect(() => {
+    fetch('/api/usage?days=7')
+      .then((response) => (response.ok ? response.json() : null))
+      .then((body) => {
+        if (!body) return;
+        setCloudPlan({ chooseCloud: body.chooseCloud, autoCloud: body.autoCloud, remainingUsd: body.weekly?.remainingUsd ?? null });
+        if (!body.chooseCloud) {
+          setTier((current) => (current === 'cloud_frontier' ? null : current));
+          setWebSearch(false);
+        }
+      })
+      .catch(() => {});
+  }, []);
   const [displayAvailable, setDisplayAvailable] = useState(false);
 
   useEffect(() => {
@@ -130,6 +147,7 @@ function Studio() {
           onTierChange={setTier}
           webSearch={webSearch}
           onWebSearchChange={setWebSearch}
+          cloudPlan={cloudPlan}
           displayControl={displayControl}
           displayAvailable={displayAvailable}
           onDisplayControlChange={changeDisplayControl}
