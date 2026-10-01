@@ -8,6 +8,7 @@ import editsRouter from './routes/edits.js';
 import projectsRouter from './routes/projects.js';
 import runsRouter from './routes/runs.js';
 import actionsRouter from './routes/actions.js';
+import billingRouter, { billingWebhook } from './routes/billing.js';
 import nodesRouter from './routes/nodes.js';
 import githubPluginRouter from './routes/plugins/github.js';
 import graphRouter from './routes/graph.js';
@@ -19,6 +20,9 @@ const PgSessionStore = connectPgSimple(session);
 function createApp(env) {
   const app = express();
 
+  // The billing webhook verifies a signature over the exact bytes it was sent,
+  // so it reads the raw body and is mounted before the JSON parser.
+  app.post('/api/billing/webhook', express.raw({ type: '*/*', limit: '1mb' }), billingWebhook);
   app.use(express.json());
   app.use(
     session({
@@ -46,6 +50,7 @@ function createApp(env) {
   app.use('/api/projects', projectsRouter);
   app.use('/api/runs', runsRouter);
   app.use('/api/actions', actionsRouter);
+  app.use('/api/billing', billingRouter);
   app.use('/api/graph', graphRouter);
   app.use('/api/nodes', nodesRouter);
   app.use('/api/plugins/github', githubPluginRouter);

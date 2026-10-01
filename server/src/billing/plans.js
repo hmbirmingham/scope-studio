@@ -10,9 +10,11 @@
 
 const WEEKS_PER_MONTH = 30 / 7;
 
-// Card fees on every charge, then the share of what is left the platform keeps.
-export const CARD_FEE_RATE = 0.029;
-export const CARD_FEE_FIXED_USD = 0.3;
+// Payment fees on every charge, then the share of what is left the platform
+// keeps. Lemon Squeezy is the merchant of record — it collects and remits sales
+// tax and VAT — and charges 5% + $0.50 a transaction for it.
+export const CARD_FEE_RATE = 0.05;
+export const CARD_FEE_FIXED_USD = 0.5;
 export const MARGIN_TARGET = 0.6;
 
 // Opus is offered for Engineer's hard questions and as Key Pro's opt-in, never
@@ -50,7 +52,7 @@ export const PLANS = {
   },
   // Opus where it earns its cost: the hard questions.
   engineer: {
-    priceUsd: 25, chooseCloud: false, autoCloud: true, ownKey: false, platformPaid: true, monthlyAnswers: 350,
+    priceUsd: 25, chooseCloud: false, autoCloud: true, ownKey: false, platformPaid: true, monthlyAnswers: 340,
     models: { default: 'claude-sonnet-5', hard: 'claude-opus-5' }, effort: 'medium',
   },
 };
@@ -67,7 +69,7 @@ export function canAutoCloud(name) {
   return planFor(name).autoCloud === true;
 }
 
-// What a month's price leaves after card fees.
+// What a month's price leaves after payment fees.
 export function netRevenueUsd(name) {
   const { priceUsd } = planFor(name);
   return priceUsd > 0 ? priceUsd * (1 - CARD_FEE_RATE) - CARD_FEE_FIXED_USD : 0;

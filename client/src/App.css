@@ -1090,3 +1090,16 @@ body {
   from { transform: translateX(24px); opacity: 0; }
   to { transform: none; opacity: 1; }
 }
+
+/* --- plan & billing --------------------------------------------------- */
+.plan-cards { display: grid; gap: 8px; margin: 12px 0; }
+.plan-card {
+  padding: 12px 14px; border-radius: 10px;
+  border: 1px solid var(--border2); background: rgba(255, 255, 255, 0.02);
+}
+.plan-card.is-current { border-color: rgba(79, 172, 254, 0.45); background: rgba(79, 172, 254, 0.05); }
+.plan-card-head { display: flex; justify-content: space-between; align-items: baseline; gap: 8px; }
+.plan-name { color: var(--t1); font-weight: 600; font-size: 13px; }
+.plan-price { color: var(--t2); font-family: var(--mono); font-size: 12px; }
+.plan-blurb { margin: 6px 0 10px; color: var(--t2); font-size: 12px; line-height: 1.5; }
+.plan-current { color: var(--t3); font-size: 11px; }
