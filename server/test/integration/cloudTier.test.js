@@ -393,8 +393,10 @@ describe('cloud tier', () => {
         );
 
       await spend(allowance * 0.6);
-      const [half] = await withLocalDown(() => withPlatformKey(async () => readLines(await ask({ query: question }))));
-      assert.equal(half.routing.model, 'anthropic/claude-haiku-4-5');
+      const halfLines = await withLocalDown(() => withPlatformKey(async () => readLines(await ask({ query: question }))));
+      assert.equal(halfLines[0].routing.model, 'anthropic/claude-haiku-4-5');
+      assert.equal(halfLines.at(-1).type, 'done', 'the Haiku answer completes: no effort parameter is sent to it');
+      assert.equal(anthropic.state.requests.at(-1).output_config, undefined);
 
       await spend(allowance);
       anthropic.state.requests = [];
