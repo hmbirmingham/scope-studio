@@ -17,6 +17,13 @@ export async function startFakeAnthropic() {
     state.requests.push(JSON.parse(Buffer.concat(chunks).toString()));
     state.authHeaders.push(req.headers['x-api-key'] ?? null);
 
+    // Mirrors the real API: Haiku 4.5 refuses the effort parameter.
+    const sent = state.requests.at(-1);
+    if (sent.model === 'claude-haiku-4-5' && sent.output_config?.effort) {
+      res.writeHead(400, { 'Content-Type': 'application/json' });
+      return res.end(JSON.stringify({ type: 'error', error: { type: 'invalid_request_error', message: 'This model does not support the effort parameter.' } }));
+    }
+
     if (state.status !== 200) {
       res.writeHead(state.status, { 'Content-Type': 'application/json' });
       return res.end(JSON.stringify({ type: 'error', error: { type: 'authentication_error', message: 'invalid x-api-key' } }));

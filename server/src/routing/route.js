@@ -25,9 +25,10 @@ function decision(tier, reason, available, unavailableCode) {
 // Order is the privacy contract: a private node in context forces local and
 // outranks every other input, including the user's own tier choice. If local
 // cannot serve, the request is refused rather than sent anywhere else.
-// Complexity- and size-based upgrades to cloud arrive with the cloud tier
-// (Sprint 6), where the benchmark can calibrate them.
-export function decideRoute({ selected, preferredTier, localAvailable, cloudAvailable }) {
+// Auto then answers locally unless the question is hard (routing/difficulty.js)
+// and a cloud credential exists: the most efficient path, never cloud for a
+// question the local model handles.
+export function decideRoute({ selected, preferredTier, localAvailable, cloudAvailable, hard = false }) {
   if (selected.some((entry) => entry.node.privacy === 'local')) {
     return decision(LOCAL_TIER, 'privacy_flag', localAvailable, 'local_unavailable');
   }
@@ -39,6 +40,9 @@ export function decideRoute({ selected, preferredTier, localAvailable, cloudAvai
   }
   if (!localAvailable) {
     return decision(CLOUD_TIER, 'no_ollama', cloudAvailable, 'cloud_unavailable');
+  }
+  if (hard && cloudAvailable) {
+    return decision(CLOUD_TIER, 'complexity', true, null);
   }
   // The provisional local pack is bounded by the local budget, so it fits.
   return decision(LOCAL_TIER, 'context_size', true, null);

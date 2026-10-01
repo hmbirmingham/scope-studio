@@ -44,6 +44,8 @@ describe('screen actions', { skip: onMac ? false : 'actions open things only on 
     await ensureCentroids(server.pool);
     api = await registeredSession(server.base);
     other = await registeredSession(server.base);
+    // These tests exercise cloud requests, which only Key Pro may make.
+    await server.pool.query("UPDATE users SET plan = 'key_pro' WHERE id = $1", [(await api('GET', '/api/auth/session')).data.userId]);
 
     await api('POST', '/api/nodes', {
       type: 'file',

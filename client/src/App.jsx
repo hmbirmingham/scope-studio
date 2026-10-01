@@ -21,11 +21,34 @@ function Studio() {
   const [panelOpen, setPanelOpen] = useState(true);
   // Held in memory for this session only: never localStorage, never the server.
   const [apiKey, setApiKey] = useState('');
+  // Key Pro's model choice, for this session; other plans never send one.
+  const [cloudModel, setCloudModel] = useState('claude-sonnet-5');
   const [tier, setTier] = useState(null);
   const [webSearch, setWebSearch] = useState(false);
   // Display mode: granted once through the privacy prompt, held by the server
   // in this signed-in session, withdrawn by turning it off or signing out.
   const [displayControl, setDisplayControl] = useState(false);
+  // What this plan may do with the cloud. The server enforces it; this only
+  // lets the composer say so before a request is refused.
+  const [cloudPlan, setCloudPlan] = useState({ chooseCloud: true, autoCloud: true, answersLeft: null });
+
+  useEffect(() => {
+    fetch('/api/usage?days=7')
+      .then((response) => (response.ok ? response.json() : null))
+      .then((body) => {
+        if (!body) return;
+        setCloudPlan({
+          chooseCloud: body.chooseCloud,
+          autoCloud: body.autoCloud,
+          answersLeft: body.monthlyAnswers ? Math.max(body.monthlyAnswers.limit - body.monthlyAnswers.used, 0) : null,
+        });
+        if (!body.chooseCloud) {
+          setTier((current) => (current === 'cloud_frontier' ? null : current));
+          setWebSearch(false);
+        }
+      })
+      .catch(() => {});
+  }, []);
   const [displayAvailable, setDisplayAvailable] = useState(false);
 
   useEffect(() => {
@@ -59,6 +82,7 @@ function Studio() {
     tier,
     webSearch,
     displayControl,
+    cloudModel: cloudPlan.chooseCloud ? cloudModel : undefined,
   });
 
   const nodesById = useMemo(
@@ -130,6 +154,7 @@ function Studio() {
           onTierChange={setTier}
           webSearch={webSearch}
           onWebSearchChange={setWebSearch}
+          cloudPlan={cloudPlan}
           displayControl={displayControl}
           displayAvailable={displayAvailable}
           onDisplayControlChange={changeDisplayControl}
@@ -167,6 +192,9 @@ function Studio() {
         onIngested={refresh}
         apiKey={apiKey}
         onApiKeyChange={setApiKey}
+        cloudModel={cloudModel}
+        onCloudModelChange={setCloudModel}
+        chooseCloud={cloudPlan.chooseCloud}
       />
 
       <InspectorOverlay

@@ -39,6 +39,16 @@ const WEB_SEARCH_TOOL = {
   'claude-haiku-4-5': 'web_search_20250305',
 };
 
+// Haiku 4.5 rejects the effort parameter outright (400), so it is sent only to
+// models that take it. Found live: every platform answer past half the week's
+// allowance switches to Haiku and failed until this was gated.
+const EFFORT_MODELS = new Set(['claude-sonnet-5', 'claude-opus-5']);
+
+export function effortConfig(model, effort) {
+  const level = process.env.CLOUD_EFFORT || effort;
+  return EFFORT_MODELS.has(model) && level ? { output_config: { effort: level } } : {};
+}
+
 export function webSearchTool(model) {
   return { type: WEB_SEARCH_TOOL[model] ?? 'web_search_20250305', name: 'web_search', max_uses: WEB_SEARCH_MAX_USES };
 }
@@ -155,7 +165,7 @@ export async function* streamChat({ apiKey, model, effort, messages, cacheMarker
         max_tokens: MAX_TOKENS,
         system,
         messages: conversation,
-        output_config: { effort: process.env.CLOUD_EFFORT || effort },
+        ...effortConfig(model, effort),
         ...(webSearch ? { tools: [webSearchTool(model)] } : {}),
       },
       { signal }

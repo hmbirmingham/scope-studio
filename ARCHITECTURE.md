@@ -358,7 +358,7 @@ about 1,800 input tokens and 150 output tokens. At that shape:
 
 | | per answer | per answer, 4-turn conversation with the context cached |
 |---|---|---|
-| `claude-sonnet-5` (every plan) | $0.0051 | $0.0029 |
+| `claude-sonnet-5` | $0.0051 | $0.0029 |
 | `claude-haiku-4-5` | $0.0026 | $0.0015 |
 | `claude-opus-5` (not offered) | $0.0128 | $0.0072 |
 
@@ -371,13 +371,53 @@ byte-identical across turns by construction (§ Conversations keep their context
 block), so every turn after the first pays a tenth of its input price, and the
 1.25× write has paid for itself by the second turn.
 
-**Plans** (`billing/plans.js`, one edit changes pricing everywhere): Free is
-local-only and unlimited; Key-Pro runs on the user's own key, so there is no
-allowance to meter; Student and Engineer both answer on Sonnet, and Engineer's
-premium is depth and volume — a larger allowance and `high` effort — rather
-than a more expensive model. Every answer records **who paid** (`billed_to`):
-spend on a user's own key is not margin, and a total that mixes the two cannot
-be separated afterwards.
+**Measured, 2026-09-27: the estimate above does not survive a user's choices.**
+A comparison question with Cloud selected read eight sources and wrote a
+thousand-word answer: **$0.0425**, eight times the $0.005 per-answer shape the
+metered plans were priced on. Source count and answer length followed from
+what the user chose, so a platform-paid allowance that the user steers leaves
+the platform absorbing costs it does not control.
+
+**Plans** (`billing/plans.js`, one edit changes pricing everywhere). Who decides
+that an answer goes to the cloud is the line between plans, and every cloud
+call's key is chosen in one place (`billing/credential.js`):
+
+| Plan | Price | Cloud budget / month | Cloud answers / month | Choose Cloud or web | Auto may use the cloud | Model |
+|---|---|---|---|---|---|---|
+| Free | $0 | — | — | no | no | — |
+| Key Pro | $5 | the user's own key | unlimited | yes | yes | Sonnet; Opus or Haiku by choice |
+| Student | $12 | $4.54, platform-paid | 200 | no | hard questions, or local down | Sonnet |
+| Engineer | $25 | $9.59, platform-paid | 350 | no | hard questions, or local down | Opus for hard, Sonnet otherwise |
+
+Local answers are unlimited on every plan.
+
+Budgets are derived, not set: price, less card fees (2.9% + $0.30), times
+(1 − the 60% target margin). Answer limits come from measured cost at full
+quality — Sonnet ≈ $0.020 and Opus ≈ $0.055 per answer, 20% of Engineer's
+cloud answers hard — rounded down so a typical user reaches the count before
+the dollar budget (Student $4.00 of $4.54; Engineer $9.45 of $9.59, a 60.6%
+margin). Both are enforced; whichever runs out first stops the cloud. 450 and
+900 were the targets; they fit only with half the cloud context, which cut the
+cloud hit rate from 95% to 80% (90% at 3,500 tokens), so the limits came down
+instead of the quality. Past half the week's budget every platform model
+steps down one level (Opus → Sonnet → Haiku). A question is *hard* by its
+wording (comparisons, causes, code changes, reviews), length, or being
+multi-part (`routing/difficulty.js`); a lookup stays local. A "needs more
+context" criterion was tried and removed: files split into many similar
+chunks always leave strong chunks out, so it sent 9 of 20 benchmark lookups
+to the cloud, one of them to Opus for $0.055.
+
+- **Choosing the cloud is Key Pro only, as a hard block.** Off Key Pro an
+  explicit Cloud or web request is refused before anything is retrieved, and
+  the user's key header is never read, so it can never be sent.
+- **Auto is the most efficient path.** It answers locally unless the question
+  is hard or the local model cannot answer at all.
+- **The allowance is enforced, not reported.** Before a platform-paid answer
+  the week's platform spend is checked; spent means no cloud.
+- Platform-paid answers need `PLATFORM_ANTHROPIC_API_KEY`; unset, Student and
+  Engineer answer locally only. There is never a default.
+- Every answer records **who paid** (`billed_to`): spend on a user's own key is
+  not margin, and a total that mixes the two cannot be separated afterwards.
 
 Two caps bound the worst case rather than trusting the average: the context
 budget (4,000 tokens on the cloud tier) and `max_tokens` (2,048, against

@@ -52,6 +52,17 @@ describe('decideRoute', () => {
     assert.equal(route(publicOnly, { localAvailable: false, cloudAvailable: true }).blocked, null);
   });
 
+  test('Auto sends a hard question to the cloud only when a cloud credential exists', () => {
+    assert.deepEqual(route([], { hard: true, cloudAvailable: true }), { decision: 'cloud', tier: CLOUD_TIER, reason: 'complexity', blocked: null });
+    assert.equal(route([], { hard: true, cloudAvailable: false }).decision, 'local', 'no credential: local answers it');
+    assert.equal(route([], { hard: false, cloudAvailable: true }).decision, 'local', 'an easy question stays local');
+  });
+
+  test('a private node keeps even a hard question local', () => {
+    const privateNode = [{ node: { privacy: 'local' } }];
+    assert.equal(route(privateNode, { hard: true, cloudAvailable: true }).reason, 'privacy_flag');
+  });
+
   test('an explicit tier choice routes there with reason user_override', () => {
     const cloud = route(publicOnly, { preferredTier: CLOUD_TIER });
     assert.equal(cloud.reason, 'user_override');

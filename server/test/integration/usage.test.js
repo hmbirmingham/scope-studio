@@ -52,14 +52,29 @@ describe('usage and spend', () => {
     await server.pool.query("UPDATE users SET plan = 'student' WHERE id = $1", [mine]);
     const student = (await api('GET', '/api/usage')).data;
     assert.equal(student.plan, 'student');
-    assert.ok(Math.abs(student.weekly.allowanceUsd - 2.25 / (30 / 7)) < 1e-9);
+    assert.ok(Math.abs(student.weekly.allowanceUsd - (12 * 0.971 - 0.3) * 0.4 / (30 / 7)) < 1e-9, '40% of what $12 keeps, per week');
     assert.ok(Math.abs(student.weekly.spentUsd - 0.005) < 1e-9, 'only platform spend counts against it');
     assert.equal(student.weekly.exhausted, false);
+    assert.equal(student.chooseCloud, false, 'Student cannot pick the cloud');
+    assert.equal(student.autoCloud, true, 'but Auto may reach it');
+    assert.deepEqual(student.weekly.nextModel, { default: 'claude-sonnet-5', hard: 'claude-sonnet-5' }, 'well under half the allowance');
+    assert.equal(student.priceUsd, 12);
+    const { rows: [platform] } = await server.pool.query(
+      "SELECT count(*)::int AS n FROM query_metrics WHERE owner_id = $1 AND billed_to = 'platform' AND created_at > now() - interval '30 days'",
+      [mine]
+    );
+    assert.ok(platform.n > 0, 'the fixture includes a platform-paid answer');
+    assert.deepEqual(student.monthlyAnswers, { limit: 200, used: platform.n }, 'only platform-paid answers in the last 30 days count');
 
     await server.pool.query("UPDATE users SET plan = 'key_pro' WHERE id = $1", [mine]);
     const keyPro = (await api('GET', '/api/usage')).data;
     assert.equal(keyPro.weekly.allowanceUsd, null);
     assert.match(keyPro.weekly.note, /own key/);
+    assert.equal(keyPro.chooseCloud, true);
+
+    await server.pool.query("UPDATE users SET plan = 'free' WHERE id = $1", [mine]);
+    const free = (await api('GET', '/api/usage')).data;
+    assert.deepEqual([free.chooseCloud, free.autoCloud, free.weekly.note], [false, false, 'local only']);
 
     await server.pool.query("UPDATE users SET plan = 'free' WHERE id = $1", [mine]);
   });

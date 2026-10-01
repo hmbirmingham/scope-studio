@@ -53,6 +53,9 @@ describe('chat routing and streaming', () => {
     await ensureCentroids(server.pool);
     api = await registeredSession(server.base);
     privateApi = await registeredSession(server.base);
+    // These tests exercise cloud requests, which only Key Pro may make.
+    await server.pool.query("UPDATE users SET plan = 'key_pro' WHERE id = $1", [(await api('GET', '/api/auth/session')).data.userId]);
+    await server.pool.query("UPDATE users SET plan = 'key_pro' WHERE id = $1", [(await privateApi('GET', '/api/auth/session')).data.userId]);
 
     const quantifyNode = {
       type: 'file',
@@ -121,6 +124,7 @@ describe('chat routing and streaming', () => {
       contextReused: false,
       prefilled: false,
       nodesAdded: 1,
+      difficulty: null,
       model: `ollama/${localChatModel()}`,
     });
     assert.equal(context.nodes[0].id, ids.quantify);
