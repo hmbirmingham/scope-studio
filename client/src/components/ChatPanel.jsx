@@ -1,4 +1,5 @@
 import { useState } from 'react';
+import AnswerText from './AnswerText';
 import Disclosure from './Disclosure';
 
 const TIERS = [
@@ -44,30 +45,32 @@ function withoutActionTags(text) {
     .trim();
 }
 
-// Pages the answer cited, and while it works, what it is searching for.
-function WebSources({ searches, web, omittedPrivate }) {
+// Pages the answer cited, and what it searched for: live while it works, and
+// kept afterwards, so a search that informed nothing still shows it ran.
+function WebSources({ searches, web, omittedPrivate, finished = false }) {
   const skipped =
     omittedPrivate > 0 ? (
       <span className="web-omitted" title="Private sources never leave this machine, so web answers leave them out.">
         Left out {omittedPrivate} private {omittedPrivate === 1 ? 'source' : 'sources'}
       </span>
     ) : null;
-  if (!web?.length && !searches?.length) return skipped && <div className="web-sources">{skipped}</div>;
+  const searched = (searches ?? []).map((query, i) => (
+    <span key={`s${i}`} className="web-searching">
+      {finished ? 'Searched' : 'Searching'} “{query}”
+    </span>
+  ));
+  const cited = (web ?? []).map((page, i) => (
+    <a key={page.url} href={page.url} target="_blank" rel="noreferrer noopener" title={page.url}>
+      <span className="web-index">{i + 1}</span>
+      {page.title}
+    </a>
+  ));
+  if (!skipped && !searched.length && !cited.length) return null;
   return (
     <div className="web-sources">
       {skipped}
-      {web?.length > 0
-        ? web.map((page, i) => (
-            <a key={page.url} href={page.url} target="_blank" rel="noreferrer noopener" title={page.url}>
-              <span className="web-index">{i + 1}</span>
-              {page.title}
-            </a>
-          ))
-        : searches.map((query, i) => (
-            <span key={i} className="web-searching">
-              Searching “{query}”
-            </span>
-          ))}
+      {cited.length ? cited : searched}
+      {finished && searched.length > 0 && !cited.length && <span className="web-searching">no pages cited</span>}
     </div>
   );
 }
@@ -309,8 +312,10 @@ export default function ChatPanel({
               {turn.sources?.length > 0 && (
                 <Sources nodes={turn.sources} metrics={turn.metrics} routing={turn.routing} />
               )}
-              <div className={`answer ${turn.refused ? 'is-refused' : ''}`}>{withoutActionTags(turn.text)}</div>
-              <WebSources web={turn.web} omittedPrivate={turn.omittedPrivate} />
+              <div className={`answer ${turn.refused ? 'is-refused' : 'is-markdown'}`}>
+                {turn.refused ? turn.text : <AnswerText text={withoutActionTags(turn.text)} />}
+              </div>
+              <WebSources web={turn.web} searches={turn.searches} omittedPrivate={turn.omittedPrivate} finished />
               {turn.metrics?.costUsd > 0 && (
                 <div className="answer-meta">
                   {money(turn.metrics.costUsd)} · {turn.metrics.outputTokens} tokens
@@ -324,8 +329,8 @@ export default function ChatPanel({
           <div className="turn is-assistant">
             <Sources nodes={live.sources} metrics={live.metrics} routing={live.routing} />
             <WebSources searches={live.searches} omittedPrivate={live.omittedPrivate} />
-            <div className="answer">
-              {withoutActionTags(live.text)}
+            <div className="answer is-markdown">
+              <AnswerText text={withoutActionTags(live.text)} />
               <span className="caret" />
             </div>
           </div>

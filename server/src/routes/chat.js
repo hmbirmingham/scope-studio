@@ -149,6 +149,7 @@ async function* generate({ decision, model, effort, messages, apiKey, cacheMarke
         outputTokens: event.usage?.output_tokens ?? null,
         promptTokens: event.usage?.input_tokens ?? null,
         costUsd: costUsd(model, event.usage),
+        webSearches: event.usage?.server_tool_use?.web_search_requests ?? 0,
       };
     }
   }
@@ -404,6 +405,10 @@ router.post('/', async (req, res) => {
   let failure = null;
   let answer = '';
   let citations = [];
+  // Every query a web answer searched, kept so the answer can show them even
+  // when it cites nothing, and the count recorded with the metrics.
+  const searches = [];
+  let webSearches = null;
   // Asked for on this request, and granted for this session, from this machine.
   const displayControl = req.body.displayControl === true && displayControlAllowed(req);
   beginGeneration();
@@ -419,6 +424,7 @@ router.post('/', async (req, res) => {
       webSearch,
     })) {
       if (event.searching) {
+        searches.push(event.searching);
         send({ type: 'searching', query: event.searching });
         // In display mode the search plays out on screen as it happens.
         if (displayControl) {
@@ -439,6 +445,7 @@ router.post('/', async (req, res) => {
         outputTokens = event.outputTokens;
         promptTokens = event.promptTokens;
         cost = event.costUsd ?? null;
+        if (webSearch) webSearches = event.webSearches ?? searches.length;
       }
     }
   } catch (err) {
@@ -507,7 +514,7 @@ router.post('/', async (req, res) => {
         queryId,
         conversationId,
         metrics: { ttftMs, totalResponseMs, outputTokens, promptTokens, costUsd: cost },
-        ...(webSearch ? { web: citations } : {}),
+        ...(webSearch ? { web: citations, searches } : {}),
       });
     }
     res.end();
@@ -539,6 +546,7 @@ router.post('/', async (req, res) => {
         // Whose money paid for this answer: only platform spend is margin, and
         // only an Auto answer on Student or Engineer can be platform spend.
         billedTo: route.decision === 'cloud' ? credential.billedTo : null,
+        webSearches,
       },
       true
     );

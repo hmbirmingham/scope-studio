@@ -150,6 +150,7 @@ export function useChat({ project, apiKey, tier, webSearch = false, displayContr
         } else if (line.type === 'done') {
           answer.metrics = { ...answer.metrics, ...line.metrics };
           answer.web = line.web ?? [];
+          answer.searches = line.searches ?? answer.searches;
         } else if (line.type === 'error') {
           setError(line.error);
         }
