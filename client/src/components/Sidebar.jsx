@@ -1,6 +1,6 @@
-export default function Sidebar({ projects, activeProject, onSelectProject, onOpenProjectSettings, onOpenSources, onNewThread }) {
+export default function Sidebar({ open = false, projects, activeProject, onSelectProject, onOpenProjectSettings, onOpenSources, onNewThread }) {
   return (
-    <aside className="sidebar">
+    <aside className={`sidebar ${open ? 'is-open' : ''}`}>
       <div className="sidebar-top">
         <div className="sidebar-logo">
           <span className="logo-mark" />
