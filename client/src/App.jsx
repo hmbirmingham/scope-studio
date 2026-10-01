@@ -21,6 +21,8 @@ function Studio() {
   const [panelOpen, setPanelOpen] = useState(true);
   // Held in memory for this session only: never localStorage, never the server.
   const [apiKey, setApiKey] = useState('');
+  // Key Pro's model choice, for this session; other plans never send one.
+  const [cloudModel, setCloudModel] = useState('claude-sonnet-5');
   const [tier, setTier] = useState(null);
   const [webSearch, setWebSearch] = useState(false);
   // Display mode: granted once through the privacy prompt, held by the server
@@ -76,6 +78,7 @@ function Studio() {
     tier,
     webSearch,
     displayControl,
+    cloudModel: cloudPlan.chooseCloud ? cloudModel : undefined,
   });
 
   const nodesById = useMemo(
@@ -185,6 +188,9 @@ function Studio() {
         onIngested={refresh}
         apiKey={apiKey}
         onApiKeyChange={setApiKey}
+        cloudModel={cloudModel}
+        onCloudModelChange={setCloudModel}
+        chooseCloud={cloudPlan.chooseCloud}
       />
 
       <InspectorOverlay

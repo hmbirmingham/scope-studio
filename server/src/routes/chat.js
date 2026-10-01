@@ -2,8 +2,9 @@ import { randomUUID } from 'node:crypto';
 import { Router } from 'express';
 import requireAuth from '../middleware/requireAuth.js';
 import { costUsd, describeError, streamChat as streamCloud } from '../lib/anthropic.js';
-import { canAutoCloud, canChooseCloud } from '../billing/plans.js';
+import { CLOUD_MODELS, canAutoCloud, canChooseCloud } from '../billing/plans.js';
 import { resolveCloudCredential } from '../billing/credential.js';
+import { questionDifficulty } from '../routing/difficulty.js';
 import { weeklyPlatformSpend } from '../models/usageStore.js';
 import { localChatModel, localModelStatus, streamChat as streamLocal } from '../lib/ollama.js';
 import {
@@ -88,6 +89,7 @@ async function cloudCredentialFor(ownerId, userPlan, body, headerKey) {
     plan: userPlan,
     headerKey,
     explicit,
+    modelChoice: body.cloudModel,
     weeklySpentUsd: meters ? await weeklyPlatformSpend(ownerId) : 0,
   });
 }
@@ -105,8 +107,9 @@ function blockedMessage({ route, credential, webSearch, status, model }) {
   return unavailableMessage(route, status, model);
 }
 
-function invalid({ query, tier, webSearch, displayControl }) {
+function invalid({ query, tier, webSearch, displayControl, cloudModel }) {
   if (!query || typeof query !== 'string' || !query.trim()) return 'query is required';
+  if (cloudModel !== undefined && !CLOUD_MODELS.includes(cloudModel)) return `cloudModel must be one of: ${CLOUD_MODELS.join(', ')}`;
   if (displayControl !== undefined && typeof displayControl !== 'boolean') return 'displayControl must be true or false';
   if (webSearch !== undefined && typeof webSearch !== 'boolean') return 'webSearch must be true or false';
   if (tier && !TIER_CONFIGS[tier]) return `tier must be one of: ${Object.keys(TIER_CONFIGS).join(', ')}`;
@@ -182,11 +185,14 @@ async function planTurn(ownerId, sessionId, { query, project, tier, overrides, c
 
   const decideStart = performance.now();
   let packed = packForTier(gathered.candidates, provisional, overrides);
+  // Only Auto weighs difficulty; a chosen tier is the user's call.
+  const difficulty = tier ? null : questionDifficulty(text);
   const route = decideRoute({
     selected: packed.selected,
     preferredTier: tier,
     localAvailable,
     cloudAvailable,
+    hard: Boolean(difficulty),
   });
   if (route.tier !== provisional) packed = packForTier(gathered.candidates, route.tier, overrides);
   const routingDecisionMs = Math.round(probeMs + performance.now() - decideStart);
@@ -234,6 +240,7 @@ async function planTurn(ownerId, sessionId, { query, project, tier, overrides, c
     metrics,
     routingDecisionMs,
     omittedPrivate,
+    difficulty,
     reused: Boolean(continued),
     routing: {
       decision: route.decision,
@@ -243,6 +250,9 @@ async function planTurn(ownerId, sessionId, { query, project, tier, overrides, c
       contextReused: Boolean(continued),
       prefilled: Boolean(prefilled),
       nodesAdded: continued ? continued.added.length : sources.length,
+      // Why Auto judged the question hard, when it did: wording, length, or
+      // multi_part.
+      difficulty,
     },
   };
 }
@@ -316,7 +326,7 @@ router.post('/', async (req, res) => {
   const turn = webSearch ? { ...req.body, tier: CLOUD_TIER, cloudOnly: true } : req.body;
   const plan = await planTurn(ownerId, req.sessionID, turn, { cloudAvailable: Boolean(apiKey) });
   const { route, sources, metrics } = plan;
-  const model = route.decision === 'local' ? plan.model : credential.model;
+  const model = route.decision === 'local' ? plan.model : credential.modelFor(Boolean(plan.difficulty));
   const conversationId = req.body.conversationId ?? randomUUID();
 
   const queryId = randomUUID();

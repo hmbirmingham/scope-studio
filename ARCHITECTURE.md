@@ -382,23 +382,29 @@ the platform absorbing costs it does not control.
 that an answer goes to the cloud is the line between plans, and every cloud
 call's key is chosen in one place (`billing/credential.js`):
 
-| Plan | Choose Cloud or web search | Auto may use the cloud | Who pays | Model |
-|---|---|---|---|---|
-| Free | no | no | — | — |
-| Student | no | only when the local model cannot answer, within $2.25/month | platform | Sonnet, then Haiku past half the week's allowance |
-| Engineer | no | same, within $6/month, effort `high` | platform | same |
-| Key Pro | yes | yes, when the local model cannot answer | the user's own key | Sonnet |
+| Plan | Price | Cloud budget / month | Choose Cloud or web | Auto may use the cloud | Model |
+|---|---|---|---|---|---|
+| Free | $0 | — | no | no | — |
+| Key Pro | $5 | the user's own key | yes | yes | Sonnet; Opus or Haiku by choice |
+| Student | $12 | $4.54, platform-paid | no | hard questions, or local down | Sonnet |
+| Engineer | $25 | $9.59, platform-paid | no | hard questions, or local down | Opus for hard, Sonnet otherwise |
+
+Budgets are derived, not set: price, less card fees (2.9% + $0.30), times
+(1 − the 60% target margin). Past half the week's budget every platform model
+steps down one level (Opus → Sonnet → Haiku). A question is *hard* by its
+wording (comparisons, causes, code changes, reviews), length, or being
+multi-part (`routing/difficulty.js`); a lookup stays local. A "needs more
+context" criterion was tried and removed: files split into many similar
+chunks always leave strong chunks out, so it sent 9 of 20 benchmark lookups
+to the cloud, one of them to Opus for $0.055.
 
 - **Choosing the cloud is Key Pro only, as a hard block.** Off Key Pro an
   explicit Cloud or web request is refused before anything is retrieved, and
   the user's key header is never read, so it can never be sent.
-- **Auto is the most efficient path.** It answers locally whenever the local
-  model can, so a platform-paid answer happens only when local cannot — the
-  model is off, missing, or the machine cannot run it.
+- **Auto is the most efficient path.** It answers locally unless the question
+  is hard or the local model cannot answer at all.
 - **The allowance is enforced, not reported.** Before a platform-paid answer
-  the week's platform spend is checked; spent means no cloud. Past half the
-  allowance the model moves from Sonnet to Haiku, about half the cost per
-  answer, so the allowance lasts the week.
+  the week's platform spend is checked; spent means no cloud.
 - Platform-paid answers need `PLATFORM_ANTHROPIC_API_KEY`; unset, Student and
   Engineer answer locally only. There is never a default.
 - Every answer records **who paid** (`billed_to`): spend on a user's own key is

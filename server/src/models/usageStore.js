@@ -1,5 +1,5 @@
 import { getPool } from '../db/pool.js';
-import { canAutoCloud, canChooseCloud, planFor, platformModel, weeklyAllowanceUsd } from '../billing/plans.js';
+import { canAutoCloud, canChooseCloud, monthlyCloudBudgetUsd, planFor, platformModel, weeklyAllowanceUsd } from '../billing/plans.js';
 
 // What the platform has paid for this user's cloud answers over the last seven
 // days: the figure the weekly allowance is checked against before every
@@ -56,6 +56,8 @@ export async function usageSummary(ownerId, { days = 7, plan = 'free' } = {}) {
     // the server refuses.
     chooseCloud: canChooseCloud(plan),
     autoCloud: canAutoCloud(plan),
+    priceUsd: planFor(plan).priceUsd,
+    monthlyCloudBudgetUsd: monthlyCloudBudgetUsd(plan),
     windowDays: Number(days),
     queries: total.queries,
     cloudQueries: total.cloud_queries,
@@ -78,8 +80,11 @@ export async function usageSummary(ownerId, { days = 7, plan = 'free' } = {}) {
             spentUsd: thisWeek,
             remainingUsd: Math.max(allowance - thisWeek, 0),
             exhausted: thisWeek >= allowance,
-            // Which model the next platform-paid answer would use.
-            nextModel: platformModel(thisWeek, allowance),
+            // Which model the next platform-paid answer would use, by kind of question.
+            nextModel: {
+              default: platformModel(plan, { hard: false, spentUsd: thisWeek, allowanceUsd: allowance }),
+              hard: platformModel(plan, { hard: true, spentUsd: thisWeek, allowanceUsd: allowance }),
+            },
           },
     byModel,
   };

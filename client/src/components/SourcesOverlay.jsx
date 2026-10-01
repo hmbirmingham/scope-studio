@@ -30,10 +30,34 @@ function Progress({ job }) {
   );
 }
 
-function CloudKey({ apiKey, onApiKeyChange }) {
+// Key Pro chooses the model its own key pays for. Sonnet is the default; Opus
+// costs about three times as much per answer and is best on hard questions.
+const KEY_PRO_MODELS = [
+  { value: 'claude-sonnet-5', label: 'Sonnet 5 — default' },
+  { value: 'claude-opus-5', label: 'Opus 5 — strongest, about 3× the cost' },
+  { value: 'claude-haiku-4-5', label: 'Haiku 4.5 — cheapest' },
+];
+
+function CloudKey({ apiKey, onApiKeyChange, cloudModel, onCloudModelChange, chooseCloud }) {
+  if (!chooseCloud) {
+    return (
+      <div className="inspector-block">
+        <div className="inspector-block-title">Cloud model</div>
+        <p className="key-note">
+          Using your own key and choosing the model are Key Pro features. On this plan Auto picks the
+          cloud model for you, and only for questions the local model would get wrong.
+        </p>
+      </div>
+    );
+  }
   return (
     <div className="inspector-block">
       <div className="inspector-block-title">Cloud model</div>
+      <select className="key-input" value={cloudModel} onChange={(event) => onCloudModelChange(event.target.value)}>
+        {KEY_PRO_MODELS.map((option) => (
+          <option key={option.value} value={option.value}>{option.label}</option>
+        ))}
+      </select>
       <p className="key-note">
         Your own Anthropic key. It is kept for this session only — sent with each cloud
         request, never written to disk and never stored on the server.
@@ -56,7 +80,7 @@ function CloudKey({ apiKey, onApiKeyChange }) {
   );
 }
 
-export default function SourcesOverlay({ open, onClose, onIngested, apiKey, onApiKeyChange }) {
+export default function SourcesOverlay({ open, onClose, onIngested, apiKey, onApiKeyChange, cloudModel, onCloudModelChange, chooseCloud }) {
   const { connected, repos, job, error, loadRepos, ingest } = useIngest(onIngested);
   const [selected, setSelected] = useState(() => new Set());
 
@@ -88,7 +112,13 @@ export default function SourcesOverlay({ open, onClose, onIngested, apiKey, onAp
           <div className="inspector-sub">Private repositories stay on this machine.</div>
         </div>
 
-        <CloudKey apiKey={apiKey} onApiKeyChange={onApiKeyChange} />
+        <CloudKey
+          apiKey={apiKey}
+          onApiKeyChange={onApiKeyChange}
+          cloudModel={cloudModel}
+          onCloudModelChange={onCloudModelChange}
+          chooseCloud={chooseCloud}
+        />
 
         {connected === false && (
           <div className="inspector-block">

@@ -416,6 +416,55 @@ describe('cloud tier', () => {
       assert.equal(anthropic.state.requests.length, 0, 'the user key was not used either');
     });
 
+    const hardQuestion = 'compare how the ingestion pipeline chunks and prunes files against the alternatives';
+
+    test('Engineer on Auto sends a hard question to Opus on the platform key while the local model is up', async () => {
+      const { chat: ask } = await userOn('engineer');
+      const lines = await withPlatformKey(async () => readLines(await ask({ query: hardQuestion })));
+      const [context] = lines;
+      assert.equal(context.routing.decision, 'cloud');
+      assert.equal(context.routing.reason, 'complexity');
+      assert.equal(context.routing.difficulty, 'wording');
+      assert.equal(context.routing.model, 'anthropic/claude-opus-5');
+      assert.deepEqual(anthropic.state.authHeaders, [PLATFORM]);
+      assert.equal((await metricsRow(lines.at(-1).queryId)).billed_to, 'platform');
+    });
+
+    test('Engineer on Auto keeps an easy question local, and the platform pays nothing', async () => {
+      const { chat: ask } = await userOn('engineer');
+      const [context] = await withPlatformKey(async () => readLines(await ask({ query: question })));
+      assert.equal(context.routing.decision, 'local');
+      assert.equal(anthropic.state.requests.length, 0);
+    });
+
+    test('Student on Auto sends a hard question to Sonnet, not Opus, even if it asks for Opus', async () => {
+      const { chat: ask } = await userOn('student');
+      const [context] = await withPlatformKey(async () => readLines(await ask({ query: hardQuestion, cloudModel: 'claude-opus-5' })));
+      assert.equal(context.routing.reason, 'complexity');
+      assert.equal(context.routing.model, 'anthropic/claude-sonnet-5');
+    });
+
+    test("Key Pro may choose Opus on its own key, and Auto sends its hard questions there too", async () => {
+      const { chat: ask } = await userOn('key_pro');
+      const [chosen] = await readLines(await ask({ query: question, tier: 'cloud_frontier', cloudModel: 'claude-opus-5' }, { 'x-anthropic-api-key': KEY }));
+      assert.equal(chosen.routing.model, 'anthropic/claude-opus-5');
+      const [auto] = await readLines(await ask({ query: hardQuestion }, { 'x-anthropic-api-key': KEY }));
+      assert.equal(auto.routing.reason, 'complexity');
+      assert.ok(anthropic.state.authHeaders.every((header) => header === KEY), "only the user's own key");
+    });
+
+    test('Free on Auto keeps a hard question local', async () => {
+      const { chat: ask } = await userOn('free');
+      const [context] = await withPlatformKey(async () => readLines(await ask({ query: hardQuestion }, { 'x-anthropic-api-key': KEY })));
+      assert.equal(context.routing.decision, 'local');
+      assert.equal(anthropic.state.requests.length, 0);
+    });
+
+    test('an unoffered model choice is refused', async () => {
+      const { chat: ask } = await userOn('key_pro');
+      assert.equal((await ask({ query: question, cloudModel: 'claude-fable-5-1' })).status, 400);
+    });
+
     test('Free on Auto with the local model down never reaches the cloud', async () => {
       const { chat: ask } = await userOn('free');
       const response = await withLocalDown(() => withPlatformKey(() => ask({ query: question }, { 'x-anthropic-api-key': KEY })));
