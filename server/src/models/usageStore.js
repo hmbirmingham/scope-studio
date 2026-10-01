@@ -1,5 +1,16 @@
 import { getPool } from '../db/pool.js';
-import { canAutoCloud, canChooseCloud, monthlyCloudBudgetUsd, planFor, platformModel, weeklyAllowanceUsd } from '../billing/plans.js';
+import { canAutoCloud, canChooseCloud, monthlyAnswerLimit, monthlyCloudBudgetUsd, planFor, platformModel, weeklyAllowanceUsd } from '../billing/plans.js';
+
+// Platform-paid answers over the last 30 days: what the monthly answer limit
+// is checked against.
+export async function monthlyPlatformAnswers(ownerId, pool = getPool()) {
+  const { rows } = await pool.query(
+    `SELECT count(*)::int AS answers FROM query_metrics
+     WHERE owner_id = $1 AND billed_to = 'platform' AND created_at > now() - interval '30 days'`,
+    [ownerId]
+  );
+  return rows[0].answers;
+}
 
 // What the platform has paid for this user's cloud answers over the last seven
 // days: the figure the weekly allowance is checked against before every
@@ -58,6 +69,9 @@ export async function usageSummary(ownerId, { days = 7, plan = 'free' } = {}) {
     autoCloud: canAutoCloud(plan),
     priceUsd: planFor(plan).priceUsd,
     monthlyCloudBudgetUsd: monthlyCloudBudgetUsd(plan),
+    monthlyAnswers: monthlyAnswerLimit(plan) === null
+      ? null
+      : { limit: monthlyAnswerLimit(plan), used: await monthlyPlatformAnswers(ownerId, pool) },
     windowDays: Number(days),
     queries: total.queries,
     cloudQueries: total.cloud_queries,

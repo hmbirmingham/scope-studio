@@ -382,15 +382,24 @@ the platform absorbing costs it does not control.
 that an answer goes to the cloud is the line between plans, and every cloud
 call's key is chosen in one place (`billing/credential.js`):
 
-| Plan | Price | Cloud budget / month | Choose Cloud or web | Auto may use the cloud | Model |
-|---|---|---|---|---|---|
-| Free | $0 | — | no | no | — |
-| Key Pro | $5 | the user's own key | yes | yes | Sonnet; Opus or Haiku by choice |
-| Student | $12 | $4.54, platform-paid | no | hard questions, or local down | Sonnet |
-| Engineer | $25 | $9.59, platform-paid | no | hard questions, or local down | Opus for hard, Sonnet otherwise |
+| Plan | Price | Cloud budget / month | Cloud answers / month | Choose Cloud or web | Auto may use the cloud | Model |
+|---|---|---|---|---|---|---|
+| Free | $0 | — | — | no | no | — |
+| Key Pro | $5 | the user's own key | unlimited | yes | yes | Sonnet; Opus or Haiku by choice |
+| Student | $12 | $4.54, platform-paid | 200 | no | hard questions, or local down | Sonnet |
+| Engineer | $25 | $9.59, platform-paid | 350 | no | hard questions, or local down | Opus for hard, Sonnet otherwise |
+
+Local answers are unlimited on every plan.
 
 Budgets are derived, not set: price, less card fees (2.9% + $0.30), times
-(1 − the 60% target margin). Past half the week's budget every platform model
+(1 − the 60% target margin). Answer limits come from measured cost at full
+quality — Sonnet ≈ $0.020 and Opus ≈ $0.055 per answer, 20% of Engineer's
+cloud answers hard — rounded down so a typical user reaches the count before
+the dollar budget (Student $4.00 of $4.54; Engineer $9.45 of $9.59, a 60.6%
+margin). Both are enforced; whichever runs out first stops the cloud. 450 and
+900 were the targets; they fit only with half the cloud context, which cut the
+cloud hit rate from 95% to 80% (90% at 3,500 tokens), so the limits came down
+instead of the quality. Past half the week's budget every platform model
 steps down one level (Opus → Sonnet → Haiku). A question is *hard* by its
 wording (comparisons, causes, code changes, reviews), length, or being
 multi-part (`routing/difficulty.js`); a lookup stays local. A "needs more

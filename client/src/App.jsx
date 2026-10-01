@@ -30,14 +30,18 @@ function Studio() {
   const [displayControl, setDisplayControl] = useState(false);
   // What this plan may do with the cloud. The server enforces it; this only
   // lets the composer say so before a request is refused.
-  const [cloudPlan, setCloudPlan] = useState({ chooseCloud: true, autoCloud: true, remainingUsd: null });
+  const [cloudPlan, setCloudPlan] = useState({ chooseCloud: true, autoCloud: true, answersLeft: null });
 
   useEffect(() => {
     fetch('/api/usage?days=7')
       .then((response) => (response.ok ? response.json() : null))
       .then((body) => {
         if (!body) return;
-        setCloudPlan({ chooseCloud: body.chooseCloud, autoCloud: body.autoCloud, remainingUsd: body.weekly?.remainingUsd ?? null });
+        setCloudPlan({
+          chooseCloud: body.chooseCloud,
+          autoCloud: body.autoCloud,
+          answersLeft: body.monthlyAnswers ? Math.max(body.monthlyAnswers.limit - body.monthlyAnswers.used, 0) : null,
+        });
         if (!body.chooseCloud) {
           setTier((current) => (current === 'cloud_frontier' ? null : current));
           setWebSearch(false);

@@ -408,6 +408,22 @@ describe('cloud tier', () => {
       assert.equal(anthropic.state.requests.length, 0);
     });
 
+    test("a month's answer limit stops platform-paid answers even with budget left this week", async () => {
+      const { chat: ask, id } = await userOn('student');
+      await server.pool.query(
+        `INSERT INTO query_metrics (query_text, owner_id, tier, routing_decision, model_used, cost_usd, output_tokens, billed_to, created_at)
+         SELECT 'earlier', $1, 'cloud_frontier', 'cloud', 'anthropic/claude-sonnet-5', 0, 100, 'platform', now() - interval '20 days'
+         FROM generate_series(1, 200)`,
+        [id]
+      );
+      const response = await withLocalDown(() => withPlatformKey(() => ask({ query: question })));
+      assert.equal(response.status, 503);
+      const payload = await response.json();
+      assert.equal(payload.code, 'answer_limit_reached');
+      assert.match(payload.error, /cloud answers are used/);
+      assert.equal(anthropic.state.requests.length, 0);
+    });
+
     test('with no platform key configured, Student on Auto with the local model down gets the local message, not the cloud', async () => {
       const { chat: ask } = await userOn('student');
       const response = await withLocalDown(() => ask({ query: question }, { 'x-anthropic-api-key': KEY }));

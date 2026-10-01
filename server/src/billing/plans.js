@@ -24,6 +24,18 @@ const MODEL_STEP_DOWN = { 'claude-opus-5': 'claude-sonnet-5', 'claude-sonnet-5':
 // the budget lasts the week instead of running out midway.
 export const ECONOMY_THRESHOLD = 0.5;
 
+// What a platform-paid answer costs at full quality, measured live on
+// 2026-09-30 (full cloud context; follow-ups read it cached). Trimming the
+// context to save money was measured too and rejected: the cloud hit rate fell
+// from 95% to 80% at half size and 90% at 3,500 tokens.
+export const MEASURED_ANSWER_USD = { 'claude-sonnet-5': 0.02, 'claude-opus-5': 0.055 };
+export const MEASURED_HARD_SHARE = 0.2;
+
+// Advertised cloud answers per month. Set so a typical user reaches the count
+// before the dollar budget, keeping the margin at or above target; the dollar
+// budget is still enforced underneath, so a costly mix stops early rather than
+// costing more.
+
 export const PLANS = {
   // Local only, unlimited. Nothing leaves the machine and nothing is billed.
   free: { priceUsd: 0, chooseCloud: false, autoCloud: false, ownKey: false, platformPaid: false, models: null, effort: null },
@@ -33,12 +45,12 @@ export const PLANS = {
     models: { default: 'claude-sonnet-5', hard: 'claude-sonnet-5' }, choosable: CLOUD_MODELS, effort: 'medium',
   },
   student: {
-    priceUsd: 12, chooseCloud: false, autoCloud: true, ownKey: false, platformPaid: true,
+    priceUsd: 12, chooseCloud: false, autoCloud: true, ownKey: false, platformPaid: true, monthlyAnswers: 200,
     models: { default: 'claude-sonnet-5', hard: 'claude-sonnet-5' }, effort: 'medium',
   },
   // Opus where it earns its cost: the hard questions.
   engineer: {
-    priceUsd: 25, chooseCloud: false, autoCloud: true, ownKey: false, platformPaid: true,
+    priceUsd: 25, chooseCloud: false, autoCloud: true, ownKey: false, platformPaid: true, monthlyAnswers: 350,
     models: { default: 'claude-sonnet-5', hard: 'claude-opus-5' }, effort: 'medium',
   },
 };
@@ -94,6 +106,19 @@ export function resolveCloudModel(planName, choice = process.env.CLOUD_CHAT_MODE
     throw new Error(`${choice} is not offered. Choose one of: ${CLOUD_MODELS.join(', ')}.`);
   }
   return choice;
+}
+
+export function monthlyAnswerLimit(name) {
+  return planFor(name).monthlyAnswers ?? null;
+}
+
+// What one platform answer costs on average for this plan's model mix.
+export function measuredAnswerUsd(name) {
+  const models = planFor(name).models;
+  if (!models) return 0;
+  const hard = MEASURED_ANSWER_USD[models.hard];
+  const easy = MEASURED_ANSWER_USD[models.default];
+  return MEASURED_HARD_SHARE * hard + (1 - MEASURED_HARD_SHARE) * easy;
 }
 
 export function cloudEffortFor(planName) {

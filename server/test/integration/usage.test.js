@@ -59,6 +59,12 @@ describe('usage and spend', () => {
     assert.equal(student.autoCloud, true, 'but Auto may reach it');
     assert.deepEqual(student.weekly.nextModel, { default: 'claude-sonnet-5', hard: 'claude-sonnet-5' }, 'well under half the allowance');
     assert.equal(student.priceUsd, 12);
+    const { rows: [platform] } = await server.pool.query(
+      "SELECT count(*)::int AS n FROM query_metrics WHERE owner_id = $1 AND billed_to = 'platform' AND created_at > now() - interval '30 days'",
+      [mine]
+    );
+    assert.ok(platform.n > 0, 'the fixture includes a platform-paid answer');
+    assert.deepEqual(student.monthlyAnswers, { limit: 200, used: platform.n }, 'only platform-paid answers in the last 30 days count');
 
     await server.pool.query("UPDATE users SET plan = 'key_pro' WHERE id = $1", [mine]);
     const keyPro = (await api('GET', '/api/usage')).data;

@@ -2,6 +2,7 @@ import {
   canAutoCloud,
   canChooseCloud,
   cloudEffortFor,
+  monthlyAnswerLimit,
   planFor,
   platformModel,
   resolveCloudModel,
@@ -24,6 +25,7 @@ export function resolveCloudCredential({
   explicit,
   modelChoice,
   weeklySpentUsd = 0,
+  monthlyAnswersUsed = 0,
   platformKey = process.env.PLATFORM_ANTHROPIC_API_KEY,
 }) {
   if (canChooseCloud(plan)) {
@@ -34,6 +36,8 @@ export function resolveCloudCredential({
   if (explicit) return { ...NONE, blocked: 'cloud_requires_key_pro' };
   if (!canAutoCloud(plan) || !planFor(plan).platformPaid) return { ...NONE, blocked: null };
 
+  const limit = monthlyAnswerLimit(plan);
+  if (limit !== null && monthlyAnswersUsed >= limit) return { ...NONE, blocked: 'answer_limit_reached' };
   const allowance = weeklyAllowanceUsd(plan);
   if (weeklySpentUsd >= allowance) return { ...NONE, blocked: 'allowance_exhausted' };
   // No platform key configured means no platform-paid cloud, never a default.

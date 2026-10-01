@@ -5,7 +5,7 @@ import { costUsd, describeError, streamChat as streamCloud } from '../lib/anthro
 import { CLOUD_MODELS, canAutoCloud, canChooseCloud } from '../billing/plans.js';
 import { resolveCloudCredential } from '../billing/credential.js';
 import { questionDifficulty } from '../routing/difficulty.js';
-import { weeklyPlatformSpend } from '../models/usageStore.js';
+import { monthlyPlatformAnswers, weeklyPlatformSpend } from '../models/usageStore.js';
 import { localChatModel, localModelStatus, streamChat as streamLocal } from '../lib/ollama.js';
 import {
   gatherCandidates,
@@ -75,6 +75,8 @@ function keyProOnly(plan) {
     ? `${lead} Use Auto: it answers locally, and uses the cloud on its own when the local model cannot answer.`
     : `${lead} This plan answers with the local model.`;
 }
+const ANSWERS_USED =
+  "This month's cloud answers are used, and the local model is not available to answer instead.";
 const ALLOWANCE_USED =
   "This week's cloud allowance is used, and the local model is not available to answer instead.";
 
@@ -91,12 +93,14 @@ async function cloudCredentialFor(ownerId, userPlan, body, headerKey) {
     explicit,
     modelChoice: body.cloudModel,
     weeklySpentUsd: meters ? await weeklyPlatformSpend(ownerId) : 0,
+    monthlyAnswersUsed: meters ? await monthlyPlatformAnswers(ownerId) : 0,
   });
 }
 
 function blockedMessage({ route, credential, webSearch, status, model }) {
   if (route.blocked === 'cloud_unavailable') {
     if (credential.blocked === 'allowance_exhausted') return `${ALLOWANCE_USED} ${localFix(status, model)}`;
+    if (credential.blocked === 'answer_limit_reached') return `${ANSWERS_USED} ${localFix(status, model)}`;
     if (credential.billedTo === 'user_key' && webSearch) {
       return `Web search runs on the cloud tier and needs your own Anthropic API key, sent in the ${API_KEY_HEADER} header; it is never stored.`;
     }
@@ -364,7 +368,9 @@ router.post('/', async (req, res) => {
     return res.status(503).json({
       // Always the local model here: the hint is about what to install.
       error: blockedMessage({ route, credential, webSearch, status: plan.status, model: plan.model }),
-      code: credential.blocked === 'allowance_exhausted' && route.blocked === 'cloud_unavailable' ? 'allowance_exhausted' : route.blocked,
+      code: route.blocked === 'cloud_unavailable' && ['allowance_exhausted', 'answer_limit_reached'].includes(credential.blocked)
+        ? credential.blocked
+        : route.blocked,
       queryId,
       routing: plan.routing,
       nodes: sources.map(({ node }) => ({ id: node.id, type: node.type, project: node.project, privacy: node.privacy })),

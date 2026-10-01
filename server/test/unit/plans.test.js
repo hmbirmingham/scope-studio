@@ -2,8 +2,8 @@ import assert from 'node:assert/strict';
 import { describe, test } from 'node:test';
 import { resolveCloudCredential } from '../../src/billing/credential.js';
 import {
-  MARGIN_TARGET, PLANS, canAutoCloud, canChooseCloud, cloudEffortFor, monthlyCloudBudgetUsd, netRevenueUsd,
-  planFor, platformModel, resolveCloudModel, weeklyAllowanceUsd,
+  MARGIN_TARGET, PLANS, canAutoCloud, canChooseCloud, cloudEffortFor, measuredAnswerUsd, monthlyAnswerLimit,
+  monthlyCloudBudgetUsd, netRevenueUsd, planFor, platformModel, resolveCloudModel, weeklyAllowanceUsd,
 } from '../../src/billing/plans.js';
 
 describe('plans', () => {
@@ -38,6 +38,17 @@ describe('plans', () => {
     assert.equal(platformModel('engineer', { hard: true, spentUsd: allowance * 0.5 }), 'claude-sonnet-5');
     assert.equal(platformModel('engineer', { hard: false, spentUsd: allowance * 0.5 }), 'claude-haiku-4-5');
     assert.equal(platformModel('student', { spentUsd: weeklyAllowanceUsd('student') * 0.6 }), 'claude-haiku-4-5');
+  });
+
+  test('advertised answer limits fit the budget at measured costs, so the margin holds at or above target', () => {
+    assert.equal(monthlyAnswerLimit('student'), 200);
+    assert.equal(monthlyAnswerLimit('engineer'), 350);
+    assert.equal(monthlyAnswerLimit('key_pro'), null, 'their own key, no limit');
+    for (const plan of ['student', 'engineer']) {
+      const cost = monthlyAnswerLimit(plan) * measuredAnswerUsd(plan);
+      assert.ok(cost <= monthlyCloudBudgetUsd(plan), `${plan}: ${cost.toFixed(2)} of ${monthlyCloudBudgetUsd(plan).toFixed(2)}`);
+      assert.ok(1 - cost / netRevenueUsd(plan) >= MARGIN_TARGET, `${plan} margin`);
+    }
   });
 
   test('Opus is never a default, and only offered models can be chosen', () => {
@@ -82,6 +93,8 @@ describe('resolveCloudCredential', () => {
   test('a spent allowance, a missing platform key, or Free all mean no cloud credential', () => {
     const spent = resolveCloudCredential({ plan: 'student', explicit: false, platformKey: 'platform', weeklySpentUsd: allowance });
     assert.deepEqual([spent.apiKey, spent.blocked], [null, 'allowance_exhausted']);
+    const limit = resolveCloudCredential({ plan: 'student', explicit: false, platformKey: 'platform', monthlyAnswersUsed: 200 });
+    assert.deepEqual([limit.apiKey, limit.blocked], [null, 'answer_limit_reached']);
     const unset = resolveCloudCredential({ plan: 'engineer', explicit: false, platformKey: undefined });
     assert.deepEqual([unset.apiKey, unset.blocked], [null, null]);
     const free = resolveCloudCredential({ plan: 'free', headerKey: 'user-key', explicit: false, platformKey: 'platform' });

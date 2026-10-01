@@ -420,9 +420,9 @@ export default function ChatPanel({
           )}
           <span className="composer-model">{model}</span>
           {chooseCloud && !hasKey && (tier === 'cloud_frontier' || webSearch) && <span className="composer-hint">needs your key</span>}
-          {!chooseCloud && cloudPlan?.autoCloud && cloudPlan.remainingUsd != null && (
-            <span className="composer-plan" title="Auto uses the cloud only when the local model cannot answer.">
-              cloud via Auto · ${cloudPlan.remainingUsd.toFixed(2)} left this week
+          {!chooseCloud && cloudPlan?.autoCloud && cloudPlan.answersLeft != null && (
+            <span className="composer-plan" title="Auto sends hard questions to the cloud, and answers the rest locally without limit.">
+              {cloudPlan.answersLeft} cloud answers left this month
             </span>
           )}
           <button type="submit" className="composer-send" aria-label="Send" disabled={status !== 'idle'}>
