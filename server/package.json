@@ -11,7 +11,8 @@
     "migrate": "node src/db/migrate.js",
     "embed": "node src/db/embed-missing.js",
     "centroids": "node src/db/build-centroids.js",
-    "benchmark": "node src/benchmark/run.js"
+    "benchmark": "node src/benchmark/run.js",
+    "webhook-proxy": "node scripts/webhook-proxy.js"
   },
   "keywords": [],
   "author": "Hynes Birmingham",
