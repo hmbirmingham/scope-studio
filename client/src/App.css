@@ -1016,3 +1016,77 @@ body {
 .consent ul { margin: 0 0 10px; padding-left: 18px; color: var(--t2); }
 .consent li { margin: 2px 0; }
 .consent-never { color: var(--t1); }
+
+/* --- small screens ------------------------------------------------------- */
+/* Hidden on wide screens; the media queries below turn them on. */
+.menu-open,
+.drawer-backdrop { display: none; }
+
+.menu-open {
+  position: absolute;
+  top: 14px;
+  left: 16px;
+  z-index: 5;
+  width: 30px;
+  height: 30px;
+  align-items: center;
+  justify-content: center;
+  background: rgba(255, 255, 255, 0.04);
+  border: 1px solid var(--border2);
+  border-radius: 9px;
+  color: var(--t2);
+  font-size: 14px;
+  cursor: pointer;
+}
+
+.drawer-backdrop {
+  position: fixed;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.5);
+}
+
+/* Below 1100px the map stops taking a column and slides over the conversation. */
+@media (max-width: 1099px) {
+  .app { grid-template-columns: 240px minmax(0, 1fr); }
+  .output-panel {
+    position: fixed;
+    top: 0;
+    right: 0;
+    bottom: 0;
+    z-index: 30;
+    width: min(480px, 92vw);
+    min-width: 0;
+    box-shadow: -12px 0 40px rgba(0, 0, 0, 0.45);
+    animation: slide-in-right 0.2s ease both;
+  }
+  .drawer-backdrop.is-panel { display: block; z-index: 29; }
+}
+
+/* Below 760px the sidebar becomes a drawer and the conversation gets the width. */
+@media (max-width: 759px) {
+  .app { grid-template-columns: minmax(0, 1fr); }
+  .sidebar {
+    position: fixed;
+    top: 0;
+    left: 0;
+    bottom: 0;
+    z-index: 40;
+    width: min(280px, 85vw);
+    transform: translateX(-100%);
+    transition: transform 0.2s ease;
+  }
+  .sidebar.is-open { transform: none; box-shadow: 12px 0 40px rgba(0, 0, 0, 0.45); }
+  .drawer-backdrop.is-sidebar { display: block; z-index: 39; }
+  .menu-open { display: flex; }
+  /* Room for the menu and globe buttons above the first message. */
+  .chat-log { padding: 56px 16px 8px; }
+  .composer { margin: 0 16px 14px; }
+  .composer-bar { flex-wrap: wrap; row-gap: 6px; }
+  .composer-plan { flex-basis: 100%; order: 10; }
+  .answer.is-markdown pre { max-width: calc(100vw - 32px); }
+}
+
+@keyframes slide-in-right {
+  from { transform: translateX(24px); opacity: 0; }
+  to { transform: none; opacity: 1; }
+}

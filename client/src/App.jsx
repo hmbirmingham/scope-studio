@@ -11,6 +11,9 @@ import { useProjectSettings } from './hooks/useProjectSettings';
 import { useGraphData } from './hooks/useGraphData';
 import './App.css';
 
+// Matches the breakpoint in App.css where the map stops taking a column.
+const WIDE_LAYOUT = '(min-width: 1100px)';
+
 function Studio() {
   const { graph, state, error, refresh } = useGraphData(true);
   const canvasRef = useRef(null);
@@ -18,7 +21,21 @@ function Studio() {
   const [activeProject, setActiveProject] = useState(null);
   const [scope, setScope] = useState(null);
   const [sourcesOpen, setSourcesOpen] = useState(false);
-  const [panelOpen, setPanelOpen] = useState(true);
+  // The map takes a column only on wide screens; narrower, it slides over the
+  // conversation when opened, so it starts closed there.
+  const [panelOpen, setPanelOpen] = useState(() => window.matchMedia?.(WIDE_LAYOUT).matches ?? true);
+  // Below the phone breakpoint the sidebar is a drawer behind a menu button.
+  const [sidebarOpen, setSidebarOpen] = useState(false);
+
+  useEffect(() => {
+    const onKey = (event) => {
+      if (event.key !== 'Escape') return;
+      setSidebarOpen(false);
+      if (!window.matchMedia?.(WIDE_LAYOUT).matches) setPanelOpen(false);
+    };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, []);
   // Held in memory for this session only: never localStorage, never the server.
   const [apiKey, setApiKey] = useState('');
   // Key Pro's model choice, for this session; other plans never send one.
@@ -136,16 +153,35 @@ function Studio() {
   return (
     <div className="app">
       <Sidebar
+        open={sidebarOpen}
         projects={graph.projects}
         activeProject={activeProject}
-        onSelectProject={handleSelectProject}
-        onOpenProjectSettings={(project) => setScope({ kind: 'project', project })}
-        onOpenSources={() => setSourcesOpen(true)}
-        onNewThread={() => chat.newThread()}
+        onSelectProject={(project) => {
+          handleSelectProject(project);
+          setSidebarOpen(false);
+        }}
+        onOpenProjectSettings={(project) => {
+          setScope({ kind: 'project', project });
+          setSidebarOpen(false);
+        }}
+        onOpenSources={() => {
+          setSourcesOpen(true);
+          setSidebarOpen(false);
+        }}
+        onNewThread={() => {
+          chat.newThread();
+          setSidebarOpen(false);
+        }}
       />
+      {/* Shown only where the sidebar or map is a drawer; tapping it closes them. */}
+      {sidebarOpen && <div className="drawer-backdrop is-sidebar" onClick={() => setSidebarOpen(false)} />}
+      {panelOpen && <div className="drawer-backdrop is-panel" onClick={() => setPanelOpen(false)} />}
 
       {/* The conversation is the workspace; outputs sit beside it. */}
       <main className="stage">
+        <button type="button" className="menu-open" onClick={() => setSidebarOpen(true)} aria-label="Show menu" title="Menu">
+          ☰
+        </button>
         <ChatPanel
           project={activeProject}
           chat={chat}
