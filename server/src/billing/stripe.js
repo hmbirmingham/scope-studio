@@ -65,22 +65,42 @@ export function subscriptionRecord(config, subscription) {
   };
 }
 
-// A hosted checkout for one plan with Managed Payments on, carrying our user
-// id on the session and on the subscription it creates, so every later
-// subscription event can find the account.
-export async function createCheckout(config, { plan, userId, email, customerId, returnUrl }, client = stripeClient(config)) {
+// Tags our checkouts in the Stripe Dashboard so this flow can be tracked and
+// compared; Stripe asks for a fixed label ending in 8 random letters.
+export const INTEGRATION_IDENTIFIER = 'scope-studio-plans-nviushko';
+
+// The Stripe Customer is the account's billing identity: every webhook is
+// resolved through it to our user, as Stripe recommends, with metadata kept
+// only as a fallback. Created once, before the first checkout.
+export async function createCustomer(config, { userId, email }, client = stripeClient(config)) {
+  const customer = await client.customers.create({ email, metadata: { user_id: userId } });
+  return customer.id;
+}
+
+// A hosted checkout for one plan with Managed Payments on, for the account's
+// own Stripe Customer.
+export async function createCheckout(config, { plan, userId, customerId, returnUrl }, client = stripeClient(config)) {
   if (!PAID_PLANS.includes(plan)) throw new Error(`not a paid plan: ${plan}`);
   const session = await client.checkout.sessions.create({
     mode: 'subscription',
     line_items: [{ price: config.prices[plan], quantity: 1 }],
     managed_payments: { enabled: true },
+    customer: customerId,
     client_reference_id: userId,
-    ...(customerId ? { customer: customerId } : { customer_email: email }),
     subscription_data: { metadata: { user_id: userId } },
+    integration_identifier: INTEGRATION_IDENTIFIER,
     success_url: `${returnUrl}?billing=done`,
     cancel_url: returnUrl,
   });
   return session.url;
+}
+
+// The subscription an invoice belongs to, on current API versions (the
+// invoice's parent) or older ones (a top-level field). Null for one-off invoices.
+export function invoiceSubscriptionId(invoice) {
+  const fromParent = invoice?.parent?.subscription_details?.subscription;
+  const id = fromParent ?? invoice?.subscription ?? null;
+  return typeof id === 'string' ? id : id?.id ?? null;
 }
 
 // The subscription as it is now. Stripe does not deliver events in order, and

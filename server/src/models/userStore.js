@@ -33,9 +33,21 @@ export async function getUserBilling(id) {
   return rows[0] ?? null;
 }
 
-// Applies a subscription's current state to the user it belongs to: by the user
-// id the checkout put on the subscription, else by a subscription or customer
-// already on file. The state is read fresh from Stripe for every event, so
+// Records the account's Stripe Customer the first time one is created. If two
+// checkouts raced, the first id stored wins and is returned to both.
+export async function setBillingCustomer(userId, customerId) {
+  const { rows } = await getPool().query(
+    `UPDATE users SET billing_customer_id = COALESCE(billing_customer_id, $2)
+     WHERE id = $1 RETURNING billing_customer_id`,
+    [userId, customerId]
+  );
+  return rows[0]?.billing_customer_id ?? null;
+}
+
+// Applies a subscription's current state to the user it belongs to: by the
+// Stripe Customer on file, as Stripe recommends; by the subscription; and only
+// as a fallback, by the user id in the subscription's metadata, for an account
+// that has no Customer recorded yet. The state is read fresh from Stripe for every event, so
 // applying it twice, or after a later event, gives the same result. Returns
 // the user's plan afterwards, or null if no user matched.
 export async function applySubscription({ userId, customerId, subscriptionId, status, priceId, renewsAt, cancelAt, plan }) {
@@ -49,7 +61,9 @@ export async function applySubscription({ userId, customerId, subscriptionId, st
        billing_renews_at = $7,
        billing_cancel_at = $8,
        billing_updated_at = now()
-     WHERE id::text = $1 OR billing_subscription_id = $3 OR ($2::text IS NOT NULL AND billing_customer_id = $2)
+     WHERE ($2::text IS NOT NULL AND billing_customer_id = $2)
+        OR billing_subscription_id = $3
+        OR (billing_customer_id IS NULL AND id::text = $1)
      RETURNING plan`,
     [userId ?? '', customerId, subscriptionId, plan, status, priceId, renewsAt, cancelAt]
   );
