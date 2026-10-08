@@ -17,12 +17,17 @@ describe('billing (Stripe Managed Payments)', () => {
   let userId;
   let clock = 1790000000;
 
-  const deliver = (type, { id = 'sub_1', customer = 'cus_1', status = 'active', price = 'price_student', withUser = true, created, secret = TEST_ENV.STRIPE_WEBHOOK_SECRET } = {}) => {
+  const subscriptionObject = ({ id, customer, status, price, withUser }) => ({
+    id, object: 'subscription', customer, status, metadata: withUser ? { user_id: userId } : {}, cancel_at: null,
+    items: { data: [{ price: { id: price }, current_period_end: clock + 2592000 }] },
+  });
+  // Sends an event and, unless `current` is false, makes its subscription the
+  // current state Stripe returns — the handler reads that, not the event.
+  const deliver = (type, { id = 'sub_1', customer = 'cus_1', status = 'active', price = 'price_student', withUser = true, current = true, secret = TEST_ENV.STRIPE_WEBHOOK_SECRET, data } = {}) => {
     clock += 60;
-    const payload = JSON.stringify({
-      id: `evt_${clock}`, object: 'event', type, created: created ?? clock,
-      data: { object: { id, object: 'subscription', customer, status, metadata: withUser ? { user_id: userId } : {}, cancel_at: null, items: { data: [{ price: { id: price }, current_period_end: clock + 2592000 }] } } },
-    });
+    const object = subscriptionObject({ id, customer, status, price, withUser });
+    if (current) fake.state.subscriptions[id] = object;
+    const payload = JSON.stringify({ id: `evt_${clock}`, object: 'event', type, created: clock, data: data ?? { object } });
     return fetch(`${server.base}/api/billing/webhook`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', 'Stripe-Signature': signer.webhooks.generateTestHeaderString({ payload, secret }) },
@@ -97,18 +102,30 @@ describe('billing (Stripe Managed Payments)', () => {
     assert.equal(await plan(), 'free', 'payment recovery failed');
   });
 
-  test('a late, older event cannot undo a newer one, and a repeat is harmless', async () => {
-    await deliver('customer.subscription.created', { id: 'sub_3', customer: 'cus_3', price: 'price_engineer', created: 1900000000 });
+  test('a late, older event cannot undo a newer state, because the handler reads the current one', async () => {
+    await deliver('customer.subscription.created', { id: 'sub_3', customer: 'cus_3', price: 'price_engineer' });
     assert.equal(await plan(), 'engineer');
-    const stale = await deliver('customer.subscription.deleted', { id: 'sub_3', customer: 'cus_3', status: 'canceled', price: 'price_engineer', created: 1899999000 });
-    assert.equal((await stale.json()).applied, false);
+    // An out-of-order event says canceled, but the subscription is active now.
+    const late = await deliver('customer.subscription.deleted', { id: 'sub_3', customer: 'cus_3', status: 'canceled', price: 'price_engineer', current: false });
+    assert.equal((await late.json()).plan, 'engineer');
     assert.equal(await plan(), 'engineer');
-    await deliver('customer.subscription.created', { id: 'sub_3', customer: 'cus_3', price: 'price_engineer', created: 1900000000 });
-    assert.equal(await plan(), 'engineer');
+    const reads = fake.state.requests.filter((r) => r.method === 'GET' && r.url.startsWith('/v1/subscriptions/sub_3'));
+    assert.ok(reads.length >= 2, 'each event read the subscription from Stripe');
+  });
+
+  test('if Stripe cannot be read, the webhook asks Stripe to retry rather than guess', async () => {
+    const response = await deliver('customer.subscription.updated', { id: 'sub_missing', customer: 'cus_x', current: false });
+    assert.equal(response.status, 502);
+  });
+
+  test('a thin-payload event is refused with a clear message', async () => {
+    const response = await deliver('customer.subscription.updated', { data: {} });
+    assert.equal(response.status, 400);
+    assert.match((await response.json()).error, /snapshot/);
   });
 
   test('a subscribed user gets the portal for their customer, never a second checkout', async () => {
-    await deliver('customer.subscription.created', { id: 'sub_4', customer: 'cus_4', price: 'price_student', created: 1950000000 });
+    await deliver('customer.subscription.created', { id: 'sub_4', customer: 'cus_4', price: 'price_student' });
     const again = await api('POST', '/api/billing/checkout', { plan: 'engineer' });
     assert.equal(again.status, 409);
     assert.equal(again.data.code, 'already_subscribed');

@@ -3,7 +3,9 @@ import http from 'node:http';
 // Speaks just enough of the Stripe API for checkout and the customer portal,
 // so billing can be tested without an account. Records what it was sent.
 export async function startFakeStripe() {
-  const state = { requests: [], status: 200 };
+  // `subscriptions` holds each subscription's current state, which the webhook
+  // handler reads back with GET /v1/subscriptions/:id.
+  const state = { requests: [], status: 200, subscriptions: {} };
   const server = http.createServer(async (req, res) => {
     const chunks = [];
     for await (const chunk of req) chunks.push(chunk);
@@ -19,6 +21,10 @@ export async function startFakeStripe() {
     }
     if (req.method === 'POST' && req.url === '/v1/billing_portal/sessions') {
       return res.end(JSON.stringify({ id: 'bps_test_1', object: 'billing_portal.session', url: `https://billing.stripe.test/p/${form.customer}` }));
+    }
+    const sub = req.url.match(/^\/v1\/subscriptions\/([^/?]+)/);
+    if (req.method === 'GET' && sub && state.subscriptions[sub[1]]) {
+      return res.end(JSON.stringify(state.subscriptions[sub[1]]));
     }
     res.writeHead(404);
     res.end(JSON.stringify({ error: { type: 'invalid_request_error', message: 'not found' } }));

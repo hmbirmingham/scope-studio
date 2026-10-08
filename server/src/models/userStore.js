@@ -33,12 +33,12 @@ export async function getUserBilling(id) {
   return rows[0] ?? null;
 }
 
-// Applies one subscription event to the user it belongs to: by the user id the
-// checkout put on the subscription, else by a subscription or customer already
-// on file. An event older than the last one applied changes nothing, so
-// retries and out-of-order deliveries are harmless. Returns the user's plan
-// afterwards, or null if no user matched.
-export async function applySubscription({ userId, customerId, subscriptionId, status, priceId, renewsAt, cancelAt, eventAt, plan }) {
+// Applies a subscription's current state to the user it belongs to: by the user
+// id the checkout put on the subscription, else by a subscription or customer
+// already on file. The state is read fresh from Stripe for every event, so
+// applying it twice, or after a later event, gives the same result. Returns
+// the user's plan afterwards, or null if no user matched.
+export async function applySubscription({ userId, customerId, subscriptionId, status, priceId, renewsAt, cancelAt, plan }) {
   const { rows } = await getPool().query(
     `UPDATE users SET
        plan = $4,
@@ -48,11 +48,10 @@ export async function applySubscription({ userId, customerId, subscriptionId, st
        billing_price_id = $6,
        billing_renews_at = $7,
        billing_cancel_at = $8,
-       billing_updated_at = $9
-     WHERE (id::text = $1 OR billing_subscription_id = $3 OR ($2::text IS NOT NULL AND billing_customer_id = $2))
-       AND (billing_updated_at IS NULL OR billing_updated_at <= $9)
+       billing_updated_at = now()
+     WHERE id::text = $1 OR billing_subscription_id = $3 OR ($2::text IS NOT NULL AND billing_customer_id = $2)
      RETURNING plan`,
-    [userId ?? '', customerId, subscriptionId, plan, status, priceId, renewsAt, cancelAt, eventAt]
+    [userId ?? '', customerId, subscriptionId, plan, status, priceId, renewsAt, cancelAt]
   );
   return rows[0]?.plan ?? null;
 }
