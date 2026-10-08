@@ -711,6 +711,36 @@ body {
 }
 
 .answer.is-refused { color: var(--amber); }
+
+/* Rendered markdown: the text's own line breaks are now structure, not pre-wrap. */
+.answer.is-markdown { white-space: normal; }
+.answer.is-markdown > :first-child { margin-top: 0; }
+.answer.is-markdown > :last-child { margin-bottom: 0; }
+.answer.is-markdown p { margin: 0 0 10px; }
+.answer.is-markdown ul,
+.answer.is-markdown ol { margin: 0 0 10px; padding-left: 20px; }
+.answer.is-markdown li { margin: 2px 0; }
+.answer.is-markdown h1,
+.answer.is-markdown h2,
+.answer.is-markdown h3 { margin: 14px 0 6px; font-size: 14px; font-weight: 600; }
+.answer.is-markdown strong { color: var(--t1); font-weight: 600; }
+.answer.is-markdown a { color: var(--t1); text-decoration: underline; text-underline-offset: 2px; }
+.answer.is-markdown code {
+  font-family: var(--mono); font-size: 12px; padding: 1px 4px; border-radius: 4px;
+  background: rgba(255, 255, 255, 0.06);
+}
+.answer.is-markdown pre {
+  margin: 0 0 10px; padding: 10px 12px; border-radius: 8px; overflow-x: auto;
+  background: rgba(255, 255, 255, 0.04);
+}
+.answer.is-markdown pre code { padding: 0; background: none; }
+/* Tables scroll inside the answer rather than widening the page on a phone. */
+.answer.is-markdown table { display: block; max-width: 100%; overflow-x: auto; margin: 0 0 10px; border-collapse: collapse; font-size: 12px; }
+.answer.is-markdown th,
+.answer.is-markdown td { padding: 5px 8px; border: 1px solid rgba(255, 255, 255, 0.08); text-align: left; vertical-align: top; }
+.answer.is-markdown th { color: var(--t1); font-weight: 600; background: rgba(255, 255, 255, 0.03); }
+.answer.is-markdown blockquote { margin: 0 0 10px; padding-left: 10px; border-left: 2px solid rgba(255, 255, 255, 0.12); color: var(--t2); }
+.answer.is-markdown .caret { display: inline-block; }
 .answer-meta { color: var(--t3); font-family: var(--mono); font-size: 10px; }
 
 @keyframes rise {

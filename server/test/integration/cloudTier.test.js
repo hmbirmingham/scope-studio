@@ -109,6 +109,7 @@ describe('cloud tier', () => {
     const done = lines.at(-1);
     assert.equal(done.type, 'done');
     assert.equal(done.metrics.outputTokens, 40);
+    assert.equal(done.searches, undefined, 'no web search, no searches list');
     assert.equal(done.metrics.promptTokens, 1200);
     assert.ok(done.metrics.costUsd > 0);
 
@@ -126,6 +127,7 @@ describe('cloud tier', () => {
     assert.equal(ollama.state.chatRequests.length, 0, 'nothing went to the local model');
 
     const row = await metricsRow(done.queryId);
+    assert.equal(row.web_searches, null, 'an answer without web search records no search count');
     assert.equal(row.routing_decision, 'cloud');
     assert.match(row.model_used, /^anthropic\//);
     assert.equal(row.output_tokens, 40);
@@ -223,6 +225,8 @@ describe('cloud tier', () => {
       const done = lines.at(-1);
       assert.equal(done.type, 'done');
       assert.deepEqual(done.web, [{ url: search.url, title: search.title }]);
+      assert.deepEqual(done.searches, [search.query], 'the queries it searched come back with the answer');
+      assert.equal((await metricsRow(done.queryId)).web_searches, 1, 'and the count is recorded');
 
       const withoutSearch = costUsd('claude-sonnet-5', { input_tokens: 1200, output_tokens: 40 });
       assert.ok(Math.abs(done.metrics.costUsd - withoutSearch - 0.01) < 1e-9, 'one search adds a cent');
