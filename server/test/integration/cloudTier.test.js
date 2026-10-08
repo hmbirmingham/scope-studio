@@ -386,7 +386,7 @@ describe('cloud tier', () => {
       assert.ok(row.cost_usd > 0);
     });
 
-    test('past half the week\'s allowance a platform answer moves to Haiku; a spent allowance stops the cloud', async () => {
+    test('past half the week\'s allowance a platform answer stays on Sonnet but answers shorter; a spent allowance stops the cloud', async () => {
       const { chat: ask, id } = await userOn('student');
       const allowance = weeklyAllowanceUsd('student');
       const spend = (usd) =>
@@ -398,9 +398,14 @@ describe('cloud tier', () => {
 
       await spend(allowance * 0.6);
       const halfLines = await withLocalDown(() => withPlatformKey(async () => readLines(await ask({ query: question }))));
-      assert.equal(halfLines[0].routing.model, 'anthropic/claude-haiku-4-5');
-      assert.equal(halfLines.at(-1).type, 'done', 'the Haiku answer completes: no effort parameter is sent to it');
-      assert.equal(anthropic.state.requests.at(-1).output_config, undefined);
+      assert.equal(halfLines[0].routing.model, 'anthropic/claude-sonnet-5', 'never Haiku');
+      assert.equal(halfLines.at(-1).type, 'done');
+      const sent = anthropic.state.requests.at(-1);
+      assert.equal(sent.max_tokens, 700, 'a lower ceiling');
+      const lastUser = sent.messages.filter((m) => m.role === 'user').at(-1);
+      const text = typeof lastUser.content === 'string' ? lastUser.content : lastUser.content.map((b) => b.text).join('');
+      assert.match(text, /under about 250 words/, 'asked to be brief, so it is not cut off');
+      assert.equal(lastUser.content.find?.((b) => b.cache_control)?.text.includes('250 words') ?? false, false, 'the note sits after the cache breakpoint');
 
       await spend(allowance);
       anthropic.state.requests = [];
@@ -478,6 +483,14 @@ describe('cloud tier', () => {
       const [context] = await withPlatformKey(async () => readLines(await ask({ query: hardQuestion }, { 'x-anthropic-api-key': KEY })));
       assert.equal(context.routing.decision, 'local');
       assert.equal(anthropic.state.requests.length, 0);
+    });
+
+    test('Key Pro may choose Haiku, and gets no effort setting, which Haiku refuses', async () => {
+      const { chat: ask } = await userOn('key_pro');
+      const lines = await readLines(await ask({ query: question, tier: 'cloud_frontier', cloudModel: 'claude-haiku-4-5' }, { 'x-anthropic-api-key': KEY }));
+      assert.equal(lines[0].routing.model, 'anthropic/claude-haiku-4-5');
+      assert.equal(lines.at(-1).type, 'done');
+      assert.equal(anthropic.state.requests.at(-1).output_config, undefined);
     });
 
     test('an unoffered model choice is refused', async () => {

@@ -127,6 +127,19 @@ export function withCacheBreakpoint(messages, marker) {
   return copy;
 }
 
+// Asks for a shorter answer by appending to the latest question, after the
+// cache breakpoint, so the cached context block is untouched. Paired with a
+// lower max_tokens; the note is what keeps the answer from being cut off.
+export const BREVITY_NOTE = '\n\nKeep this answer under about 250 words unless the question asks for detail.';
+
+export function withBrevityNote(messages) {
+  const last = messages.findLastIndex((message) => message.role === 'user');
+  if (last === -1 || typeof messages[last].content !== 'string') return messages;
+  const copy = [...messages];
+  copy[last] = { ...copy[last], content: copy[last].content + BREVITY_NOTE };
+  return copy;
+}
+
 // Our prompts carry the system instruction as the first message; the Messages
 // API takes it as its own parameter.
 export function splitSystem(messages) {
@@ -150,9 +163,9 @@ export function createClient(apiKey) {
 // matching the shape the local client yields so the route streams either the
 // same way. With `webSearch`, also `{ searching: query }` as each search runs
 // and `{ citations }` before done.
-export async function* streamChat({ apiKey, model, effort, messages, cacheMarker, signal, webSearch = false }) {
+export async function* streamChat({ apiKey, model, effort, messages, cacheMarker, signal, webSearch = false, maxTokens = MAX_TOKENS, brevity = false }) {
   const client = createClient(apiKey);
-  const { system, rest } = splitSystem(withCacheBreakpoint(messages, cacheMarker));
+  const { system, rest } = splitSystem(withCacheBreakpoint(brevity ? withBrevityNote(messages) : messages, cacheMarker));
   const conversation = [...rest];
   const content = [];
   let usage = null;
@@ -162,7 +175,7 @@ export async function* streamChat({ apiKey, model, effort, messages, cacheMarker
     const stream = client.messages.stream(
       {
         model,
-        max_tokens: MAX_TOKENS,
+        max_tokens: maxTokens,
         system,
         messages: conversation,
         ...effortConfig(model, effort),

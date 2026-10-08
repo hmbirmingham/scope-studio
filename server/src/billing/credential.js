@@ -4,12 +4,13 @@ import {
   cloudEffortFor,
   monthlyAnswerLimit,
   planFor,
+  platformEconomy,
   platformModel,
   resolveCloudModel,
   weeklyAllowanceUsd,
 } from './plans.js';
 
-const NONE = { apiKey: null, billedTo: null, effort: null, modelFor: () => null };
+const NONE = { apiKey: null, billedTo: null, effort: null, economy: false, modelFor: () => null };
 
 // Which key a cloud answer may use for this request, who pays for it, and how
 // its model is picked — or why there is none. Every cloud call goes through
@@ -30,7 +31,7 @@ export function resolveCloudCredential({
 }) {
   if (canChooseCloud(plan)) {
     const model = resolveCloudModel(plan, modelChoice || process.env.CLOUD_CHAT_MODEL);
-    return { apiKey: headerKey || null, billedTo: 'user_key', effort: cloudEffortFor(plan), blocked: null, modelFor: () => model };
+    return { apiKey: headerKey || null, billedTo: 'user_key', effort: cloudEffortFor(plan), economy: false, blocked: null, modelFor: () => model };
   }
   // Off Key Pro the user's key and model choice are never read.
   if (explicit) return { ...NONE, blocked: 'cloud_requires_key_pro' };
@@ -46,6 +47,8 @@ export function resolveCloudCredential({
     apiKey: platformKey,
     billedTo: 'platform',
     effort: cloudEffortFor(plan),
+    // Past half the week's budget: shorter answers (and Opus → Sonnet).
+    economy: platformEconomy(weeklySpentUsd, allowance),
     blocked: null,
     modelFor: (hard) => platformModel(plan, { hard, spentUsd: weeklySpentUsd, allowanceUsd: allowance }),
   };
