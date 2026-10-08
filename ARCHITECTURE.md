@@ -425,8 +425,11 @@ to the cloud, one of them to Opus for $0.055.
   subscription's metadata; Stripe's signed webhook (`Stripe-Signature`) sets
   `users.plan` from `customer.subscription.*` events. Active, trialing and
   past-due keep the plan (a scheduled cancellation stays active until the
-  period ends); canceled, unpaid, paused and incomplete return to Free. Events
-  older than the last applied are ignored. Plan changes and cancellation go
+  period ends); canceled, unpaid, paused and incomplete return to Free. Stripe
+  does not deliver events in order and events can share a timestamp, so each
+  event only prompts a fresh read of the subscription from the API, and that
+  current state is applied: order and duplicates stop mattering. The endpoint
+  must use the Snapshot payload. Plan changes and cancellation go
   through Stripe's customer portal. (Lemon Squeezy was the first choice; its
   signup now routes to Stripe, whose Managed Payments the same team builds.)
 

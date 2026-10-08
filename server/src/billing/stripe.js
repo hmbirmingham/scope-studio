@@ -83,6 +83,14 @@ export async function createCheckout(config, { plan, userId, email, customerId, 
   return session.url;
 }
 
+// The subscription as it is now. Stripe does not deliver events in order, and
+// two events can share a timestamp, so each event is a prompt to read the
+// current state rather than a state to apply: order and duplicates stop
+// mattering. (Stripe's own guidance for webhook handlers.)
+export async function currentSubscription(config, subscriptionId, client = stripeClient(config)) {
+  return client.subscriptions.retrieve(subscriptionId);
+}
+
 export async function customerPortalUrl(config, { customerId, returnUrl }, client = stripeClient(config)) {
   const session = await client.billingPortal.sessions.create({ customer: customerId, return_url: returnUrl });
   return session.url;

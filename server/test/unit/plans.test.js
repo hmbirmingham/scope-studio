@@ -3,7 +3,7 @@ import { describe, test } from 'node:test';
 import { resolveCloudCredential } from '../../src/billing/credential.js';
 import {
   MARGIN_TARGET, PLANS, canAutoCloud, canChooseCloud, cloudEffortFor, measuredAnswerUsd, monthlyAnswerLimit,
-  monthlyCloudBudgetUsd, netRevenueUsd, planFor, platformModel, resolveCloudModel, weeklyAllowanceUsd,
+  monthlyCloudBudgetUsd, netRevenueUsd, planFor, platformEconomy, platformModel, resolveCloudModel, weeklyAllowanceUsd,
 } from '../../src/billing/plans.js';
 
 describe('plans', () => {
@@ -32,12 +32,14 @@ describe('plans', () => {
     assert.equal(platformModel('free', { hard: true }), null);
   });
 
-  test('past half the week\'s budget every platform model steps down one level', () => {
+  test('past half the week\'s budget Opus steps down to Sonnet, and Sonnet stays Sonnet but economises', () => {
     const allowance = weeklyAllowanceUsd('engineer');
     assert.equal(platformModel('engineer', { hard: true, spentUsd: allowance * 0.4999 }), 'claude-opus-5');
     assert.equal(platformModel('engineer', { hard: true, spentUsd: allowance * 0.5 }), 'claude-sonnet-5');
-    assert.equal(platformModel('engineer', { hard: false, spentUsd: allowance * 0.5 }), 'claude-haiku-4-5');
-    assert.equal(platformModel('student', { spentUsd: weeklyAllowanceUsd('student') * 0.6 }), 'claude-haiku-4-5');
+    assert.equal(platformModel('engineer', { hard: false, spentUsd: allowance * 0.5 }), 'claude-sonnet-5', 'never Haiku');
+    assert.equal(platformModel('student', { spentUsd: weeklyAllowanceUsd('student') * 0.9 }), 'claude-sonnet-5');
+    assert.equal(platformEconomy(allowance * 0.4999, allowance), false);
+    assert.equal(platformEconomy(allowance * 0.5, allowance), true);
   });
 
   test('advertised answer limits fit the budget at measured costs, so the margin holds at or above target', () => {
@@ -84,8 +86,9 @@ describe('resolveCloudCredential', () => {
   test('an Auto answer on Student uses the platform key, billed to the platform, on the right model', () => {
     const fresh = resolveCloudCredential({ plan: 'student', headerKey: 'user-key', explicit: false, platformKey: 'platform', weeklySpentUsd: 0, modelChoice: 'claude-opus-5' });
     assert.deepEqual([fresh.apiKey, fresh.billedTo, fresh.modelFor(true)], ['platform', 'platform', 'claude-sonnet-5'], 'a Student cannot choose Opus');
+    assert.equal(fresh.economy, false);
     const half = resolveCloudCredential({ plan: 'student', explicit: false, platformKey: 'platform', weeklySpentUsd: allowance / 2 });
-    assert.equal(half.modelFor(false), 'claude-haiku-4-5');
+    assert.deepEqual([half.modelFor(false), half.economy], ['claude-sonnet-5', true], 'past half: still Sonnet, shorter answers');
     const engineer = resolveCloudCredential({ plan: 'engineer', explicit: false, platformKey: 'platform', weeklySpentUsd: 0 });
     assert.deepEqual([engineer.modelFor(true), engineer.modelFor(false)], ['claude-opus-5', 'claude-sonnet-5']);
   });

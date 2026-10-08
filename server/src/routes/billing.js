@@ -1,7 +1,7 @@
 import { Router } from 'express';
 import requireAuth from '../middleware/requireAuth.js';
 import { PLANS } from '../billing/plans.js';
-import { billingConfig, createCheckout, customerPortalUrl, subscriptionRecord, verifyEvent } from '../billing/stripe.js';
+import { billingConfig, createCheckout, currentSubscription, customerPortalUrl, subscriptionRecord, verifyEvent } from '../billing/stripe.js';
 import { applySubscription, getUserBilling } from '../models/userStore.js';
 
 const NOT_CONFIGURED = { error: 'Billing is not configured on this server.', code: 'billing_not_configured' };
@@ -28,12 +28,27 @@ export async function billingWebhook(req, res) {
   }
   // Acknowledged so Stripe stops retrying; nothing to do for it.
   if (!SUBSCRIPTION_EVENTS.has(event.type)) return res.status(200).json({ ignored: event.type });
+  // This handler reads snapshot events. A thin-payload endpoint sends no
+  // object; refusing loudly beats silently granting nothing.
+  const subscriptionId = event.data?.object?.id;
+  if (!subscriptionId) {
+    console.error('billing webhook received a thin event; configure the endpoint with the Snapshot payload');
+    return res.status(400).json({ error: 'snapshot events required' });
+  }
 
-  const record = subscriptionRecord(config, event.data.object);
-  const plan = await applySubscription({ ...record, eventAt: new Date(event.created * 1000).toISOString() });
-  // No match is acknowledged too: an unknown or out-of-date event must not
-  // trigger endless retries. It is logged for the owner to look into.
-  if (plan === null) console.warn(`billing webhook ${event.type} for ${record.subscriptionId} matched no user, or was older than the last applied`);
+  let subscription;
+  try {
+    subscription = await currentSubscription(config, subscriptionId);
+  } catch (err) {
+    // A 5xx makes Stripe retry later, which is what a transient failure needs.
+    console.error(`billing webhook could not read ${subscriptionId}: ${err.message}`);
+    return res.status(502).json({ error: 'could not read the subscription from Stripe' });
+  }
+  const record = subscriptionRecord(config, subscription);
+  const plan = await applySubscription(record);
+  // No match is acknowledged too: an unknown subscription must not trigger
+  // endless retries. It is logged for the owner to look into.
+  if (plan === null) console.warn(`billing webhook ${event.type} for ${subscriptionId} matched no user`);
   res.status(200).json({ applied: plan !== null, plan });
 }
 

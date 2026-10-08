@@ -21,11 +21,19 @@ export const MARGIN_TARGET = 0.6;
 // Opus is offered for Engineer's hard questions and as Key Pro's opt-in, never
 // as anyone's default.
 export const CLOUD_MODELS = ['claude-sonnet-5', 'claude-haiku-4-5', 'claude-opus-5'];
-const MODEL_STEP_DOWN = { 'claude-opus-5': 'claude-sonnet-5', 'claude-sonnet-5': 'claude-haiku-4-5', 'claude-haiku-4-5': 'claude-haiku-4-5' };
-
-// Past half the week's budget every platform model steps down one level, so
-// the budget lasts the week instead of running out midway.
+// Past half the week's budget, platform answers economise so the budget lasts
+// the week: Opus steps down to Sonnet, and Sonnet stays Sonnet but answers
+// shorter. Haiku was the first step-down and was dropped: on the same context
+// it misread figures from the user's own files (precision as F1, an invented
+// percentage), while answer length is a cheaper lever that keeps the facts.
+const MODEL_STEP_DOWN = { 'claude-opus-5': 'claude-sonnet-5', 'claude-sonnet-5': 'claude-sonnet-5', 'claude-haiku-4-5': 'claude-haiku-4-5' };
 export const ECONOMY_THRESHOLD = 0.5;
+// The output ceiling for an economising answer, against 2,048 normally.
+export const ECONOMY_MAX_TOKENS = 700;
+
+export function platformEconomy(spentUsd, allowanceUsd) {
+  return allowanceUsd > 0 && spentUsd / allowanceUsd >= ECONOMY_THRESHOLD;
+}
 
 // What a platform-paid answer costs at full quality, measured live on
 // 2026-09-30 (full cloud context; follow-ups read it cached). Trimming the
@@ -96,7 +104,7 @@ export function platformModel(name, { hard = false, spentUsd = 0, allowanceUsd =
   const models = planFor(name).models;
   if (!models) return null;
   const chosen = hard ? models.hard : models.default;
-  return allowanceUsd > 0 && spentUsd / allowanceUsd >= ECONOMY_THRESHOLD ? MODEL_STEP_DOWN[chosen] : chosen;
+  return platformEconomy(spentUsd, allowanceUsd) ? MODEL_STEP_DOWN[chosen] : chosen;
 }
 
 // Key Pro's own choice, or its default. Anything the product does not offer is

@@ -2,7 +2,7 @@ import { randomUUID } from 'node:crypto';
 import { Router } from 'express';
 import requireAuth from '../middleware/requireAuth.js';
 import { costUsd, describeError, streamChat as streamCloud } from '../lib/anthropic.js';
-import { CLOUD_MODELS, canAutoCloud, canChooseCloud } from '../billing/plans.js';
+import { CLOUD_MODELS, ECONOMY_MAX_TOKENS, canAutoCloud, canChooseCloud } from '../billing/plans.js';
 import { resolveCloudCredential } from '../billing/credential.js';
 import { questionDifficulty } from '../routing/difficulty.js';
 import { monthlyPlatformAnswers, weeklyPlatformSpend } from '../models/usageStore.js';
@@ -129,7 +129,7 @@ function invalid({ query, tier, webSearch, displayControl, cloudModel }) {
 // across a conversation, so that is where the cache breakpoint goes.
 const CACHE_MARKERS = { strict_xml: '<question>', markdown: '## Question' };
 
-async function* generate({ decision, model, effort, messages, apiKey, cacheMarker, signal, webSearch }) {
+async function* generate({ decision, model, effort, messages, apiKey, cacheMarker, signal, webSearch, economy = false }) {
   if (decision === 'local') {
     for await (const chunk of streamLocal({ model, messages, options: LOCAL_OPTIONS, signal })) {
       if (chunk.message?.content) yield { text: chunk.message.content };
@@ -139,7 +139,10 @@ async function* generate({ decision, model, effort, messages, apiKey, cacheMarke
     }
     return;
   }
-  for await (const event of streamCloud({ apiKey, model, effort, messages, cacheMarker, signal, webSearch })) {
+  for await (const event of streamCloud({
+    apiKey, model, effort, messages, cacheMarker, signal, webSearch,
+    ...(economy ? { maxTokens: ECONOMY_MAX_TOKENS, brevity: true } : {}),
+  })) {
     if (event.text) yield { text: event.text };
     if (event.searching) yield { searching: event.searching };
     if (event.citations) yield { citations: event.citations };
@@ -422,6 +425,7 @@ router.post('/', async (req, res) => {
       cacheMarker: CACHE_MARKERS[plan.config.prompt_structure],
       signal: upstream.signal,
       webSearch,
+      economy: credential.economy,
     })) {
       if (event.searching) {
         searches.push(event.searching);
