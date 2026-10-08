@@ -386,17 +386,19 @@ call's key is chosen in one place (`billing/credential.js`):
 |---|---|---|---|---|---|---|
 | Free | $0 | — | — | no | no | — |
 | Key Pro | $5 | the user's own key | unlimited | yes | yes | Sonnet; Opus or Haiku by choice |
-| Student | $12 | $4.54, platform-paid | 200 | no | hard questions, or local down | Sonnet |
-| Engineer | $25 | $9.59, platform-paid | 350 | no | hard questions, or local down | Opus for hard, Sonnet otherwise |
+| Student | $12 | $4.37, platform-paid | 200 | no | hard questions, or local down | Sonnet |
+| Engineer | $25 | $9.24, platform-paid | 340 | no | hard questions, or local down | Opus for hard, Sonnet otherwise |
 
 Local answers are unlimited on every plan.
 
-Budgets are derived, not set: price, less card fees (2.9% + $0.30), times
+Budgets are derived, not set: price, less payment fees (Stripe Managed
+Payments as merchant of record, 3.5% on top of 2.9% + $0.30, which also covers
+sales tax, VAT and GST), times
 (1 − the 60% target margin). Answer limits come from measured cost at full
 quality — Sonnet ≈ $0.020 and Opus ≈ $0.055 per answer, 20% of Engineer's
 cloud answers hard — rounded down so a typical user reaches the count before
-the dollar budget (Student $4.00 of $4.54; Engineer $9.45 of $9.59, a 60.6%
-margin). Both are enforced; whichever runs out first stops the cloud. 450 and
+the dollar budget (Student $4.00 of $4.37, a 63.4% margin; Engineer $9.18 of
+$9.24, 60.3%, or 60.1% if the 3.5% also applies to 10% sales tax). Both are enforced; whichever runs out first stops the cloud. 450 and
 900 were the targets; they fit only with half the cloud context, which cut the
 cloud hit rate from 95% to 80% (90% at 3,500 tokens), so the limits came down
 instead of the quality. Past half the week's budget every platform model
@@ -418,6 +420,15 @@ to the cloud, one of them to Opus for $0.055.
   Engineer answer locally only. There is never a default.
 - Every answer records **who paid** (`billed_to`): spend on a user's own key is
   not margin, and a total that mixes the two cannot be separated afterwards.
+- **Billing** (`billing/stripe.js`, `routes/billing.js`): Stripe Checkout with
+  `managed_payments[enabled]`, carrying the user id on the session and in the
+  subscription's metadata; Stripe's signed webhook (`Stripe-Signature`) sets
+  `users.plan` from `customer.subscription.*` events. Active, trialing and
+  past-due keep the plan (a scheduled cancellation stays active until the
+  period ends); canceled, unpaid, paused and incomplete return to Free. Events
+  older than the last applied are ignored. Plan changes and cancellation go
+  through Stripe's customer portal. (Lemon Squeezy was the first choice; its
+  signup now routes to Stripe, whose Managed Payments the same team builds.)
 
 Two caps bound the worst case rather than trusting the average: the context
 budget (4,000 tokens on the cloud tier) and `max_tokens` (2,048, against

@@ -1,4 +1,4 @@
-export default function Sidebar({ open = false, projects, activeProject, onSelectProject, onOpenProjectSettings, onOpenSources, onNewThread }) {
+export default function Sidebar({ open = false, projects, activeProject, onSelectProject, onOpenProjectSettings, onOpenSources, onNewThread, onOpenSettings }) {
   return (
     <aside className={`sidebar ${open ? 'is-open' : ''}`}>
       <div className="sidebar-top">
@@ -12,7 +12,7 @@ export default function Sidebar({ open = false, projects, activeProject, onSelec
         <button type="button" className="nav-item is-active" onClick={onNewThread}>New query</button>
         <button type="button" className="nav-item">Search map</button>
         <button type="button" className="nav-item" onClick={onOpenSources}>Sources</button>
-        <button type="button" className="nav-item">Settings</button>
+        <button type="button" className="nav-item" onClick={onOpenSettings}>Settings</button>
       </nav>
 
       <div className="sidebar-section">

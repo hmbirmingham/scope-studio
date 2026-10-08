@@ -2,6 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import ChatPanel from './components/ChatPanel';
 import InspectorOverlay from './components/InspectorOverlay';
 import LoginGate from './components/LoginGate';
+import PlanOverlay from './components/PlanOverlay';
 import OutputPanel from './components/OutputPanel';
 import Sidebar from './components/Sidebar';
 import SourcesOverlay from './components/SourcesOverlay';
@@ -21,6 +22,8 @@ function Studio() {
   const [activeProject, setActiveProject] = useState(null);
   const [scope, setScope] = useState(null);
   const [sourcesOpen, setSourcesOpen] = useState(false);
+  // Opens on its own when checkout redirects back, so the new plan shows.
+  const [planOpen, setPlanOpen] = useState(() => new URLSearchParams(window.location.search).get('billing') === 'done');
   // The map takes a column only on wide screens; narrower, it slides over the
   // conversation when opened, so it starts closed there.
   const [panelOpen, setPanelOpen] = useState(() => window.matchMedia?.(WIDE_LAYOUT).matches ?? true);
@@ -49,7 +52,7 @@ function Studio() {
   // lets the composer say so before a request is refused.
   const [cloudPlan, setCloudPlan] = useState({ chooseCloud: true, autoCloud: true, answersLeft: null });
 
-  useEffect(() => {
+  const refreshPlan = useCallback(() => {
     fetch('/api/usage?days=7')
       .then((response) => (response.ok ? response.json() : null))
       .then((body) => {
@@ -66,6 +69,10 @@ function Studio() {
       })
       .catch(() => {});
   }, []);
+
+  useEffect(() => {
+    refreshPlan();
+  }, [refreshPlan]);
   const [displayAvailable, setDisplayAvailable] = useState(false);
 
   useEffect(() => {
@@ -172,6 +179,10 @@ function Studio() {
           chat.newThread();
           setSidebarOpen(false);
         }}
+        onOpenSettings={() => {
+          setPlanOpen(true);
+          setSidebarOpen(false);
+        }}
       />
       {/* Shown only where the sidebar or map is a drawer; tapping it closes them. */}
       {sidebarOpen && <div className="drawer-backdrop is-sidebar" onClick={() => setSidebarOpen(false)} />}
@@ -221,6 +232,8 @@ function Studio() {
         preferences={preferences}
         onSelectNode={(node) => setScope({ kind: 'node', node })}
       />
+
+      <PlanOverlay open={planOpen} onClose={() => setPlanOpen(false)} onPlanChanged={refreshPlan} />
 
       <SourcesOverlay
         open={sourcesOpen}

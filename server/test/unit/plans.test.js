@@ -13,7 +13,7 @@ describe('plans', () => {
       const expected = netRevenueUsd(plan) * (1 - MARGIN_TARGET);
       assert.ok(Math.abs(monthlyCloudBudgetUsd(plan) - expected) < 1e-9, plan);
     }
-    assert.ok(Math.abs(netRevenueUsd('engineer') - (25 * 0.971 - 0.3)) < 1e-9, 'card fees come off first');
+    assert.ok(Math.abs(netRevenueUsd('engineer') - (25 * 0.936 - 0.3)) < 1e-9, 'payment fees come off first');
     assert.equal(monthlyCloudBudgetUsd('key_pro'), null, "the user's own key");
     assert.equal(monthlyCloudBudgetUsd('free'), 0);
     assert.ok(Math.abs(weeklyAllowanceUsd('engineer') - monthlyCloudBudgetUsd('engineer') / (30 / 7)) < 1e-9);
@@ -42,7 +42,7 @@ describe('plans', () => {
 
   test('advertised answer limits fit the budget at measured costs, so the margin holds at or above target', () => {
     assert.equal(monthlyAnswerLimit('student'), 200);
-    assert.equal(monthlyAnswerLimit('engineer'), 350);
+    assert.equal(monthlyAnswerLimit('engineer'), 340);
     assert.equal(monthlyAnswerLimit('key_pro'), null, 'their own key, no limit');
     for (const plan of ['student', 'engineer']) {
       const cost = monthlyAnswerLimit(plan) * measuredAnswerUsd(plan);
