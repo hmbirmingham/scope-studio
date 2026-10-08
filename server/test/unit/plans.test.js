@@ -13,7 +13,7 @@ describe('plans', () => {
       const expected = netRevenueUsd(plan) * (1 - MARGIN_TARGET);
       assert.ok(Math.abs(monthlyCloudBudgetUsd(plan) - expected) < 1e-9, plan);
     }
-    assert.ok(Math.abs(netRevenueUsd('engineer') - (25 * 0.95 - 0.5)) < 1e-9, 'payment fees come off first');
+    assert.ok(Math.abs(netRevenueUsd('engineer') - (25 * 0.936 - 0.3)) < 1e-9, 'payment fees come off first');
     assert.equal(monthlyCloudBudgetUsd('key_pro'), null, "the user's own key");
     assert.equal(monthlyCloudBudgetUsd('free'), 0);
     assert.ok(Math.abs(weeklyAllowanceUsd('engineer') - monthlyCloudBudgetUsd('engineer') / (30 / 7)) < 1e-9);

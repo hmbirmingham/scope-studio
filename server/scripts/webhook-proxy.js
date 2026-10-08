@@ -13,7 +13,7 @@ const LISTEN_PORT = Number(process.env.WEBHOOK_PROXY_PORT || 3002);
 const TARGET = process.env.WEBHOOK_PROXY_TARGET || 'http://localhost:3001';
 const PATH = '/api/billing/webhook';
 const MAX_BYTES = 1024 * 1024;
-const FORWARDED_HEADERS = ['content-type', 'x-signature', 'x-event-name'];
+const FORWARDED_HEADERS = ['content-type', 'stripe-signature'];
 
 export function createWebhookProxy({ target = TARGET } = {}) {
   return http.createServer(async (req, res) => {
@@ -36,7 +36,7 @@ export function createWebhookProxy({ target = TARGET } = {}) {
       const upstream = await fetch(target + PATH, { method: 'POST', headers, body: Buffer.concat(chunks) });
       res.writeHead(upstream.status, { 'Content-Type': upstream.headers.get('content-type') ?? 'application/json' });
       res.end(await upstream.text());
-      console.log(`${new Date().toISOString()} ${headers['x-event-name'] ?? '?'} → ${upstream.status}`);
+      console.log(`${new Date().toISOString()} webhook → ${upstream.status}`);
     } catch (err) {
       res.writeHead(502);
       res.end('dev server unreachable');

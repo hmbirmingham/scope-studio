@@ -67,7 +67,7 @@ export default function PlanOverlay({ open, onClose, onPlanChanged }) {
 
   const current = billing?.plan ?? 'free';
   const renews = formatDate(billing?.renewsAt);
-  const ends = formatDate(billing?.endsAt);
+  const cancels = formatDate(billing?.cancelAt);
 
   return (
     <div className="inspector-backdrop" onClick={onClose}>
@@ -79,11 +79,11 @@ export default function PlanOverlay({ open, onClose, onPlanChanged }) {
           <div className="inspector-type">settings</div>
           <div className="inspector-title">Plan</div>
           <div className="inspector-sub">
-            {billing?.status === 'cancelled' && ends
-              ? `Cancelled — ${PLAN_CARDS.find((c) => c.plan === current)?.name} until ${ends}.`
+            {cancels && current !== 'free'
+              ? `Cancelled — ${PLAN_CARDS.find((c) => c.plan === current)?.name} until ${cancels}.`
               : renews && current !== 'free'
                 ? `Renews ${renews}.`
-                : 'Payments and tax are handled by Lemon Squeezy.'}
+                : 'Payments and tax are handled by Stripe.'}
           </div>
         </div>
 

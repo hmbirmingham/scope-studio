@@ -11,10 +11,11 @@
 const WEEKS_PER_MONTH = 30 / 7;
 
 // Payment fees on every charge, then the share of what is left the platform
-// keeps. Lemon Squeezy is the merchant of record — it collects and remits sales
-// tax and VAT — and charges 5% + $0.50 a transaction for it.
-export const CARD_FEE_RATE = 0.05;
-export const CARD_FEE_FIXED_USD = 0.5;
+// keeps. Stripe Managed Payments is the merchant of record — it collects and
+// remits sales tax, VAT and GST — for 3.5% on top of standard processing
+// (2.9% + $0.30), so 6.4% + $0.30 a transaction.
+export const CARD_FEE_RATE = 0.064;
+export const CARD_FEE_FIXED_USD = 0.3;
 export const MARGIN_TARGET = 0.6;
 
 // Opus is offered for Engineer's hard questions and as Key Pro's opt-in, never

@@ -1,56 +1,46 @@
 import { Router } from 'express';
 import requireAuth from '../middleware/requireAuth.js';
 import { PLANS } from '../billing/plans.js';
-import { billingConfig, createCheckout, customerPortalUrl, entitledPlan, verifySignature } from '../billing/lemonsqueezy.js';
+import { billingConfig, createCheckout, customerPortalUrl, subscriptionRecord, verifyEvent } from '../billing/stripe.js';
 import { applySubscription, getUserBilling } from '../models/userStore.js';
 
 const NOT_CONFIGURED = { error: 'Billing is not configured on this server.', code: 'billing_not_configured' };
 const SUBSCRIPTION_EVENTS = new Set([
-  'subscription_created', 'subscription_updated', 'subscription_cancelled', 'subscription_resumed',
-  'subscription_expired', 'subscription_paused', 'subscription_unpaused',
-  'subscription_payment_success', 'subscription_payment_failed', 'subscription_payment_recovered',
+  'customer.subscription.created',
+  'customer.subscription.updated',
+  'customer.subscription.deleted',
+  'customer.subscription.paused',
+  'customer.subscription.resumed',
 ]);
 
-// The webhook is called by Lemon Squeezy, not a signed-in user, so it is not
-// behind requireAuth; the signature is its authentication. Mounted with a raw
-// body parser ahead of express.json, because the signature covers exact bytes.
+// Called by Stripe, not a signed-in user, so it is not behind requireAuth; the
+// signature is its authentication. Mounted with a raw body parser ahead of
+// express.json, because the signature covers the exact bytes sent.
 export async function billingWebhook(req, res) {
   const config = billingConfig();
   if (!config) return res.status(503).json(NOT_CONFIGURED);
-  if (!Buffer.isBuffer(req.body) || !verifySignature(req.body, req.get('x-signature'), config.webhookSecret)) {
-    return res.status(401).json({ error: 'invalid signature' });
-  }
 
   let event;
   try {
-    event = JSON.parse(req.body.toString('utf8'));
+    event = verifyEvent(config, req.body, req.get('stripe-signature'));
   } catch {
-    return res.status(400).json({ error: 'invalid JSON' });
+    return res.status(401).json({ error: 'invalid signature' });
   }
-  const name = req.get('x-event-name') ?? event.meta?.event_name;
-  // Acknowledged so Lemon Squeezy stops retrying; nothing to do for it.
-  if (!SUBSCRIPTION_EVENTS.has(name) || event.data?.type !== 'subscriptions') return res.status(200).json({ ignored: name });
+  // Acknowledged so Stripe stops retrying; nothing to do for it.
+  if (!SUBSCRIPTION_EVENTS.has(event.type)) return res.status(200).json({ ignored: event.type });
 
-  const attributes = event.data.attributes ?? {};
-  const plan = await applySubscription({
-    userId: event.meta?.custom_data?.user_id ?? null,
-    subscriptionId: String(event.data.id),
-    customerId: attributes.customer_id != null ? String(attributes.customer_id) : null,
-    status: attributes.status,
-    variantId: attributes.variant_id != null ? String(attributes.variant_id) : null,
-    renewsAt: attributes.renews_at ?? null,
-    endsAt: attributes.ends_at ?? null,
-    updatedAt: attributes.updated_at ?? new Date().toISOString(),
-    plan: entitledPlan(config, attributes),
-  });
+  const record = subscriptionRecord(config, event.data.object);
+  const plan = await applySubscription({ ...record, eventAt: new Date(event.created * 1000).toISOString() });
   // No match is acknowledged too: an unknown or out-of-date event must not
   // trigger endless retries. It is logged for the owner to look into.
-  if (plan === null) console.warn(`billing webhook ${name} for subscription ${event.data.id} matched no user, or was older than the last applied`);
+  if (plan === null) console.warn(`billing webhook ${event.type} for ${record.subscriptionId} matched no user, or was older than the last applied`);
   res.status(200).json({ applied: plan !== null, plan });
 }
 
 const router = Router();
 router.use(requireAuth);
+
+const returnUrl = () => `${process.env.BASE_URL}/`;
 
 router.get('/', async (req, res) => {
   const user = await getUserBilling(req.session.userId);
@@ -59,8 +49,8 @@ router.get('/', async (req, res) => {
     plan: user.plan,
     status: user.billing_status,
     renewsAt: user.billing_renews_at,
-    endsAt: user.billing_ends_at,
-    hasSubscription: Boolean(user.billing_subscription_id),
+    cancelAt: user.billing_cancel_at,
+    hasSubscription: Boolean(user.billing_subscription_id) && user.plan !== 'free',
     prices: Object.fromEntries(Object.entries(PLANS).map(([name, plan]) => [name, plan.priceUsd])),
   });
 });
@@ -82,11 +72,12 @@ router.post('/checkout', async (req, res) => {
       plan,
       userId: user.id,
       email: user.email,
-      redirectUrl: `${process.env.BASE_URL}/?billing=done`,
+      customerId: user.billing_customer_id,
+      returnUrl: returnUrl(),
     });
     res.json({ url });
   } catch (err) {
-    res.status(502).json({ error: err.message });
+    res.status(502).json({ error: `Stripe: ${err.message}` });
   }
 });
 
@@ -94,11 +85,11 @@ router.post('/portal', async (req, res) => {
   const config = billingConfig();
   if (!config) return res.status(503).json(NOT_CONFIGURED);
   const user = await getUserBilling(req.session.userId);
-  if (!user.billing_subscription_id) return res.status(404).json({ error: 'no subscription on this account' });
+  if (!user.billing_customer_id) return res.status(404).json({ error: 'no billing account on this user' });
   try {
-    res.json({ url: await customerPortalUrl(config, user.billing_subscription_id) });
+    res.json({ url: await customerPortalUrl(config, { customerId: user.billing_customer_id, returnUrl: returnUrl() }) });
   } catch (err) {
-    res.status(502).json({ error: err.message });
+    res.status(502).json({ error: `Stripe: ${err.message}` });
   }
 });
 

@@ -1,137 +1,139 @@
 import assert from 'node:assert/strict';
-import { createHmac } from 'node:crypto';
 import { after, before, beforeEach, describe, test } from 'node:test';
-import { startFakeLemonSqueezy } from '../fakeLemonSqueezy.js';
+import Stripe from 'stripe';
+import { startFakeStripe } from '../fakeStripe.js';
 import { registeredSession, startServer } from '../helpers.js';
 
 const TEST_ENV = {
-  LEMONSQUEEZY_API_KEY: 'test-api-key', LEMONSQUEEZY_STORE_ID: '11', LEMONSQUEEZY_WEBHOOK_SECRET: 'test-webhook-secret',
-  LEMONSQUEEZY_VARIANT_KEY_PRO: '101', LEMONSQUEEZY_VARIANT_STUDENT: '102', LEMONSQUEEZY_VARIANT_ENGINEER: '103',
+  STRIPE_SECRET_KEY: 'sk_test_fake', STRIPE_WEBHOOK_SECRET: 'whsec_test_fake',
+  STRIPE_PRICE_KEY_PRO: 'price_keypro', STRIPE_PRICE_STUDENT: 'price_student', STRIPE_PRICE_ENGINEER: 'price_engineer',
 };
+const signer = new Stripe('sk_test_fake');
 
-describe('billing', () => {
+describe('billing (Stripe Managed Payments)', () => {
   let server;
-  let lemon;
+  let fake;
   let api;
   let userId;
-  let clock = Date.parse('2026-10-01T00:00:00Z');
+  let clock = 1790000000;
 
-  const deliver = (name, { id = 'sub_1', status = 'active', variant = 102, userIdOverride, updatedAt, secret = TEST_ENV.LEMONSQUEEZY_WEBHOOK_SECRET } = {}) => {
-    clock += 60_000;
-    const body = JSON.stringify({
-      meta: { event_name: name, ...(userIdOverride === null ? {} : { custom_data: { user_id: userIdOverride ?? userId } }) },
-      data: { type: 'subscriptions', id, attributes: { status, variant_id: variant, customer_id: 77, renews_at: '2026-11-01T00:00:00Z', ends_at: null, updated_at: updatedAt ?? new Date(clock).toISOString() } },
+  const deliver = (type, { id = 'sub_1', customer = 'cus_1', status = 'active', price = 'price_student', withUser = true, created, secret = TEST_ENV.STRIPE_WEBHOOK_SECRET } = {}) => {
+    clock += 60;
+    const payload = JSON.stringify({
+      id: `evt_${clock}`, object: 'event', type, created: created ?? clock,
+      data: { object: { id, object: 'subscription', customer, status, metadata: withUser ? { user_id: userId } : {}, cancel_at: null, items: { data: [{ price: { id: price }, current_period_end: clock + 2592000 }] } } },
     });
     return fetch(`${server.base}/api/billing/webhook`, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json', 'X-Event-Name': name, 'X-Signature': createHmac('sha256', secret).update(body).digest('hex') },
-      body,
+      headers: { 'Content-Type': 'application/json', 'Stripe-Signature': signer.webhooks.generateTestHeaderString({ payload, secret }) },
+      body: payload,
     });
   };
   const plan = async () => (await server.pool.query('SELECT plan FROM users WHERE id = $1', [userId])).rows[0].plan;
 
   before(async () => {
-    lemon = await startFakeLemonSqueezy();
-    Object.assign(process.env, TEST_ENV, { LEMONSQUEEZY_API_URL: lemon.url });
+    fake = await startFakeStripe();
+    Object.assign(process.env, TEST_ENV, { STRIPE_API_BASE: fake.url });
     server = await startServer();
     api = await registeredSession(server.base);
     userId = (await api('GET', '/api/auth/session')).data.userId;
   });
 
-  beforeEach(async () => {
-    lemon.state.requests = [];
-    lemon.state.status = 200;
+  beforeEach(() => {
+    fake.state.requests = [];
+    fake.state.status = 200;
   });
 
   after(async () => {
-    for (const key of [...Object.keys(TEST_ENV), 'LEMONSQUEEZY_API_URL']) delete process.env[key];
+    for (const key of [...Object.keys(TEST_ENV), 'STRIPE_API_BASE']) delete process.env[key];
     await server.close();
-    await lemon.close();
+    await fake.close();
   });
 
-  test('checkout opens a hosted page for the plan, carrying the user id and email', async () => {
+  test('checkout opens a Managed Payments session for the plan, carrying the user id to the subscription', async () => {
     const { status, data } = await api('POST', '/api/billing/checkout', { plan: 'engineer' });
     assert.equal(status, 200);
-    assert.equal(data.url, 'https://scope.lemonsqueezy.test/checkout/chk_1');
-    const [sent] = lemon.state.requests;
-    assert.equal(sent.auth, 'Bearer test-api-key');
-    assert.equal(sent.accept, 'application/vnd.api+json');
-    assert.equal(sent.body.data.relationships.variant.data.id, '103');
-    assert.equal(sent.body.data.relationships.store.data.id, '11');
-    assert.equal(sent.body.data.attributes.checkout_data.custom.user_id, userId);
-    assert.match(sent.body.data.attributes.checkout_data.email, /@example\.com$/);
+    assert.equal(data.url, 'https://checkout.stripe.test/c/pay/cs_test_1');
+    const [sent] = fake.state.requests;
+    assert.equal(sent.url, '/v1/checkout/sessions');
+    assert.equal(sent.auth, 'Bearer sk_test_fake');
+    assert.equal(sent.form.mode, 'subscription');
+    assert.equal(sent.form['line_items[0][price]'], 'price_engineer');
+    assert.equal(sent.form['managed_payments[enabled]'], 'true', 'Stripe is the merchant of record');
+    assert.equal(sent.form.client_reference_id, userId);
+    assert.equal(sent.form['subscription_data[metadata][user_id]'], userId, 'so every subscription event can find the account');
+    assert.match(sent.form.customer_email, /@example\.com$/);
+    assert.match(sent.form.success_url, /\?billing=done$/);
     assert.equal((await api('POST', '/api/billing/checkout', { plan: 'free' })).status, 400);
   });
 
-  test('a provider error surfaces as a message, not a crash', async () => {
-    lemon.state.status = 404;
+  test('a Stripe error surfaces as a message, not a crash', async () => {
+    fake.state.status = 400;
     const { status, data } = await api('POST', '/api/billing/checkout', { plan: 'student' });
     assert.equal(status, 502);
-    assert.match(data.error, /variant not found/);
+    assert.match(data.error, /No such price/);
   });
 
-  test('a forged or altered webhook is refused and changes nothing', async () => {
-    assert.equal((await deliver('subscription_created', { secret: 'wrong-secret' })).status, 401);
+  test('a forged webhook is refused and changes nothing', async () => {
+    assert.equal((await deliver('customer.subscription.created', { secret: 'whsec_wrong' })).status, 401);
     assert.equal(await plan(), 'free');
   });
 
-  test('the subscription lifecycle sets the plan: created, upgraded, cancelled to period end, expired', async () => {
-    assert.equal((await deliver('subscription_created', { variant: 102 })).status, 200);
+  test('the lifecycle sets the plan: created, upgraded, cancellation scheduled, then deleted', async () => {
+    assert.equal((await deliver('customer.subscription.created', { price: 'price_student' })).status, 200);
     assert.equal(await plan(), 'student');
-
-    await deliver('subscription_updated', { variant: 103 });
+    await deliver('customer.subscription.updated', { price: 'price_engineer' });
     assert.equal(await plan(), 'engineer', 'an upgrade in the portal arrives as an update');
-
-    await deliver('subscription_cancelled', { status: 'cancelled', variant: 103 });
-    assert.equal(await plan(), 'engineer', 'cancelled keeps the plan until the paid period ends');
-
-    await deliver('subscription_expired', { status: 'expired', variant: 103 });
+    await deliver('customer.subscription.updated', { price: 'price_engineer', status: 'active' });
+    assert.equal(await plan(), 'engineer', 'a scheduled cancellation stays active until the period ends');
+    await deliver('customer.subscription.deleted', { price: 'price_engineer', status: 'canceled' });
     assert.equal(await plan(), 'free');
   });
 
-  test('later events find the user by subscription id when they carry no custom data', async () => {
-    await deliver('subscription_created', { id: 'sub_2', variant: 101 });
+  test('later events find the user by customer when they carry no metadata', async () => {
+    await deliver('customer.subscription.created', { id: 'sub_2', customer: 'cus_2', price: 'price_keypro' });
     assert.equal(await plan(), 'key_pro');
-    await deliver('subscription_payment_failed', { id: 'sub_2', status: 'unpaid', variant: 101, userIdOverride: null });
+    await deliver('customer.subscription.updated', { id: 'sub_2', customer: 'cus_2', status: 'unpaid', price: 'price_keypro', withUser: false });
     assert.equal(await plan(), 'free', 'payment recovery failed');
   });
 
   test('a late, older event cannot undo a newer one, and a repeat is harmless', async () => {
-    await deliver('subscription_created', { id: 'sub_3', variant: 103, updatedAt: '2026-12-01T00:00:00Z' });
+    await deliver('customer.subscription.created', { id: 'sub_3', customer: 'cus_3', price: 'price_engineer', created: 1900000000 });
     assert.equal(await plan(), 'engineer');
-    const stale = await deliver('subscription_expired', { id: 'sub_3', status: 'expired', variant: 103, updatedAt: '2026-11-15T00:00:00Z' });
+    const stale = await deliver('customer.subscription.deleted', { id: 'sub_3', customer: 'cus_3', status: 'canceled', price: 'price_engineer', created: 1899999000 });
     assert.equal((await stale.json()).applied, false);
     assert.equal(await plan(), 'engineer');
-    await deliver('subscription_created', { id: 'sub_3', variant: 103, updatedAt: '2026-12-01T00:00:00Z' });
+    await deliver('customer.subscription.created', { id: 'sub_3', customer: 'cus_3', price: 'price_engineer', created: 1900000000 });
     assert.equal(await plan(), 'engineer');
   });
 
-  test('a subscribed user is sent to the portal instead of a second checkout', async () => {
-    await deliver('subscription_created', { id: 'sub_4', variant: 102, updatedAt: '2027-01-01T00:00:00Z' });
+  test('a subscribed user gets the portal for their customer, never a second checkout', async () => {
+    await deliver('customer.subscription.created', { id: 'sub_4', customer: 'cus_4', price: 'price_student', created: 1950000000 });
     const again = await api('POST', '/api/billing/checkout', { plan: 'engineer' });
     assert.equal(again.status, 409);
     assert.equal(again.data.code, 'already_subscribed');
     const portal = await api('POST', '/api/billing/portal', {});
-    assert.equal(portal.data.url, 'https://scope.lemonsqueezy.test/portal/sub_4');
+    assert.equal(portal.data.url, 'https://billing.stripe.test/p/cus_4');
     const status = (await api('GET', '/api/billing')).data;
     assert.deepEqual([status.configured, status.plan, status.status, status.hasSubscription], [true, 'student', 'active', true]);
     assert.deepEqual(status.prices, { free: 0, key_pro: 5, student: 12, engineer: 25 });
   });
 
   test('events that are not subscription changes are acknowledged and ignored', async () => {
-    const response = await deliver('order_created');
+    const response = await deliver('invoice.paid');
     assert.equal(response.status, 200);
+    assert.equal((await response.json()).ignored, 'invoice.paid');
   });
 
   test('with billing unconfigured, every billing call says so instead of guessing', async () => {
-    const saved = process.env.LEMONSQUEEZY_WEBHOOK_SECRET;
-    delete process.env.LEMONSQUEEZY_WEBHOOK_SECRET;
+    const saved = process.env.STRIPE_WEBHOOK_SECRET;
+    delete process.env.STRIPE_WEBHOOK_SECRET;
     try {
       assert.equal((await api('POST', '/api/billing/checkout', { plan: 'student' })).data.code, 'billing_not_configured');
-      assert.equal((await deliver('subscription_created')).status, 503);
+      assert.equal((await deliver('customer.subscription.created')).status, 503);
       assert.equal((await api('GET', '/api/billing')).data.configured, false);
     } finally {
-      process.env.LEMONSQUEEZY_WEBHOOK_SECRET = saved;
+      process.env.STRIPE_WEBHOOK_SECRET = saved;
     }
   });
 });
