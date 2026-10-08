@@ -88,6 +88,10 @@ describe('buildMessages', () => {
     assert.ok(body.endsWith('<question>\nq?\n</question>'));
   });
 
+  test('both system prompts forbid claiming an action was taken', () => {
+    for (const prompt of Object.values(SYSTEM_PROMPTS)) assert.match(prompt, /You cannot act yourself\. Never say you opened, ran, changed, searched or sent anything/);
+  });
+
   test('the system prompt is byte-identical across queries (KV-cache prefix)', () => {
     const config = resolveConfig(LOCAL_TIER);
     const one = buildMessages({ query: 'one', selected, config }).messages[0].content;
