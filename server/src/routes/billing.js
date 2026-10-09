@@ -1,8 +1,8 @@
 import { Router } from 'express';
 import requireAuth from '../middleware/requireAuth.js';
 import { PLANS } from '../billing/plans.js';
-import { billingConfig, createCheckout, currentSubscription, customerPortalUrl, subscriptionRecord, verifyEvent } from '../billing/stripe.js';
-import { applySubscription, getUserBilling } from '../models/userStore.js';
+import { billingConfig, createCheckout, createCustomer, currentSubscription, customerPortalUrl, invoiceSubscriptionId, subscriptionRecord, verifyEvent } from '../billing/stripe.js';
+import { applySubscription, getUserBilling, setBillingCustomer } from '../models/userStore.js';
 
 const NOT_CONFIGURED = { error: 'Billing is not configured on this server.', code: 'billing_not_configured' };
 const SUBSCRIPTION_EVENTS = new Set([
@@ -12,6 +12,9 @@ const SUBSCRIPTION_EVENTS = new Set([
   'customer.subscription.paused',
   'customer.subscription.resumed',
 ]);
+// Renewals and failed payments arrive as invoice events; each one is a prompt
+// to re-read the subscription it belongs to, like the subscription events.
+const INVOICE_EVENTS = new Set(['invoice.paid', 'invoice.payment_failed']);
 
 // Called by Stripe, not a signed-in user, so it is not behind requireAuth; the
 // signature is its authentication. Mounted with a raw body parser ahead of
@@ -27,10 +30,19 @@ export async function billingWebhook(req, res) {
     return res.status(401).json({ error: 'invalid signature' });
   }
   // Acknowledged so Stripe stops retrying; nothing to do for it.
-  if (!SUBSCRIPTION_EVENTS.has(event.type)) return res.status(200).json({ ignored: event.type });
+  if (!SUBSCRIPTION_EVENTS.has(event.type) && !INVOICE_EVENTS.has(event.type)) {
+    return res.status(200).json({ ignored: event.type });
+  }
   // This handler reads snapshot events. A thin-payload endpoint sends no
   // object; refusing loudly beats silently granting nothing.
-  const subscriptionId = event.data?.object?.id;
+  const object = event.data?.object;
+  if (!object) {
+    console.error('billing webhook received a thin event; configure the endpoint with the Snapshot payload');
+    return res.status(400).json({ error: 'snapshot events required' });
+  }
+  const subscriptionId = INVOICE_EVENTS.has(event.type) ? invoiceSubscriptionId(object) : object.id;
+  // An invoice that is not for a subscription (a one-off) changes no plan.
+  if (!subscriptionId && INVOICE_EVENTS.has(event.type)) return res.status(200).json({ ignored: 'invoice without a subscription' });
   if (!subscriptionId) {
     console.error('billing webhook received a thin event; configure the endpoint with the Snapshot payload');
     return res.status(400).json({ error: 'snapshot events required' });
@@ -83,13 +95,10 @@ router.post('/checkout', async (req, res) => {
     return res.status(409).json({ error: 'You already have a subscription. Change or cancel it from Manage billing.', code: 'already_subscribed' });
   }
   try {
-    const url = await createCheckout(config, {
-      plan,
-      userId: user.id,
-      email: user.email,
-      customerId: user.billing_customer_id,
-      returnUrl: returnUrl(),
-    });
+    // The account's Stripe Customer, created once: events are matched by it.
+    const customerId =
+      user.billing_customer_id ?? (await setBillingCustomer(user.id, await createCustomer(config, { userId: user.id, email: user.email })));
+    const url = await createCheckout(config, { plan, userId: user.id, customerId, returnUrl: returnUrl() });
     res.json({ url });
   } catch (err) {
     res.status(502).json({ error: `Stripe: ${err.message}` });

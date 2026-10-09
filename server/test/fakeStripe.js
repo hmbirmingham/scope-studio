@@ -16,6 +16,10 @@ export async function startFakeStripe() {
       res.writeHead(state.status);
       return res.end(JSON.stringify({ error: { type: 'invalid_request_error', message: 'No such price' } }));
     }
+    if (req.method === 'POST' && req.url === '/v1/customers') {
+      state.customers = (state.customers ?? 0) + 1;
+      return res.end(JSON.stringify({ id: `cus_new_${state.customers}`, object: 'customer', email: form.email, metadata: { user_id: form['metadata[user_id]'] } }));
+    }
     if (req.method === 'POST' && req.url === '/v1/checkout/sessions') {
       return res.end(JSON.stringify({ id: 'cs_test_1', object: 'checkout.session', url: 'https://checkout.stripe.test/c/pay/cs_test_1' }));
     }

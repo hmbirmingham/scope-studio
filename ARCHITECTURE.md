@@ -420,10 +420,13 @@ to the cloud, one of them to Opus for $0.055.
   Engineer answer locally only. There is never a default.
 - Every answer records **who paid** (`billed_to`): spend on a user's own key is
   not margin, and a total that mixes the two cannot be separated afterwards.
-- **Billing** (`billing/stripe.js`, `routes/billing.js`): Stripe Checkout with
-  `managed_payments[enabled]`, carrying the user id on the session and in the
-  subscription's metadata; Stripe's signed webhook (`Stripe-Signature`) sets
-  `users.plan` from `customer.subscription.*` events. Active, trialing and
+- **Billing** (`billing/stripe.js`, `routes/billing.js`): each account gets one
+  Stripe Customer before its first checkout, and every webhook is matched to
+  the account through that Customer (metadata is only a fallback for accounts
+  without one, per Stripe's guidance). Stripe Checkout with
+  `managed_payments[enabled]`; Stripe's signed webhook (`Stripe-Signature`)
+  sets `users.plan` from `customer.subscription.*` and `invoice.paid` /
+  `invoice.payment_failed` events. Active, trialing and
   past-due keep the plan (a scheduled cancellation stays active until the
   period ends); canceled, unpaid, paused and incomplete return to Free. Stripe
   does not deliver events in order and events can share a timestamp, so each
