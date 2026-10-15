@@ -83,6 +83,10 @@ async function startBrowserSession(req, account, devMode) {
   await saveSession(req);
 }
 
+function emailTaken(res) {
+  return sendError(res, 409, 'email_taken', 'An account with this email already exists. Sign in instead.');
+}
+
 function devModeRefused(res) {
   return sendError(res, 403, 'dev_mode_not_allowed', 'Developer sign-in is not enabled for this email.');
 }
@@ -140,10 +144,15 @@ router.post('/v1/accounts', browser, async (req, res) => {
   if (password.length < MIN_PASSWORD_LENGTH || password.length > MAX_PASSWORD_LENGTH) {
     return sendError(res, 400, 'weak_password', `Use a password of at least ${MIN_PASSWORD_LENGTH} characters.`);
   }
+  // A taken email is answered before the allowlist is consulted, so a
+  // registered email gets the same 409 with or without dev_mode and a
+  // stranger cannot probe which accounts are on DEV_MODE_EMAILS.
+  if (await findAccountByEmail(email)) return emailTaken(res);
   if (devMode && !isDevModeEmail(email)) return devModeRefused(res);
 
+  // The insert still answers 409 for a registration that raced this one.
   const account = await createAccount({ email, passwordHash: hashPassword(password) });
-  if (!account) return sendError(res, 409, 'email_taken', 'An account with this email already exists. Sign in instead.');
+  if (!account) return emailTaken(res);
 
   await startBrowserSession(req, account, devMode);
   res.status(201).json({ id: account.id, email: account.email });
@@ -243,18 +252,17 @@ router.post('/v1/auth/token', async (req, res) => {
     audit: { email: grant.email, ip },
   });
 
-  if (devMode) {
-    // The audit row is already committed; a provider outage must not turn a
-    // recorded sign-in into a failed one.
-    try {
-      await notifyDevLogin({ email: grant.email, label: grant.label, ip, at: created.created_at });
-    } catch (err) {
-      console.error(`Dev-mode sign-in notification failed: ${err.message}`);
-    }
-  }
-
   const { plan } = effectivePlan({ plan: grant.plan, email: grant.email, devMode });
   res.json({ token, account: { id: grant.account_id, email: grant.email, plan, devMode } });
+
+  if (devMode) {
+    // Sent only once the response is out and not awaited: the audit row was
+    // committed with the device, so a slow or failing email provider must
+    // neither hold up the engine's sign-in nor turn it into a failed one.
+    notifyDevLogin({ email: grant.email, label: grant.label, ip, at: created.created_at }).catch((err) => {
+      console.warn(`Dev-mode sign-in notification failed: ${err.message}`);
+    });
+  }
 });
 
 // ---- Engine: who am I, and my devices ------------------------------------

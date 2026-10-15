@@ -27,11 +27,11 @@ logout, authorize).
 | Method | Path | Auth | Purpose |
 |---|---|---|---|
 | GET | `/signin` | — | HTML sign-in / register page. Query: `redirect_uri`, `state`, `code_challenge`, `code_challenge_method=S256`, `label`. |
-| POST | `/v1/accounts` | — | Register `{ email, password, dev_mode? }` → `201 { id, email }`. Sets the browser session. `400 invalid_email` / `400 weak_password` (under 10 characters) / `409 email_taken` / `403 dev_mode_not_allowed`. |
-| POST | `/v1/auth/login` | — | `{ email, password, dev_mode? }` → `200 { id, email }`. Sets the browser session. `401 invalid_credentials` / `429 too_many_attempts` (10 failures per email in 15 minutes) / `403 dev_mode_not_allowed`. |
+| POST | `/v1/accounts` | — | Register `{ email, password, dev_mode? }` → `201 { id, email }`. Sets the browser session. `400 invalid_email` / `400 weak_password` (under 10 characters) / `409 email_taken` / `403 dev_mode_not_allowed`. A taken email is `409` whether or not `dev_mode` is sent, so the answer never reveals who is on the dev-mode allowlist. |
+| POST | `/v1/auth/login` | — | `{ email, password, dev_mode? }` → `200 { id, email }`. Sets the browser session. `400 invalid_request` (email or password missing) / `401 invalid_credentials` / `429 too_many_attempts` (10 failures per email in 15 minutes) / `403 dev_mode_not_allowed`. |
 | POST | `/v1/auth/logout` | browser | Ends the browser session → `204`. |
 | POST | `/v1/auth/authorize` | browser | Called by `/signin` after login: `{ redirect_uri, state, code_challenge, code_challenge_method?, label }` → `{ redirect: "<redirect_uri>?code=…&state=…" }`. One-time code, 5-minute life, stored hashed. `401 unauthenticated` / `400 invalid_redirect_uri` / `400 invalid_code_challenge` (missing, malformed, or a method other than `S256`) / `400 invalid_state`. |
-| POST | `/v1/auth/token` | — | Engine exchanges `{ code, code_verifier }` → `{ token, account: { id, email, plan, devMode } }`. The code is single-use; the verifier must hash (S256) to the stored challenge. An unknown, used, expired or wrong-verifier code is one answer, `400 invalid_grant`, and a wrong verifier spends the code. |
+| POST | `/v1/auth/token` | — | Engine exchanges `{ code, code_verifier }` → `{ token, account: { id, email, plan, devMode } }`. The code is single-use; the verifier must hash (S256) to the stored challenge. `400 invalid_request` when the code or verifier is missing or malformed. An unknown, used, expired or wrong-verifier code is one answer, `400 invalid_grant`, and a wrong verifier spends the code. A dev-mode sign-in's notice is sent after the response, never delaying it. |
 | GET | `/v1/me` | device | See below. |
 | GET | `/v1/devices` | device | `{ devices: [{ id, label, createdAt, lastUsedAt, current }] }`. |
 | DELETE | `/v1/devices/:id` | device | Revokes one of the caller's own devices → `204`. |

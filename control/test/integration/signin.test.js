@@ -236,6 +236,41 @@ test('registration checks the email, the password length and duplicates', async 
   assert.equal((await dup.json()).code, 'email_taken');
 });
 
+test('registering a taken email answers 409 whether or not it is on the dev-mode allowlist', async () => {
+  process.env.DEV_MODE_EMAILS = DEV_EMAIL;
+  const browser = new Browser();
+  assert.equal((await browser.post('/v1/accounts', { email: DEV_EMAIL, password: PASSWORD })).status, 201);
+  assert.equal((await browser.post('/v1/accounts', { email: 'a@example.test', password: PASSWORD })).status, 201);
+
+  // Were the allowlist checked first, the unlisted email would answer 403
+  // and the listed one 409, telling a stranger who is on DEV_MODE_EMAILS.
+  for (const email of [DEV_EMAIL, 'a@example.test']) {
+    const stranger = new Browser();
+    const response = await stranger.post('/v1/accounts', { email, password: 'some other password', dev_mode: true });
+    assert.equal(response.status, 409, email);
+    assert.equal((await response.json()).code, 'email_taken');
+    assert.equal(stranger.cookies.size, 0, 'a refused registration starts no session');
+  }
+});
+
+test('signing in issues a new session id, and the old one no longer works', async () => {
+  const browser = new Browser();
+  assert.equal((await browser.post('/v1/accounts', { email: 'a@example.test', password: PASSWORD })).status, 201);
+  const [[name, firstId]] = [...browser.cookies];
+
+  const login = await browser.post('/v1/auth/login', { email: 'a@example.test', password: PASSWORD });
+  assert.equal(login.status, 200);
+  const signedInId = browser.cookies.get(name);
+  assert.ok(signedInId);
+  assert.notEqual(signedInId, firstId, 'the id the browser held before sign-in is not the one signed in');
+
+  // Someone who planted or copied the earlier id is not signed in by it.
+  const planted = new Browser();
+  planted.cookies.set(name, firstId);
+  assert.equal((await planted.post('/v1/auth/authorize', authorizeBody(newEngine()))).status, 401);
+  assert.equal((await browser.post('/v1/auth/authorize', authorizeBody(newEngine()))).status, 200);
+});
+
 test('ten failed sign-ins lock the email for a while, even against the right password', async () => {
   const email = 'locked@example.test';
   const browser = new Browser();
@@ -355,6 +390,38 @@ test('with no email provider configured, the dev login is still audited and the 
   assert.deepEqual(rows, [{ email: DEV_EMAIL }]);
   assert.equal(warn.mock.callCount(), 1);
   assert.match(warn.mock.calls[0].arguments[0], /notification skipped/);
+});
+
+test('a slow dev-login notice does not hold up the token response, and a failed one is only a warning', async (t) => {
+  process.env.DEV_MODE_EMAILS = DEV_EMAIL;
+  process.env.DEV_LOGIN_NOTIFY_EMAIL = 'ops@example.test';
+  const warn = t.mock.method(console, 'warn', () => {});
+
+  // A provider that does not answer until the test lets it.
+  let release;
+  const started = [];
+  setNotifyProvider({
+    send: (message) => {
+      started.push(message);
+      return new Promise((resolve, reject) => {
+        release = { resolve, reject };
+      });
+    },
+  });
+
+  const { code, engine } = await authorizeInBrowser({ email: DEV_EMAIL, devMode: true });
+  const response = await exchange(code, engine.verifier);
+  assert.equal(response.status, 200);
+  assert.equal((await response.json()).account.devMode, true);
+  assert.equal(started.length, 1, 'the notice was sent');
+  assert.ok(release, 'and is still waiting on the provider');
+  const { rows } = await server.pool.query('SELECT count(*)::int AS n FROM dev_logins');
+  assert.equal(rows[0].n, 1, 'the audit row does not wait for the notice');
+
+  release.reject(new Error('provider timed out'));
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(warn.mock.callCount(), 1);
+  assert.match(warn.mock.calls[0].arguments[0], /notification failed: provider timed out/);
 });
 
 test('/v1/me reports the plan, limits and next model from the ledger', async () => {
