@@ -21,9 +21,13 @@ One service in the project that holds the Postgres database, so it reaches it ov
 network.
 
 - Source: this repo, branch `dev` (staging until launch), **Root Directory `control`**.
-- `railway.json` here sets the rest: migrations run before each deploy, then `npm start`, and
-  traffic switches only once `/health` answers 200 (it checks the database).
-- Variables: `DATABASE_URL = ${{Postgres.DATABASE_URL}}`. Later phases add the platform key and
+- Settings: Railway Config File `/control/railway.json` (the config path does not follow the Root
+  Directory) and Watch Paths `/control/**`.
+- `railway.json` starts `npm start`, which applies migrations under an advisory lock before
+  listening; traffic switches only once `/health` answers 200 (it checks the database).
+- Variables: `DATABASE_URL` points at the `control` database on the shared Postgres server (not
+  the server's default database, which still holds the engine's early hosted data):
+  `postgresql://${{Postgres.PGUSER}}:${{Postgres.PGPASSWORD}}@${{Postgres.PGHOST}}:${{Postgres.PGPORT}}/control`. Later phases add the platform key and
   Stripe; each is listed in `.env.example` when it is needed. Nothing has a default.
 
 ## What it stores
