@@ -11,23 +11,27 @@ status. Driver or upstream error text never reaches the response.
 **Device auth.** A signed-in engine sends `Authorization: Bearer <token>`. Tokens look like
 `sst_` + 43 base64url characters (32 random bytes). The control plane stores only the SHA-256 hex
 of the token (`device_tokens.token_hash`). `requireDevice` (src/middleware/requireDevice.js)
-resolves it to `req.account = { id, email, plan }` and `req.deviceId`, or answers
+resolves it to `req.account = { id, email, plan, devMode }` and `req.deviceId`, or answers
 `401 { code: "unauthenticated" }` for a missing, unknown or revoked token. Every route below marked
-**device** uses it.
+**device** uses it. `plan` is the plan the request runs under: `accounts.plan`, or Engineer for a
+dev-mode device (see below). A route that needs the billed plan reads `accounts.plan` itself.
 
 **Browser session.** The sign-in and billing pages a person opens in a browser use a cookie
-session on the control plane's own domain. They are never called by the engine directly.
+session on the control plane's own domain. They are never called by the engine directly. The
+cookie (`scope_control.sid`) is httpOnly, SameSite=Lax and Secure in production; sessions live in
+`control_session` and are attached only to the routes that set or read one (register, login,
+logout, authorize).
 
 ## Accounts and sign-in (Wave 1 · A)
 
 | Method | Path | Auth | Purpose |
 |---|---|---|---|
 | GET | `/signin` | — | HTML sign-in / register page. Query: `redirect_uri`, `state`, `code_challenge`, `code_challenge_method=S256`, `label`. |
-| POST | `/v1/accounts` | — | Register `{ email, password }` → `201 { id, email }`. Sets the browser session. |
-| POST | `/v1/auth/login` | — | `{ email, password }` → `200 { id, email }`. Sets the browser session. |
-| POST | `/v1/auth/logout` | browser | Ends the browser session. |
-| POST | `/v1/auth/authorize` | browser | Called by `/signin` after login: `{ redirect_uri, state, code_challenge, label }` → `{ redirect: "<redirect_uri>?code=…&state=…" }`. One-time code, 5-minute life. |
-| POST | `/v1/auth/token` | — | Engine exchanges `{ code, code_verifier }` → `{ token, account: { id, email, plan } }`. The code is single-use; the verifier must hash (S256) to the stored challenge. |
+| POST | `/v1/accounts` | — | Register `{ email, password, dev_mode? }` → `201 { id, email }`. Sets the browser session. `400 invalid_email` / `400 weak_password` (under 10 characters) / `409 email_taken` / `403 dev_mode_not_allowed`. |
+| POST | `/v1/auth/login` | — | `{ email, password, dev_mode? }` → `200 { id, email }`. Sets the browser session. `401 invalid_credentials` / `429 too_many_attempts` (10 failures per email in 15 minutes) / `403 dev_mode_not_allowed`. |
+| POST | `/v1/auth/logout` | browser | Ends the browser session → `204`. |
+| POST | `/v1/auth/authorize` | browser | Called by `/signin` after login: `{ redirect_uri, state, code_challenge, code_challenge_method?, label }` → `{ redirect: "<redirect_uri>?code=…&state=…" }`. One-time code, 5-minute life, stored hashed. `401 unauthenticated` / `400 invalid_redirect_uri` / `400 invalid_code_challenge` (missing, malformed, or a method other than `S256`) / `400 invalid_state`. |
+| POST | `/v1/auth/token` | — | Engine exchanges `{ code, code_verifier }` → `{ token, account: { id, email, plan, devMode } }`. The code is single-use; the verifier must hash (S256) to the stored challenge. An unknown, used, expired or wrong-verifier code is one answer, `400 invalid_grant`, and a wrong verifier spends the code. |
 | GET | `/v1/me` | device | See below. |
 | GET | `/v1/devices` | device | `{ devices: [{ id, label, createdAt, lastUsedAt, current }] }`. |
 | DELETE | `/v1/devices/:id` | device | Revokes one of the caller's own devices → `204`. |
@@ -35,12 +39,19 @@ session on the control plane's own domain. They are never called by the engine d
 `redirect_uri` must be a loopback URL: `http://127.0.0.1:<port>/…` or `http://localhost:<port>/…`.
 Anything else is rejected with `400 { code: "invalid_redirect_uri" }`.
 
-**Dev-mode login.** An allowlisted email (`DEV_MODE_EMAILS`, comma-separated) may sign in with
-`dev_mode: true`. The account gets the Engineer plan without a subscription, the login is written
-to an audit table (account, device label, IP, time), and a notification goes to
-`DEV_LOGIN_NOTIFY_EMAIL` through the notifier interface. With no email provider configured the
-audit row is still written and the notification is skipped with a logged warning; it never
-falls back to a default address.
+`/signin` checks the same parameters before showing the forms and answers a `400` page instead
+when they are broken, so a password is never typed into a sign-in that cannot finish. Without any
+of them it is a plain sign-in page.
+
+**Dev-mode login.** An allowlisted email (`DEV_MODE_EMAILS`, comma-separated, case-insensitive)
+may sign in with `dev_mode: true`. Dev mode belongs to the device token it produces
+(`device_tokens.dev_mode`), not to the account: that device gets the Engineer plan without a
+subscription, `accounts.plan` is never written (billing owns it), and the allowlist is checked
+again on every request, so removing an email ends dev mode on its devices at once. The login is
+written to `dev_logins` (account, device, email, device label, IP, time) in the same transaction
+as the device, and a notification goes to `DEV_LOGIN_NOTIFY_EMAIL` through the notifier interface
+(`src/notify`). With no email provider configured the audit row is still written and the
+notification is skipped with a logged warning; it never falls back to a default address.
 
 ### `GET /v1/me`
 
@@ -61,6 +72,9 @@ falls back to a default address.
 today; the field exists so a plug-in can be gated by plan later without an engine release.
 `limits` values are `null` on plans without platform-paid cloud. `freesUpNext` is the oldest
 ledger row inside the rolling week (its cost, and when it leaves the window), or `null`.
+`weeklyAllowanceUsd` is rounded to the cent; spend figures to four decimal places. `nextModel` is
+what the next platform answer would use, already stepped down past half the week's allowance;
+both values are `null` on Free. `billing` values are `null` until a subscription exists.
 
 ## Billing (Wave 1 · B)
 
