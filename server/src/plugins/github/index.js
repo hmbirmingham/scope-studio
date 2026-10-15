@@ -2,7 +2,7 @@ import { Octokit } from 'octokit';
 import { tryEmbedDocument } from '../../lib/embeddings.js';
 import { upsertNodeByExternalId } from '../../models/nodeStore.js';
 import { DEFAULT_LIMITS, ingestRepoFiles } from './files.js';
-import { getAuthorizeUrl, exchangeCodeForToken } from './oauth.js';
+import { githubDeviceProvider } from './oauth.js';
 
 function repoToNode(repo) {
   return {
@@ -115,10 +115,10 @@ const githubPlugin = {
   name: 'github',
   displayName: 'GitHub',
 
-  // Standard OAuth (authorization code) needs a browser redirect + callback,
-  // so this exposes the two halves of the contract's single `authenticate`
-  // step rather than one function call; see routes/plugins/github.js.
-  authenticate: { getAuthorizeUrl, exchangeCodeForToken },
+  // Sign-in is the device flow, so the contract's `authenticate` step is a
+  // provider description that the shared device-flow routes drive; see
+  // plugins/auth/deviceFlow.js and routes/plugins/github.js.
+  authenticate: githubDeviceProvider,
 
   // A seam for tests and for the routes, which build one client per request.
   createClient(token) {

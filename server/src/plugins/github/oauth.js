@@ -1,49 +1,52 @@
-function requireGithubCredentials() {
-  const missing = ['GITHUB_CLIENT_ID', 'GITHUB_CLIENT_SECRET', 'BASE_URL'].filter(
-    (key) => !process.env[key]
-  );
-  if (missing.length > 0) {
-    throw new Error(
-      `Missing required environment variable(s): ${missing.join(', ')}. ` +
-        'Create a GitHub OAuth App at github.com/settings/developers and set these in .env. ' +
-        'Refusing to proceed with a generated or default value.'
+// GitHub sign-in uses the device flow (see plugins/auth/deviceFlow.js), which
+// needs only the OAuth app's public client id. The engine runs on the user's
+// machine, where a client secret could be read by anyone with the binary and
+// a callback URL has nowhere to point, so neither exists here.
+
+const GITHUB_BASE = 'https://github.com';
+const SCOPE = 'repo read:user';
+
+// GITHUB_OAUTH_BASE points the flow at a local stand-in, in tests only.
+function base() {
+  return (process.env.GITHUB_OAUTH_BASE || GITHUB_BASE).replace(/\/$/, '');
+}
+
+export function getDeviceFlowConfig() {
+  const clientId = process.env.GITHUB_CLIENT_ID;
+  if (!clientId) {
+    const error = new Error(
+      'GitHub is not configured: set GITHUB_CLIENT_ID in .env to the client id of a GitHub OAuth App ' +
+        '(github.com/settings/developers) with "Enable Device Flow" ticked. No default is used.'
     );
+    // Service unavailable rather than a server fault: the engine is fine, it
+    // just has not been told which GitHub app to sign in with.
+    error.status = 503;
+    throw error;
+  }
+  return {
+    deviceCodeUrl: `${base()}/login/device/code`,
+    tokenUrl: `${base()}/login/oauth/access_token`,
+    clientId,
+    scope: SCOPE,
+  };
+}
+
+// GitHub's own error codes, turned into something the user can act on. The
+// rest pass through as the provider worded them.
+export function describeGitHubError(err) {
+  switch (err.code) {
+    case 'device_flow_disabled':
+      return 'Device sign-in is not enabled for this GitHub OAuth app — tick "Enable Device Flow" in its settings.';
+    case 'incorrect_client_credentials':
+      return 'GitHub does not recognise GITHUB_CLIENT_ID — check it matches the OAuth app.';
+    case 'unreachable':
+      return 'Could not reach GitHub — check the connection and try again.';
+    default:
+      return undefined;
   }
 }
 
-export function getCallbackUrl() {
-  return `${process.env.BASE_URL}/api/plugins/github/callback`;
-}
-
-export function getAuthorizeUrl(state) {
-  requireGithubCredentials();
-  const url = new URL('https://github.com/login/oauth/authorize');
-  url.searchParams.set('client_id', process.env.GITHUB_CLIENT_ID);
-  url.searchParams.set('redirect_uri', getCallbackUrl());
-  url.searchParams.set('scope', 'repo read:user');
-  url.searchParams.set('state', state);
-  return url.toString();
-}
-
-export async function exchangeCodeForToken(code) {
-  requireGithubCredentials();
-  const response = await fetch('https://github.com/login/oauth/access_token', {
-    method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-      Accept: 'application/json',
-    },
-    body: JSON.stringify({
-      client_id: process.env.GITHUB_CLIENT_ID,
-      client_secret: process.env.GITHUB_CLIENT_SECRET,
-      code,
-      redirect_uri: getCallbackUrl(),
-    }),
-  });
-
-  const data = await response.json();
-  if (data.error) {
-    throw new Error(`GitHub OAuth error: ${data.error_description || data.error}`);
-  }
-  return data.access_token;
-}
+export const githubDeviceProvider = {
+  config: getDeviceFlowConfig,
+  describeError: describeGitHubError,
+};
