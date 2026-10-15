@@ -42,6 +42,12 @@ test('usage counts only answers since the given moment, for that account', async
   assert.deepEqual(await usageSince(account.id, weekAgo, server.pool), { spentUsd: 0.02, answers: 1 });
 });
 
+test('an answer records which plug-ins supplied its context', async () => {
+  await recordUsage(answer({ requestId: 'kicad-1', sources: ['kicad', 'github'] }), server.pool);
+  const { rows } = await server.pool.query(`SELECT sources FROM usage_ledger WHERE request_id = 'kicad-1'`);
+  assert.deepEqual(rows[0].sources, ['kicad', 'github']);
+});
+
 test('the ledger has no column that could hold a prompt or an answer', async () => {
   const { rows } = await server.pool.query(
     `SELECT column_name FROM information_schema.columns WHERE table_name = 'usage_ledger'`
@@ -49,6 +55,6 @@ test('the ledger has no column that could hold a prompt or an answer', async () 
   const columns = rows.map((row) => row.column_name).sort();
   assert.deepEqual(columns, [
     'account_id', 'cost_usd', 'created_at', 'hard', 'id', 'input_tokens',
-    'model', 'output_tokens', 'request_id', 'web_searches',
+    'model', 'output_tokens', 'request_id', 'sources', 'web_searches',
   ]);
 });

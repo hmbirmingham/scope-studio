@@ -6,15 +6,15 @@ const DAY_MS = 24 * 60 * 60 * 1000;
 // call, so a retry after a dropped connection is charged once, not twice.
 // Returns false when the request was already recorded.
 export async function recordUsage(
-  { accountId, requestId, model, hard = false, inputTokens = 0, outputTokens = 0, webSearches = 0, costUsd },
+  { accountId, requestId, model, hard = false, inputTokens = 0, outputTokens = 0, webSearches = 0, costUsd, sources = [] },
   pool = getPool()
 ) {
   const { rowCount } = await pool.query(
     `INSERT INTO usage_ledger
-       (account_id, request_id, model, hard, input_tokens, output_tokens, web_searches, cost_usd)
-     VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+       (account_id, request_id, model, hard, input_tokens, output_tokens, web_searches, cost_usd, sources)
+     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
      ON CONFLICT (request_id) DO NOTHING`,
-    [accountId, requestId, model, hard, inputTokens, outputTokens, webSearches, costUsd]
+    [accountId, requestId, model, hard, inputTokens, outputTokens, webSearches, costUsd, sources]
   );
   return rowCount === 1;
 }
