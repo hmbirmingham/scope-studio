@@ -66,13 +66,22 @@ ledger row inside the rolling week (its cost, and when it leaves the window), or
 
 | Method | Path | Auth | Purpose |
 |---|---|---|---|
-| GET | `/v1/billing` | device | `{ plan, status, renewsAt, cancelAt, prices: { key_pro, student, engineer } }` (prices in USD). |
-| POST | `/v1/billing/checkout` | device | `{ plan }` → `{ url }` (Stripe Checkout, Managed Payments). `409 { code: "already_subscribed" }`. |
-| POST | `/v1/billing/portal` | device | → `{ url }` (Stripe customer portal). |
+| GET | `/v1/billing` | device | `{ plan, status, renewsAt, cancelAt, hasSubscription, prices: { key_pro, student, engineer } }` (prices in USD). `hasSubscription` tells the engine to offer the portal rather than checkout. |
+| POST | `/v1/billing/checkout` | device | `{ plan }` → `{ url }` (Stripe Checkout, Managed Payments). `400 { code: "invalid_plan" }`, `409 { code: "already_subscribed" }`. |
+| POST | `/v1/billing/portal` | device | → `{ url }` (Stripe customer portal). `404 { code: "no_billing_account" }` before the first checkout. |
 | POST | `/v1/billing/webhook` | Stripe signature | Raw body, mounted before the JSON parser. Snapshot events: `customer.subscription.*`, `invoice.paid`, `invoice.payment_failed`. Each re-reads the subscription from Stripe. |
 
 Checkout and portal return to `BASE_URL/billing/done`, a small page that tells the person to
-return to the app.
+return to the app (`?checkout=complete` after a purchase, `?checkout=canceled` after a cancelled
+checkout). It is static and answers whether or not billing is configured.
+
+With billing unconfigured, or misconfigured (a missing value, `STRIPE_MODE` not `test`/`live`, or
+a secret key whose prefix does not match the mode), every `/v1/billing*` route answers
+`503 { code: "billing_not_configured" }` and the server logs the problem once, by variable name.
+A Stripe failure on checkout or portal is `502 { code: "stripe_error" }`; Stripe's own text stays
+in the log. Webhook refusals: `401 { code: "invalid_signature" }`,
+`400 { code: "snapshot_required" }` (a thin event), `502 { code: "stripe_unavailable" }` (the
+subscription could not be re-read, so Stripe retries).
 
 ## Platform cloud (Wave 1 · C)
 
