@@ -41,9 +41,31 @@ export async function migrate(pool, { log = console.log } = {}) {
   }
 }
 
+// An arbitrary constant naming the control plane's migration lock.
+const MIGRATION_LOCK = 7_340_211;
+
+// Migrations run when the server starts, before it listens: Railway's
+// pre-deploy hook is part of a config format it is retiring, and the health
+// check already keeps traffic away until the server is up. A session-level
+// advisory lock makes a second replica starting at the same moment wait for
+// the first, then find nothing left to apply.
+export async function migrateWithLock(pool, options) {
+  const client = await pool.connect();
+  try {
+    await client.query('SELECT pg_advisory_lock($1)', [MIGRATION_LOCK]);
+    try {
+      await migrate(pool, options);
+    } finally {
+      await client.query('SELECT pg_advisory_unlock($1)', [MIGRATION_LOCK]);
+    }
+  } finally {
+    client.release();
+  }
+}
+
 if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
   const pool = getPool();
-  migrate(pool)
+  migrateWithLock(pool)
     .then(() => pool.end())
     .catch((err) => {
       console.error(err.message);
