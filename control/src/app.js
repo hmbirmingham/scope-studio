@@ -1,10 +1,15 @@
 import express from 'express';
 import { getPool } from './db/pool.js';
+import accountsRouter from './routes/accounts.js';
+import billingRouter, { billingWebhook } from './routes/billing.js';
+import cloudRouter from './routes/cloud.js';
 
 function createApp(env, { pool = getPool() } = {}) {
   const app = express();
   app.disable('x-powered-by');
-  app.use(express.json());
+  app.post('/v1/billing/webhook', express.raw({ type: '*/*', limit: '1mb' }), billingWebhook);
+  // Platform cloud requests carry a packed prompt, larger than the 100kb default.
+  app.use(express.json({ limit: '2mb' }));
 
   // Railway holds a deploy back until this answers 200, so it checks the
   // database too: a control plane that cannot reach its ledger must not take
@@ -17,6 +22,12 @@ function createApp(env, { pool = getPool() } = {}) {
       res.status(503).json({ status: 'unavailable', error: 'database unreachable' });
     }
   });
+
+  // Each router declares its own full paths, so a new page or endpoint never
+  // needs an edit here.
+  app.use(accountsRouter);
+  app.use(billingRouter);
+  app.use(cloudRouter);
 
   app.use((req, res) => res.status(404).json({ error: 'not found' }));
 

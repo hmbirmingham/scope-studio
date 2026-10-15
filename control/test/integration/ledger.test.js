@@ -1,7 +1,7 @@
 import { after, before, beforeEach, test } from 'node:test';
 import assert from 'node:assert/strict';
-import { recordUsage, usageSince } from '../../src/models/ledger.js';
-import { createAccount, startServer } from '../helpers.js';
+import { freesUpNext, recordUsage, usageSince } from '../../src/models/ledger.js';
+import { createAccount, startServer, truncateAll } from '../helpers.js';
 
 let server;
 let account;
@@ -9,7 +9,7 @@ before(async () => {
   server = await startServer();
 });
 beforeEach(async () => {
-  await server.pool.query('TRUNCATE accounts, device_tokens, usage_ledger CASCADE');
+  await truncateAll(server.pool);
   account = await createAccount(server.pool, { plan: 'student' });
 });
 after(() => server.close());
@@ -57,4 +57,18 @@ test('the ledger has no column that could hold a prompt or an answer', async () 
     'account_id', 'cost_usd', 'created_at', 'hard', 'id', 'input_tokens',
     'model', 'output_tokens', 'request_id', 'sources', 'web_searches',
   ]);
+});
+
+test('the next spend to free up is the oldest answer in the week, a week after it was made', async () => {
+  assert.equal(await freesUpNext(account.id, new Date(), server.pool), null);
+  await recordUsage(answer({ requestId: 'gone', costUsd: 0.5 }), server.pool);
+  await recordUsage(answer({ requestId: 'oldest', costUsd: 0.03 }), server.pool);
+  await recordUsage(answer({ requestId: 'newer', costUsd: 0.07 }), server.pool);
+  await server.pool.query(`UPDATE usage_ledger SET created_at = now() - interval '9 days' WHERE request_id = 'gone'`);
+  await server.pool.query(`UPDATE usage_ledger SET created_at = now() - interval '3 days' WHERE request_id = 'oldest'`);
+
+  const { rows } = await server.pool.query(`SELECT created_at FROM usage_ledger WHERE request_id = 'oldest'`);
+  const next = await freesUpNext(account.id, new Date(), server.pool);
+  assert.equal(next.amountUsd, 0.03);
+  assert.equal(next.at.getTime(), rows[0].created_at.getTime() + 7 * 24 * 60 * 60 * 1000);
 });
