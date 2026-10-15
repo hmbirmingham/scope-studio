@@ -21,7 +21,7 @@ import {
   mentionScore,
   validateScenario,
 } from '../../src/benchmark/endurance/scenarios.js';
-import { formatMarkdown, liveRefusal, parseArgs, runEndurance, suggestedCause, toJson } from '../../src/benchmark/session.js';
+import { emitReport, formatMarkdown, liveRefusal, parseArgs, runEndurance, suggestedCause, toJson } from '../../src/benchmark/session.js';
 
 const turn = (overrides = {}) => ({
   ask: 'what does quantify_colonies return',
@@ -295,6 +295,25 @@ describe('reporting', () => {
     });
     assert.match(text, /PARTIAL: spend cap reached/);
     assert.match(text, /kicad-x \(kicad, 30 turns\): waiting on the kicad plug-in/);
+  });
+
+  test('a run cut short upstream says so, and the JSON is printed alongside the table', () => {
+    const report = {
+      mode: 'live', ranAt: '2026-10-15T00:00:00.000Z', spentUsd: 1, maxUsd: 5, partial: true, stopped: null, scenarios: [], plugins: {}, pending: [],
+      upstreamErrors: [{ scenario: 'code-x', arm: 'baseline_opus', turn: 4, status: 429, message: 'rate limited' }],
+    };
+    assert.match(formatMarkdown(report), /PARTIAL: upstream error/);
+    assert.doesNotMatch(formatMarkdown(report), /spend cap/);
+    assert.match(formatMarkdown(report), /code-x baseline_opus at turn 4: 429 rate limited/);
+
+    const printed = [];
+    const notes = [];
+    const clean = { ...report, partial: false, upstreamErrors: [] };
+    const code = emitReport(clean, { print: (text) => printed.push(text), note: (text) => notes.push(text) });
+    assert.equal(code, 0);
+    assert.equal(notes.length, 0, 'nothing written without --out');
+    assert.match(printed[0], /Endurance benchmark/);
+    assert.deepEqual(JSON.parse(printed[1]).upstreamErrors, []);
   });
 
   test('loss triage guesses the cause from what the turn read and where it went', () => {

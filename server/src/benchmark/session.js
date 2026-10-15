@@ -5,7 +5,15 @@ import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { getPool } from '../db/pool.js';
 import { weeklyAllowanceUsd } from '../billing/plans.js';
-import { ARMS, BASELINE_ARMS, BASELINE_CONTEXT_CAP_TOKENS, BASELINE_WINDOW_TOKENS, DEFAULT_ARMS, dryAnswerChunks } from './endurance/arms.js';
+import {
+  ARMS,
+  BASELINE_ARMS,
+  BASELINE_CONTEXT_CAP_TOKENS,
+  BASELINE_WINDOW_TOKENS,
+  DEFAULT_ARMS,
+  UpstreamError,
+  dryAnswerChunks,
+} from './endurance/arms.js';
 import {
   DRY,
   LIVE_MAX_USD,
@@ -67,10 +75,18 @@ export async function withDryServices(fn) {
   }
 }
 
-// Not a credential: the stand-in cloud ignores it, and assertDryEndpoint in
-// endurance/arms.js refuses to send it anywhere but the stand-in. The plan's
-// credential rules need some key to decide that a platform answer is possible.
-const DRY_PLATFORM_KEY = 'dry-run-stand-in';
+// The plan's credential rules need some key to decide that a platform answer
+// is possible. A dry run borrows the stand-in's own test key, so the only fake
+// key lives with the fakes, and assertDryEndpoint in endurance/arms.js refuses
+// to send it anywhere but the stand-in.
+async function dryPlatformKey() {
+  const { FAKE_ANTHROPIC_KEY } = await import('../../test/fakeAnthropic.js');
+  return FAKE_ANTHROPIC_KEY;
+}
+
+// Exit status when an upstream error cut an arm short: the run is not a
+// clean result, but its report was still printed and, with --out, written.
+export const EXIT_UPSTREAM_ERROR = 3;
 
 export async function ownerByEmail(email, pool = getPool()) {
   const { rows } = await pool.query('SELECT id FROM users WHERE email = $1', [email]);
@@ -158,10 +174,13 @@ export function triageTurns(scenario, byArm, dry) {
   return losses;
 }
 
-function scenarioResult(scenario, byArm, { dry, triage }) {
+function scenarioResult(scenario, byArm, { dry, triage, halted = {} }) {
   const budgetUsd = weeklyAllowanceUsd(scenario.plan);
   const arms = Object.fromEntries(
-    Object.entries(byArm).map(([name, rows]) => [name, { ...armSummary(rows, budgetUsd, dry), turns: rows }])
+    Object.entries(byArm).map(([name, rows]) => [
+      name,
+      { ...armSummary(rows, budgetUsd, dry), ...(halted[name] ? { stoppedBy: halted[name] } : {}), turns: rows },
+    ])
   );
   const comparisons = {};
   if (arms.scope) {
@@ -175,7 +194,11 @@ function scenarioResult(scenario, byArm, { dry, triage }) {
     }
   }
   const verdicts = Object.values(comparisons).map((c) => c.verdict);
-  const overall = verdicts.length === 0
+  // The spend cap stops every arm at the same turn; an upstream error stops
+  // only the arm it hit, so the arms no longer cover the same turns and no
+  // live verdict is drawn from them.
+  const interrupted = Object.keys(halted).length > 0;
+  const overall = verdicts.length === 0 || (interrupted && !dry)
     ? 'incomplete'
     : dry ? DRY
       : verdicts.every((v) => v === 'pass') ? 'pass'
@@ -226,7 +249,10 @@ function pendingEntry(scenario) {
 
 // Plays every ready scenario through every arm, turn by turn and arm by arm,
 // so a run stopped by the spend cap leaves every arm at the same turn.
-// Pending scenarios are listed, never run.
+// Pending scenarios are listed, never run. An upstream error (a 429, a 529, a
+// dropped connection) stops only the arm it hit, for the rest of that
+// scenario: the turns it already ran are kept and the report is marked
+// partial, since in a live run those turns were paid for.
 export async function runEndurance({
   scenarios,
   mode = 'dry',
@@ -243,7 +269,7 @@ export async function runEndurance({
   if (unknown.length) throw new Error(`unknown arm: ${unknown.join(', ')}`);
   const dry = mode === 'dry';
   if (!dry && !platformKey) throw new Error(liveRefusal({}));
-  const key = dry ? DRY_PLATFORM_KEY : platformKey;
+  const key = dry ? await dryPlatformKey() : platformKey;
 
   // A live run is always capped. A dry run spends nothing, so it runs every
   // scenario unless a cap is asked for — which previews how far a live run on
@@ -252,6 +278,7 @@ export async function runEndurance({
   const cap = new SpendCap(ceiling ?? Infinity);
   const results = [];
   const pending = [];
+  const upstreamErrors = [];
   for (const scenario of scenarios) {
     if (scenario.status === 'pending') {
       pending.push(pendingEntry(scenario));
@@ -270,18 +297,30 @@ export async function runEndurance({
     const players = arms.map((name) => ARMS[name]({ scenario, ownerId, mode, cap, platformKey: key }));
     const byArm = Object.fromEntries(arms.map((name) => [name, []]));
     const cumulative = Object.fromEntries(arms.map((name) => [name, 0]));
+    const halted = {};
     for (const [index, turn] of scenario.turns.entries()) {
       for (const player of players) {
         if (cap.stopped) break;
-        const row = await player.turn(turn, index);
+        if (halted[player.name]) continue;
+        let row;
+        try {
+          row = await player.turn(turn, index);
+        } catch (err) {
+          if (!(err instanceof UpstreamError)) throw err;
+          const failure = { scenario: scenario.id, arm: player.name, turn: index + 1, status: err.status, message: err.message };
+          halted[player.name] = failure;
+          upstreamErrors.push(failure);
+          log(`${scenario.id} t${index + 1} ${player.name} stopped: upstream ${err.status ?? 'connection'} error: ${err.message}`);
+          continue;
+        }
         if (row.stopped) break;
         cumulative[player.name] += row.costUsd;
         byArm[player.name].push({ ...row, cumulativeCostUsd: cumulative[player.name] });
         log(`${scenario.id} t${index + 1} ${player.name} ${row.model ?? 'blocked'} ${row.routeReason} $${row.costUsd.toFixed(4)}`);
       }
-      if (cap.stopped) break;
+      if (cap.stopped || Object.keys(halted).length === players.length) break;
     }
-    results.push(scenarioResult(scenario, byArm, { dry, triage }));
+    results.push(scenarioResult(scenario, byArm, { dry, triage, halted }));
   }
 
   return {
@@ -296,8 +335,9 @@ export async function runEndurance({
     },
     maxUsd: ceiling,
     spentUsd: cap.spentUsd,
-    partial: Boolean(cap.stopped),
+    partial: Boolean(cap.stopped) || upstreamErrors.length > 0,
     stopped: cap.stopped,
+    upstreamErrors,
     scenarios: results,
     plugins: pluginSummary(results),
     pending,
@@ -309,10 +349,17 @@ const ratio = (value) => (value == null ? '–' : value === Infinity ? '∞' : t
 const share = (value) => (typeof value === 'number' ? `${Math.round(value * 100)}%` : value ?? '–');
 const turns = (arm) => (arm.unbounded ? '∞' : arm.turnsUntilBudget == null ? '–' : `${arm.turnsUntilBudget}${arm.projected ? '*' : ''}`);
 
+function partialReason(report) {
+  const reasons = [];
+  if (report.stopped || !report.upstreamErrors?.length) reasons.push('spend cap reached');
+  if (report.upstreamErrors?.length) reasons.push('upstream error');
+  return reasons.join(', ');
+}
+
 export function formatMarkdown(report) {
   const lines = [
     `Endurance benchmark (${report.mode}) — ${report.mode === 'dry' ? 'priced at' : 'spent'} ${usd(report.spentUsd)}` +
-      `${report.maxUsd == null ? '' : ` of a ${usd(report.maxUsd)} cap`}${report.partial ? ' — PARTIAL: spend cap reached' : ''}`,
+      `${report.maxUsd == null ? '' : ` of a ${usd(report.maxUsd)} cap`}${report.partial ? ` — PARTIAL: ${partialReason(report)}` : ''}`,
     '',
     '| scenario | arm | turns run | $/turn | turns on budget | vs sonnet | vs opus | quality | cite | verdict |',
     '|---|---|---|---|---|---|---|---|---|---|',
@@ -339,6 +386,12 @@ export function formatMarkdown(report) {
       for (const [name, cost] of Object.entries(entry.costPerTurnUsd)) lines.push(`| ${plugin} | ${name} | ${usd(cost)} |`);
     }
   }
+  if (report.upstreamErrors?.length) {
+    lines.push('', 'Stopped by upstream errors (turns before them are kept above):');
+    for (const failure of report.upstreamErrors) {
+      lines.push(`- ${failure.scenario} ${failure.arm} at turn ${failure.turn}: ${failure.status ?? 'connection'} ${failure.message}`);
+    }
+  }
   if (report.pending.length) {
     lines.push('', 'Pending (listed, not run):');
     for (const entry of report.pending) lines.push(`- ${entry.id} (${entry.plugin}, ${entry.turns} turns): ${entry.reason}`);
@@ -351,6 +404,20 @@ export function toJson(report) {
   return JSON.stringify(report, (key, value) => (value === Infinity ? 'unbounded' : value), 2);
 }
 
+// Writes the file before printing, so a broken pipe on stdout cannot cost a
+// paid run its report. Returns the exit status.
+export function emitReport(report, { out = false, resultsDir = RESULTS_DIR, print = console.log, note = console.error } = {}) {
+  if (out) {
+    mkdirSync(resultsDir, { recursive: true });
+    const file = join(resultsDir, `${report.ranAt.replace(/[:.]/g, '-')}.json`);
+    writeFileSync(file, toJson(report));
+    note(`report written to ${file}`);
+  }
+  print(formatMarkdown(report));
+  print(`\n${toJson(report)}`);
+  return report.upstreamErrors?.length ? EXIT_UPSTREAM_ERROR : 0;
+}
+
 const HELP = `usage: npm run endurance -- [options]
   --dry                 stand-in models, prices from token counts (default)
   --live                real models; needs PLATFORM_ANTHROPIC_API_KEY
@@ -360,9 +427,13 @@ const HELP = `usage: npm run endurance -- [options]
   --plugin <name,...>   only these plug-ins
   --arms <name,...>     ${DEFAULT_ARMS.join(', ')} (default: all)
   --triage              list every turn Scope lost, with what it read and why it routed as it did
-  --out                 write the JSON report to benchmarks/results/<timestamp>.json
+  --out                 also write the JSON report to benchmarks/results/<timestamp>.json
   --sessions <dir>      scenario directory (default benchmarks/sessions)
-  --list                list scenarios, ready and pending, and exit`;
+  --list                list scenarios, ready and pending, and exit
+
+The markdown table and the JSON report always go to stdout. If an upstream
+error (429, 529, dropped connection) stops an arm, the turns it ran are kept,
+the partial report is still printed and written, and the exit status is ${EXIT_UPSTREAM_ERROR}.`;
 
 export function parseArgs(argv) {
   const args = { mode: 'dry', maxUsd: null, scenarios: null, plugins: null, arms: DEFAULT_ARMS, triage: false, out: false, sessions: DEFAULT_SESSIONS_DIR, list: false, help: false };
@@ -444,16 +515,7 @@ async function main(argv) {
     } catch {
       report.commitHash = null;
     }
-    console.log(formatMarkdown(report));
-    if (args.out) {
-      mkdirSync(RESULTS_DIR, { recursive: true });
-      const file = join(RESULTS_DIR, `${report.ranAt.replace(/[:.]/g, '-')}.json`);
-      writeFileSync(file, toJson(report));
-      console.log(`\nreport written to ${file}`);
-    } else {
-      console.log(`\n${toJson(report)}`);
-    }
-    return 0;
+    return emitReport(report, { out: args.out });
   } finally {
     await pool.end();
   }

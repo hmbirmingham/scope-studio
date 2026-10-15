@@ -1,5 +1,8 @@
 import assert from 'node:assert/strict';
 import { randomUUID } from 'node:crypto';
+import { mkdtempSync, readdirSync, readFileSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { setTimeout as sleep } from 'node:timers/promises';
 import { after, before, beforeEach, describe, test } from 'node:test';
 import { tryEmbedDocument } from '../../src/lib/embeddings.js';
@@ -9,8 +12,8 @@ import { resetConversations } from '../../src/routing/conversation.js';
 import { resetWarmState } from '../../src/routing/warm.js';
 import { createScopeArm } from '../../src/benchmark/endurance/arms.js';
 import { DRY, SpendCap } from '../../src/benchmark/endurance/economics.js';
-import { runEndurance, withDryServices } from '../../src/benchmark/session.js';
-import { startFakeAnthropic } from '../fakeAnthropic.js';
+import { EXIT_UPSTREAM_ERROR, emitReport, runEndurance, withDryServices } from '../../src/benchmark/session.js';
+import { FAKE_ANTHROPIC_KEY, startFakeAnthropic } from '../fakeAnthropic.js';
 import { startFakeOllama } from '../fakeOllama.js';
 import { ensureCentroids, registeredSession, startServer } from '../helpers.js';
 
@@ -95,6 +98,8 @@ describe('endurance benchmark', () => {
     resetWarmState();
     ollama.state.chatRequests = [];
     anthropic.state.requests = [];
+    anthropic.state.authHeaders = [];
+    Object.assign(anthropic.state, { failAfter: null, failStatus: 529, failModel: null });
   });
 
   after(async () => {
@@ -215,6 +220,54 @@ describe('endurance benchmark', () => {
     const accessAfter = (await server.pool.query('SELECT sum(access_count)::int AS a FROM nodes')).rows[0].a;
     assert.equal(metricsAfter, metricsBefore, 'no metrics rows');
     assert.equal(accessAfter, accessBefore, 'no access counts bumped');
+    assert.ok(anthropic.state.authHeaders.length > 0);
+    assert.ok(anthropic.state.authHeaders.every((key) => key === FAKE_ANTHROPIC_KEY), "a dry run sends only the stand-in's test key");
+  });
+
+  test('an upstream error partway stops only the arm it hit and keeps every turn already run', async () => {
+    // Turn 1 answers both baselines; Sonnet's turn 2 is overloaded.
+    Object.assign(anthropic.state, { failAfter: 2, failStatus: 529, failModel: 'claude-sonnet-5' });
+    const report = await runEndurance({ scenarios: [scenario()], mode: 'dry' });
+
+    assert.equal(report.partial, true);
+    assert.equal(report.stopped, null, 'not the spend cap');
+    assert.deepEqual(report.upstreamErrors.map(({ scenario: id, arm, turn, status }) => ({ id, arm, turn, status })),
+      [{ id: 'code-tiny-day', arm: 'baseline_sonnet', turn: 2, status: 529 }]);
+    const [result] = report.scenarios;
+    assert.equal(result.arms.baseline_sonnet.turnsRun, 1, 'the turn before the error is kept');
+    assert.ok(result.arms.baseline_sonnet.turns[0].costUsd > 0);
+    assert.equal(result.arms.baseline_sonnet.stoppedBy.status, 529);
+    assert.equal(result.arms.scope.turnsRun, TURNS.length, 'the other arms play on');
+    assert.equal(result.arms.baseline_opus.turnsRun, TURNS.length);
+    assert.equal(result.arms.scope.stoppedBy, undefined);
+
+    // The partial report is written and printed, table and JSON both, and the
+    // exit status says the run did not finish cleanly.
+    const dir = mkdtempSync(join(tmpdir(), 'endurance-'));
+    try {
+      const printed = [];
+      const code = emitReport(report, { out: true, resultsDir: dir, print: (text) => printed.push(text), note: () => {} });
+      assert.equal(code, EXIT_UPSTREAM_ERROR);
+      const [file] = readdirSync(dir);
+      const written = JSON.parse(readFileSync(join(dir, file), 'utf8'));
+      assert.equal(written.scenarios[0].arms.baseline_sonnet.turns.length, 1);
+      assert.equal(written.upstreamErrors[0].arm, 'baseline_sonnet');
+      const stdout = printed.join('\n');
+      assert.match(stdout, /PARTIAL: upstream error/);
+      assert.match(stdout, /baseline_sonnet at turn 2: 529/);
+      assert.deepEqual(JSON.parse(printed.at(-1)).upstreamErrors, written.upstreamErrors);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  test('a dropped connection stops the arm the same way, and a scenario with every arm stopped ends there', async () => {
+    Object.assign(anthropic.state, { failAfter: 1, failStatus: 'network' });
+    const report = await runEndurance({ scenarios: [scenario()], mode: 'dry', arms: ['baseline_opus'] });
+    assert.equal(report.partial, true);
+    assert.deepEqual(report.upstreamErrors.map(({ arm, turn, status }) => ({ arm, turn, status })),
+      [{ arm: 'baseline_opus', turn: 2, status: null }]);
+    assert.equal(report.scenarios[0].arms.baseline_opus.turnsRun, 1);
   });
 
   test('the spend cap stops every arm, leaves them level, and skips what is left', async () => {

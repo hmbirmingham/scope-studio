@@ -135,15 +135,30 @@ async function runLocal({ model, messages }) {
   return { answer, outputTokens, promptTokens: promptTokensUsed };
 }
 
+// A cloud request that failed on the provider's side: a 429, a 529, a dropped
+// connection. It is not a fault in the harness, so the runner stops the arm it
+// hit and keeps every turn already paid for instead of losing the run.
+export class UpstreamError extends Error {
+  constructor(cause) {
+    super(cause?.message ?? String(cause), { cause });
+    this.name = 'UpstreamError';
+    this.status = cause?.status ?? null;
+  }
+}
+
 async function runCloud({ apiKey, model, effort, messages, cacheMarker, economy }) {
   let answer = '';
   let usage = null;
-  for await (const event of streamCloud({
-    apiKey, model, effort, messages, cacheMarker,
-    ...(economy ? { maxTokens: ECONOMY_MAX_TOKENS, brevity: true } : {}),
-  })) {
-    if (event.text) answer += event.text;
-    if (event.done) usage = event.usage;
+  try {
+    for await (const event of streamCloud({
+      apiKey, model, effort, messages, cacheMarker,
+      ...(economy ? { maxTokens: ECONOMY_MAX_TOKENS, brevity: true } : {}),
+    })) {
+      if (event.text) answer += event.text;
+      if (event.done) usage = event.usage;
+    }
+  } catch (err) {
+    throw new UpstreamError(err);
   }
   return { answer, usage };
 }
