@@ -91,21 +91,34 @@ export function useIngest(onFinished) {
 
   // The engine asks GitHub for a code and keeps the device half to itself;
   // the browser only shows the short code and where to type it.
+  // Every way this can go wrong ends as a 'failed' attempt, which the panel
+  // shows with a Try again button; a rejection here would leave it stuck on
+  // "Asking GitHub…" with nothing to press.
   const connect = useCallback(async () => {
     setError(null);
     setSignIn({ state: 'starting' });
-    const response = await fetch('/api/plugins/github/device/start', { method: 'POST' });
-    if (!response.ok) {
-      setSignIn({ state: 'failed', error: await problemFrom(response, 'could not start GitHub sign-in') });
-      return;
+    try {
+      const response = await fetch('/api/plugins/github/device/start', { method: 'POST' });
+      if (!response.ok) {
+        setSignIn({ state: 'failed', error: await problemFrom(response, 'could not start GitHub sign-in') });
+        return;
+      }
+      const started = await response.json();
+      // The panel renders both, so an answer without them is a failure here
+      // rather than a crash there.
+      if (!started?.userCode || !started?.verificationUri) {
+        setSignIn({ state: 'failed', error: 'The engine gave an incomplete answer to GitHub sign-in. Try again.' });
+        return;
+      }
+      setSignIn({
+        state: 'waiting',
+        userCode: started.userCode,
+        verificationUri: started.verificationUri,
+        interval: started.interval || DEFAULT_SIGN_IN_INTERVAL_S,
+      });
+    } catch {
+      setSignIn({ state: 'failed', error: 'Could not reach the engine to start GitHub sign-in. Check it is running, then try again.' });
     }
-    const started = await response.json();
-    setSignIn({
-      state: 'waiting',
-      userCode: started.userCode,
-      verificationUri: started.verificationUri,
-      interval: started.interval || DEFAULT_SIGN_IN_INTERVAL_S,
-    });
   }, []);
 
   // Forgetting the attempt here is enough: the engine drops the device code

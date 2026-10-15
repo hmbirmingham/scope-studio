@@ -1,3 +1,5 @@
+import { DeviceFlowError } from '../auth/deviceFlow.js';
+
 // GitHub sign-in uses the device flow (see plugins/auth/deviceFlow.js), which
 // needs only the OAuth app's public client id. The engine runs on the user's
 // machine, where a client secret could be read by anyone with the binary and
@@ -14,14 +16,14 @@ function base() {
 export function getDeviceFlowConfig() {
   const clientId = process.env.GITHUB_CLIENT_ID;
   if (!clientId) {
-    const error = new Error(
-      'GitHub is not configured: set GITHUB_CLIENT_ID in .env to the client id of a GitHub OAuth App ' +
-        '(github.com/settings/developers) with "Enable Device Flow" ticked. No default is used.'
-    );
     // Service unavailable rather than a server fault: the engine is fine, it
     // just has not been told which GitHub app to sign in with.
-    error.status = 503;
-    throw error;
+    throw new DeviceFlowError(
+      'not_configured',
+      'GitHub is not configured: set GITHUB_CLIENT_ID in .env to the client id of a GitHub OAuth App ' +
+        '(github.com/settings/developers) with "Enable Device Flow" ticked. No default is used.',
+      { status: 503 }
+    );
   }
   return {
     deviceCodeUrl: `${base()}/login/device/code`,
@@ -35,6 +37,8 @@ export function getDeviceFlowConfig() {
 // rest pass through as the provider worded them.
 export function describeGitHubError(err) {
   switch (err.code) {
+    case 'not_configured':
+      return err.description;
     case 'device_flow_disabled':
       return 'Device sign-in is not enabled for this GitHub OAuth app — tick "Enable Device Flow" in its settings.';
     case 'incorrect_client_credentials':

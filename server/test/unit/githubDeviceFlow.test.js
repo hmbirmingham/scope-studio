@@ -1,9 +1,10 @@
 import assert from 'node:assert/strict';
 import { readdir, readFile } from 'node:fs/promises';
 import { join } from 'node:path';
-import { afterEach, describe, test } from 'node:test';
+import { afterEach, describe, mock, test } from 'node:test';
 import { fileURLToPath } from 'node:url';
-import { DeviceFlowError, pollDeviceFlow, startDeviceFlow } from '../../src/plugins/auth/deviceFlow.js';
+import express from 'express';
+import { DeviceFlowError, deviceFlowRouter, pollDeviceFlow, startDeviceFlow } from '../../src/plugins/auth/deviceFlow.js';
 import { describeGitHubError, getDeviceFlowConfig } from '../../src/plugins/github/oauth.js';
 
 const URLS = { deviceCodeUrl: 'https://provider.test/device', tokenUrl: 'https://provider.test/token' };
@@ -51,6 +52,34 @@ describe('device flow helper', () => {
   test('start defaults the interval to five seconds when the provider leaves it out', async () => {
     const fetch = scriptedFetch({ body: { device_code: 'd', user_code: 'u', verification_uri: 'https://provider.test/a', expires_in: 600 } });
     assert.equal((await startDeviceFlow({ ...URLS, clientId: 'fake-client', fetch })).interval, 5);
+  });
+
+  test('start refuses an expires_in that is missing or unusable, rather than expiring at once', async () => {
+    const reply = (extra) => ({ body: { device_code: 'd', user_code: 'u', verification_uri: 'https://provider.test/a', interval: 5, ...extra } });
+    for (const extra of [{}, { expires_in: null }, { expires_in: 'soon' }, { expires_in: 0 }, { expires_in: -60 }]) {
+      const fetch = scriptedFetch(reply(extra));
+      await assert.rejects(startDeviceFlow({ ...URLS, clientId: 'fake-client', fetch }), (err) => {
+        assert.ok(err instanceof DeviceFlowError, JSON.stringify(extra));
+        assert.equal(err.code, 'bad_response');
+        assert.match(err.message, /expires_in/);
+        return true;
+      });
+    }
+    // A numeric string is still a number of seconds.
+    const fetch = scriptedFetch(reply({ expires_in: '900' }));
+    assert.equal((await startDeviceFlow({ ...URLS, clientId: 'fake-client', fetch })).expiresIn, 900);
+  });
+
+  test('start refuses an interval that is present but unusable', async () => {
+    for (const interval of [null, 'fast', 0, -5]) {
+      const fetch = scriptedFetch({ body: { device_code: 'd', user_code: 'u', verification_uri: 'https://provider.test/a', expires_in: 600, interval } });
+      await assert.rejects(startDeviceFlow({ ...URLS, clientId: 'fake-client', fetch }), (err) => {
+        assert.ok(err instanceof DeviceFlowError, String(interval));
+        assert.equal(err.code, 'bad_response');
+        assert.match(err.message, /interval/);
+        return true;
+      });
+    }
   });
 
   test('start refuses without a client id and never calls the provider', async () => {
@@ -106,6 +135,64 @@ describe('device flow helper', () => {
   });
 });
 
+describe('device flow routes', () => {
+  // Just enough of the engine to drive the router: a session object and a
+  // provider whose config() fails the way the test says.
+  async function serve(provider) {
+    const app = express();
+    app.use((req, res, next) => {
+      req.session = {};
+      next();
+    });
+    app.use('/device', deviceFlowRouter({ provider, tokenKey: 'fakeToken', fetch: scriptedFetch() }));
+    const server = await new Promise((resolve) => {
+      const listening = app.listen(0, () => resolve(listening));
+    });
+    const post = async (path) => {
+      const response = await fetch(`http://localhost:${server.address().port}/device${path}`, { method: 'POST' });
+      return { status: response.status, data: await response.json() };
+    };
+    return { post, close: () => new Promise((resolve) => server.close(resolve)) };
+  }
+
+  test('a DeviceFlowError reaches the browser in its own words, with its status', async () => {
+    const provider = {
+      config() {
+        throw new DeviceFlowError('not_configured', 'set FAKE_CLIENT_ID', { status: 503 });
+      },
+      describeError: (err) => (err.code === 'not_configured' ? err.description : undefined),
+    };
+    const app = await serve(provider);
+    try {
+      assert.deepEqual(await app.post('/start'), { status: 503, data: { error: 'set FAKE_CLIENT_ID' } });
+    } finally {
+      await app.close();
+    }
+  });
+
+  test('any other error is logged on the engine and answered with a plain 502', async () => {
+    const logged = mock.method(console, 'error', () => {});
+    const provider = {
+      config() {
+        throw new Error('internal detail: /home/someone/.config/engine.json');
+      },
+    };
+    const app = await serve(provider);
+    try {
+      const { status, data } = await app.post('/start');
+      assert.equal(status, 502);
+      assert.doesNotMatch(data.error, /internal detail/);
+      assert.ok(
+        logged.mock.calls.some((call) => String(call.arguments[0]).includes('internal detail')),
+        'the real cause is in the engine log'
+      );
+    } finally {
+      logged.mock.restore();
+      await app.close();
+    }
+  });
+});
+
 describe('github device-flow configuration', () => {
   const saved = { id: process.env.GITHUB_CLIENT_ID, base: process.env.GITHUB_OAUTH_BASE };
   afterEach(() => {
@@ -118,6 +205,7 @@ describe('github device-flow configuration', () => {
   test('refuses cleanly without a client id, with no default', () => {
     delete process.env.GITHUB_CLIENT_ID;
     assert.throws(getDeviceFlowConfig, (err) => {
+      assert.ok(err instanceof DeviceFlowError, 'worded for the user, so it may reach the browser');
       assert.equal(err.status, 503);
       assert.match(err.message, /GITHUB_CLIENT_ID/);
       return true;

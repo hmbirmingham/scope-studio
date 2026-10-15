@@ -21,13 +21,26 @@ const REQUEST_TIMEOUT_MS = 10_000;
 // could not be asked this time.
 const TRANSIENT = new Set(['unreachable', 'bad_response']);
 
+// The only error whose words reach the browser: each one is about the sign-in
+// itself and is worded for the user. `status` is for a refusal that is not the
+// provider's fault, such as a plug-in that has not been configured.
 export class DeviceFlowError extends Error {
-  constructor(code, description) {
+  constructor(code, description, { status } = {}) {
     super(description ? `${code}: ${description}` : code);
     this.name = 'DeviceFlowError';
     this.code = code;
     this.description = description ?? null;
+    if (status) this.status = status;
   }
+}
+
+// A count of seconds the provider sent, or null when it is absent, not a
+// number, or not above zero. Coercing a bad value to 0 would expire the code
+// at once, or let the engine poll as fast as the browser asks.
+function positiveSeconds(value) {
+  if (value === undefined || value === null || value === '') return null;
+  const seconds = Number(value);
+  return Number.isFinite(seconds) && seconds > 0 ? seconds : null;
 }
 
 // Providers differ in how they report a refusal: the RFC says 400 with an
@@ -71,13 +84,23 @@ export async function startDeviceFlow({ deviceCodeUrl, clientId, scope, fetch = 
   if (!data.device_code || !data.user_code || !data.verification_uri) {
     throw new DeviceFlowError('bad_response', 'device authorization response is missing fields');
   }
+  // expires_in is required by the RFC. interval is optional and defaults to
+  // five seconds when left out, but one that is present must be usable.
+  const expiresIn = positiveSeconds(data.expires_in);
+  if (expiresIn === null) {
+    throw new DeviceFlowError('bad_response', 'device authorization response has no valid expires_in');
+  }
+  const interval = data.interval === undefined ? DEFAULT_INTERVAL : positiveSeconds(data.interval);
+  if (interval === null) {
+    throw new DeviceFlowError('bad_response', 'device authorization response has an invalid interval');
+  }
   return {
     deviceCode: data.device_code,
     userCode: data.user_code,
     verificationUri: data.verification_uri,
     verificationUriComplete: data.verification_uri_complete ?? null,
-    expiresIn: Number(data.expires_in) || 0,
-    interval: Number(data.interval) || DEFAULT_INTERVAL,
+    expiresIn,
+    interval,
   };
 }
 
@@ -124,8 +147,8 @@ export async function pollDeviceFlow({ tokenUrl, clientId, deviceCode, interval 
 //   router.use('/device', deviceFlowRouter({ provider, tokenKey: 'zoteroToken' }));
 //
 // `provider.config()` returns { deviceCodeUrl, tokenUrl, clientId, scope } or
-// throws an error carrying `status` when the plug-in is not configured.
-// `provider.describeError(err)` may turn a provider error code into advice.
+// throws a DeviceFlowError carrying `status` when the plug-in is not
+// configured. `provider.describeError(err)` may turn its code into advice.
 // The pending device code lives in the session under `${tokenKey}Device` and
 // the token, once granted, under `tokenKey`; neither is ever sent to the
 // browser, which only ever sees the user code and the verification URI.
@@ -133,10 +156,16 @@ export function deviceFlowRouter({ provider, tokenKey, fetch, now = Date.now }) 
   const pendingKey = `${tokenKey}Device`;
   const router = Router();
 
+  // Only a DeviceFlowError is worded for the user. Anything else is a fault
+  // in the engine or a plug-in, whose message may name internals, so it is
+  // logged here and the browser gets a plain 502.
   function fail(res, err) {
-    const status = err.status ?? 502;
+    if (!(err instanceof DeviceFlowError)) {
+      console.error(`${tokenKey} sign-in failed: ${err?.stack ?? err}`);
+      return res.status(502).json({ error: 'sign-in failed on the engine — try again, and check its log if it keeps happening' });
+    }
     const message = provider.describeError?.(err) ?? err.message;
-    return res.status(status).json({ error: message });
+    return res.status(err.status ?? 502).json({ error: message });
   }
 
   router.post('/start', async (req, res) => {
