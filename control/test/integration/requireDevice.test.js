@@ -45,7 +45,7 @@ test('a valid token resolves to its account and device, and marks it used', asyn
   const response = await call({ authorization: `Bearer ${token}` });
   assert.equal(response.status, 200);
   const body = await response.json();
-  assert.deepEqual(body, { account: { id: account.id, email: 'test@scope.local', plan: 'engineer' }, deviceId: id });
+  assert.deepEqual(body, { account: { id: account.id, email: 'test@scope.local', plan: 'engineer', devMode: false }, deviceId: id });
   const { rows } = await server.pool.query('SELECT last_used_at FROM device_tokens WHERE id = $1', [id]);
   assert.ok(rows[0].last_used_at);
 });
