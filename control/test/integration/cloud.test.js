@@ -2,9 +2,10 @@ import { after, before, beforeEach, describe, test } from 'node:test';
 import assert from 'node:assert/strict';
 import { setTimeout as sleep } from 'node:timers/promises';
 import { hashToken, newDeviceToken } from '../../src/auth/tokens.js';
-import { ECONOMY_MAX_TOKENS, weeklyAllowanceUsd } from '../../src/billing/plans.js';
+import { ECONOMY_MAX_TOKENS, monthlyAnswerLimit, weeklyAllowanceUsd } from '../../src/billing/plans.js';
 import { BREVITY_NOTE, costUsd, MAX_TOKENS } from '../../src/lib/anthropic.js';
 import { recordUsage } from '../../src/models/ledger.js';
+import { MAX_STREAMS_PER_ACCOUNT } from '../../src/routes/cloud.js';
 import { startFakeAnthropic } from '../fakeAnthropic.js';
 import { createAccount, startServer, truncateAll } from '../helpers.js';
 
@@ -124,6 +125,16 @@ async function spend(accountId, usd, requestId = `seed-${accountId}`) {
   await recordUsage({ accountId, requestId, model: 'claude-sonnet-5', costUsd: atLeast(usd) }, server.pool);
 }
 
+// Completed answers that cost nothing, so they count against the month and
+// not the week.
+async function answered(accountId, count) {
+  await server.pool.query(
+    `INSERT INTO usage_ledger (account_id, request_id, model, cost_usd)
+     SELECT $1::uuid, 'bulk-' || $1 || '-' || g, 'claude-sonnet-5', 0 FROM generate_series(1, $2::int) g`,
+    [accountId, count]
+  );
+}
+
 describe('a platform-paid answer', () => {
   test('streams text then a done event, and charges the ledger once with its sources', async () => {
     Object.assign(anthropic.state, { cacheCreationTokens: 3000, cacheReadTokens: 500 });
@@ -219,6 +230,31 @@ describe('a platform-paid answer', () => {
     assert.equal(row.input_tokens, 1200);
     assert.ok(row.output_tokens >= 1);
     assert.ok(Number(row.cost_usd) > 0);
+    assert.equal(row.completed, false);
+  });
+
+  test("an answer that fails upstream is charged but does not use up one of the month's answers", async () => {
+    const device = await signIn('student');
+    await answered(device.id, monthlyAnswerLimit('student') - 1);
+
+    anthropic.state.failMidStream = true;
+    const failed = question();
+    const last = (await events(await ask(device, failed))).at(-1);
+    assert.equal(last.code, 'upstream_error');
+    const row = await ledgerRow(failed.requestId);
+    assert.equal(row.completed, false);
+    assert.ok(Number(row.cost_usd) > 0, 'the platform still paid for it');
+
+    // The month's last answer is still there to use, and using it ends the month.
+    anthropic.state.failMidStream = false;
+    const answer = question();
+    const response = await ask(device, answer);
+    assert.equal(response.status, 200);
+    assert.equal((await events(response)).at(-1).done, true);
+    assert.equal((await ledgerRow(answer.requestId)).completed, true);
+    const after = await ask(device, question());
+    assert.equal(after.status, 402);
+    assert.equal((await after.json()).code, 'answer_limit_reached');
   });
 });
 
@@ -296,6 +332,23 @@ describe('refusals happen before any upstream call', () => {
     }
   });
 
+  test('content blocks may carry only their own keys: caching breakpoints, citations and tool blocks are refused', async () => {
+    const device = await signIn('engineer');
+    const blocks = [
+      { type: 'text', text: SECRET_CONTEXT, cache_control: { type: 'ephemeral' } },
+      { type: 'text', text: SECRET_CONTEXT, citations: [] },
+      { type: 'image', source: { type: 'base64', media_type: 'image/png', data: 'AA==' }, cache_control: { type: 'ephemeral' } },
+      { type: 'document', source: { type: 'text', media_type: 'text/plain', data: SECRET_CONTEXT } },
+      { type: 'tool_use', id: 't', name: 'x', input: {} },
+      { type: 'tool_result', tool_use_id: 't', content: SECRET_CONTEXT },
+    ];
+    for (const block of blocks) {
+      const messages = [{ role: 'user', content: [block, { type: 'text', text: SECRET_QUESTION }] }];
+      const body = await refused(await ask(device, question({ messages })), 400, 'field_not_allowed');
+      assert.doesNotMatch(body.error, /PRIVATE/);
+    }
+  });
+
   test('sources must be at most sixteen plug-in names', async () => {
     const device = await signIn('engineer');
     const tooMany = Array.from({ length: 17 }, (_, i) => `plugin_${i}`);
@@ -315,7 +368,7 @@ describe('refusals happen before any upstream call', () => {
       { requestId: 'x'.repeat(129) },
       { messages: [] },
       { messages: [{ role: 'tool', content: 'x' }] },
-      { messages: [{ role: 'user', content: [{ type: 'tool_use', id: 't', name: 'x', input: {} }] }] },
+      { messages: [{ role: 'user', content: [{ type: 'image', source: { type: 'base64', media_type: 'image/png', data: 'PRIVATE!' } }] }] },
       { messages: [{ role: 'assistant', content: 'only an answer' }] },
       { messages: [{ role: 'user', content: 'q', extra: true }] },
       { hard: 'yes' },
@@ -346,6 +399,20 @@ describe('streams in flight', () => {
     assert.equal(row.output_tokens, usage.output_tokens);
     assert.equal(Number(row.cost_usd), Number(costUsd('claude-sonnet-5', usage).toFixed(6)));
     assert.deepEqual(row.sources, ['github']);
+    assert.equal(row.completed, true);
+  });
+
+  test('a client that hangs up still uses up one of the month\'s answers', async () => {
+    const device = await signIn('student');
+    await answered(device.id, monthlyAnswerLimit('student') - 1);
+    anthropic.state.hold = true;
+    const body = question();
+    (await openStream(device, body)).hangUp();
+    assert.equal((await ledgerRow(body.requestId)).completed, true);
+
+    const after = await ask(device, question());
+    assert.equal(after.status, 402);
+    assert.equal((await after.json()).code, 'answer_limit_reached');
   });
 
   test('a third concurrent stream is refused, and a request id mid-answer cannot stream twice', async () => {
@@ -383,6 +450,72 @@ describe('streams in flight', () => {
       return ok;
     }, 'a slot to free up');
   });
+});
+
+describe('the refusal order', () => {
+  const ORDER = [
+    ['cloud_not_in_plan', 403],
+    ['platform_cloud_unavailable', 503],
+    ['duplicate_request', 409],
+    ['answer_limit_reached', 402],
+    ['allowance_exhausted', 402],
+    ['too_many_streams', 429],
+  ];
+
+  // Makes every named refusal's condition true at once on one Student account,
+  // and returns the request that should be refused. Streams open first, while
+  // the account may still stream; the plan and the key are taken away last.
+  async function arrange(conditions) {
+    const device = await signIn('student');
+    const body = question();
+    const held = [];
+    if (conditions.includes('too_many_streams')) {
+      anthropic.state.hold = true;
+      for (let i = 0; i < MAX_STREAMS_PER_ACCOUNT; i++) {
+        const streamed = question();
+        held.push({ ...(await openStream(device, streamed)), requestId: streamed.requestId });
+      }
+    }
+    if (conditions.includes('duplicate_request')) {
+      await recordUsage({ accountId: device.id, requestId: body.requestId, model: 'claude-sonnet-5', costUsd: 0 }, server.pool);
+    }
+    if (conditions.includes('answer_limit_reached')) await answered(device.id, monthlyAnswerLimit('student'));
+    if (conditions.includes('allowance_exhausted')) await spend(device.id, weeklyAllowanceUsd('student'));
+    if (conditions.includes('cloud_not_in_plan')) {
+      await server.pool.query(`UPDATE accounts SET plan = 'free' WHERE id = $1`, [device.id]);
+    }
+    if (conditions.includes('platform_cloud_unavailable')) delete process.env.PLATFORM_ANTHROPIC_API_KEY;
+    return { device, body, held };
+  }
+
+  async function expectRefusal(conditions, [code, status]) {
+    const { device, body, held } = await arrange(conditions);
+    try {
+      const response = await ask(device, body);
+      assert.equal(response.status, status, `${conditions.join(' + ')} gave ${response.status}`);
+      assert.equal((await response.json()).code, code);
+      assert.equal(anthropic.state.requests.length, held.length, 'the refused request never reached the model');
+    } finally {
+      // The held answers are charged before the next test empties the ledger.
+      for (const stream of held) stream.hangUp();
+      for (const stream of held) await ledgerRow(stream.requestId);
+    }
+  }
+
+  // Each condition alone gives its own refusal, so a pair that answers with the
+  // earlier code is proof of the order, not of a condition that failed to hold.
+  for (const refusal of ORDER) {
+    test(`${refusal[0]} alone is a ${refusal[1]}`, () => expectRefusal([refusal[0]], refusal));
+  }
+
+  for (const [index, earlier] of ORDER.entries()) {
+    for (const [later] of ORDER.slice(index + 1)) {
+      test(`${earlier[0]} is answered before ${later}`, () => expectRefusal([earlier[0], later], earlier));
+    }
+  }
+
+  test('with every condition at once, the plan is what the account hears about', () =>
+    expectRefusal(ORDER.map(([code]) => code), ORDER[0]));
 });
 
 describe('privacy', () => {

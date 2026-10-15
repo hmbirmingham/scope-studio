@@ -96,9 +96,24 @@ plug-in. Unknown names are accepted (plug-ins ship in the engine first); at most
 Field rules (else `400 { code: "invalid_request" }`, naming the field, never echoing content):
 - `requestId`: string, 8–128 characters. Unique across the whole ledger, not per account.
 - `messages`: non-empty; each is exactly `{ role, content }`; `content` is a string or a non-empty
-  array of Anthropic content blocks of type `text`, `image` or `document` (no tool blocks: no tools
-  are offered). At most one `system` message, text only; at least one `user` message.
+  array of content blocks (below). At most one `system` message, text only; at least one `user`
+  message.
 - `cacheMarker`: optional string, at most 256 characters. `hard`: optional boolean, default `false`.
+
+Content blocks carry exactly the keys listed for their type:
+- `{ "type": "text", "text": "…" }`
+- `{ "type": "image", "source": { "type": "base64", "media_type": "image/jpeg" | "image/png" |
+  "image/gif" | "image/webp", "data": "<base64>" } }`
+- `{ "type": "image", "source": { "type": "url", "url": "https://…" } }` (https only, at most 2,048
+  characters)
+
+Any other block type (`document`, `tool_use`, `tool_result`, `thinking`, …), any other source type,
+and any other key on a block or source (`cache_control`, `citations`, …) is refused with
+`400 { code: "field_not_allowed" }`. A listed key with a malformed value (a text block without
+text, data that is not base64, an unlisted media type, a URL that is not https) is
+`invalid_request`. Caching breakpoints are the control plane's decision, set only through
+`cacheMarker`: the client cannot place a `cache_control` (or the cache writes it bills) anywhere
+itself. Key and type names are echoed in the error only when they look like an identifier.
 
 The control plane decides everything else: whether the plan may use platform cloud, model
 (`plans.js` lives here as the authority), effort, `max_tokens`, economy/brevity. Web search is
@@ -117,7 +132,8 @@ Refusals happen before any upstream call, as JSON, checked in this order:
    (`PLATFORM_ANTHROPIC_API_KEY`).
 3. `409 { code: "duplicate_request" }` — `requestId` already recorded, or streaming right now.
 4. `402 { code: "answer_limit_reached", freesUpNext: { answers: 1, at } }` — the rolling 30 days
-   hold the plan's monthly answers; `at` is when the oldest of them ages out (`null` if none).
+   hold the plan's monthly answers (completed ledger rows only, see below); `at` is when the
+   oldest completed one ages out (`null` if none).
 5. `402 { code: "allowance_exhausted", freesUpNext: { amountUsd, at } }` — the rolling week's spend
    has reached the weekly allowance; same `freesUpNext` as `GET /v1/me`.
 6. `429 { code: "too_many_streams" }` — two answers are already streaming for this account. The
@@ -142,3 +158,11 @@ hangs up mid-stream is still charged: hanging up aborts the upstream call, and t
 input counts the stream reported plus the larger of the reported output and an estimate from the
 streamed text (3 characters a token), so platform spend is never under-counted. Prompt and answer
 text are never logged or stored.
+
+Each row also records `completed`. An answer that fails upstream (the `upstream_error` event) is
+written with `completed = false`: its cost counts toward the weekly allowance like any other, but
+it does not use up one of the month's answers. A client that hangs up was still being answered,
+so its row is `completed = true` and counts as an answer. The weekly spend counts every row; the
+monthly answer count and its `freesUpNext` count only completed rows. A failed answer's
+`requestId` is still recorded, so a retry after `upstream_error` must send a new one (the old one
+is a `409 duplicate_request`).

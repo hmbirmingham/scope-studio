@@ -4,17 +4,19 @@ const DAY_MS = 24 * 60 * 60 * 1000;
 
 // Records one platform-paid answer. The engine sends a request id with every
 // call, so a retry after a dropped connection is charged once, not twice.
+// `completed` is false for an answer that failed upstream: its cost still
+// counts against the allowance, but it is not one of the month's answers.
 // Returns false when the request was already recorded.
 export async function recordUsage(
-  { accountId, requestId, model, hard = false, inputTokens = 0, outputTokens = 0, webSearches = 0, costUsd, sources = [] },
+  { accountId, requestId, model, hard = false, inputTokens = 0, outputTokens = 0, webSearches = 0, costUsd, sources = [], completed = true },
   pool = getPool()
 ) {
   const { rowCount } = await pool.query(
     `INSERT INTO usage_ledger
-       (account_id, request_id, model, hard, input_tokens, output_tokens, web_searches, cost_usd, sources)
-     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+       (account_id, request_id, model, hard, input_tokens, output_tokens, web_searches, cost_usd, sources, completed)
+     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
      ON CONFLICT (request_id) DO NOTHING`,
-    [accountId, requestId, model, hard, inputTokens, outputTokens, webSearches, costUsd, sources]
+    [accountId, requestId, model, hard, inputTokens, outputTokens, webSearches, costUsd, sources, completed]
   );
   return rowCount === 1;
 }
@@ -33,11 +35,12 @@ export function answerMonthStart(now) {
   return new Date(now.getTime() - 30 * DAY_MS);
 }
 
-// What the platform has spent on an account, and how many answers it paid
-// for, since a given moment.
+// What the platform has spent on an account since a given moment, and how
+// many answers the person got. Spend counts every row, failed answers too,
+// because the platform paid for them; answers count only the completed ones.
 export async function usageSince(accountId, since, pool = getPool()) {
   const { rows } = await pool.query(
-    `SELECT COALESCE(sum(cost_usd), 0)::float8 AS spent_usd, count(*)::int AS answers
+    `SELECT COALESCE(sum(cost_usd), 0)::float8 AS spent_usd, (count(*) FILTER (WHERE completed))::int AS answers
      FROM usage_ledger
      WHERE account_id = $1 AND created_at >= $2`,
     [accountId, since]
@@ -70,14 +73,15 @@ export async function requestRecorded(requestId, pool = getPool()) {
   return rowCount > 0;
 }
 
-// The next answer to leave the rolling month: the oldest one inside it, and
-// the moment it ages out, which is when one more answer becomes available
-// again. Null when the month holds no answers.
+// The next answer to leave the rolling month: the oldest completed one inside
+// it, and the moment it ages out, which is when one more answer becomes
+// available again. A failed answer was never counted, so its aging out frees
+// nothing. Null when the month holds no answers.
 export async function answerFreesUpNext(accountId, now, pool = getPool()) {
   const { rows } = await pool.query(
     `SELECT created_at
      FROM usage_ledger
-     WHERE account_id = $1 AND created_at >= $2
+     WHERE account_id = $1 AND created_at >= $2 AND completed
      ORDER BY created_at ASC, id ASC
      LIMIT 1`,
     [accountId, answerMonthStart(now)]

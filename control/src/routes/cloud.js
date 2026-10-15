@@ -31,10 +31,27 @@ const router = Router();
 const ACCEPTED_FIELDS = new Set(['requestId', 'messages', 'cacheMarker', 'hard', 'sources']);
 const DECIDED_HERE = new Set(['model', 'max_tokens', 'maxTokens', 'effort', 'output_config', 'tools', 'tool_choice', 'webSearch', 'web_search', 'thinking']);
 const ROLES = new Set(['system', 'user', 'assistant']);
-// Prompts are text, plus the images and documents a plug-in may attach. Tool
-// blocks are left out: no tools are offered here, so one can only be an attempt
-// to reach something the plan does not include.
-const BLOCK_TYPES = new Set(['text', 'image', 'document']);
+// Prompts are text, plus the images a plug-in may attach, and each block may
+// carry only the keys listed for its type. Everything else a block can hold
+// upstream is a decision or a capability the client does not get: a
+// cache_control key would let it place caching breakpoints (and the cache
+// writes they bill) where the control plane did not, so caching is set only
+// through cacheMarker; citations, documents and tool blocks reach features no
+// plan here includes.
+const BLOCK_KEYS = {
+  text: new Set(['type', 'text']),
+  image: new Set(['type', 'source']),
+};
+const IMAGE_SOURCE_KEYS = {
+  base64: new Set(['type', 'media_type', 'data']),
+  url: new Set(['type', 'url']),
+};
+const IMAGE_MEDIA_TYPES = new Set(['image/jpeg', 'image/png', 'image/gif', 'image/webp']);
+const BASE64 = /^[A-Za-z0-9+/]+={0,2}$/;
+const MAX_IMAGE_URL = 2048;
+// Key and type names are echoed in errors only when they look like a name, so
+// an error can never carry text the client put in a key.
+const NAME = /^[A-Za-z_][A-Za-z0-9_]{0,63}$/;
 const SOURCE_NAME = /^[a-z][a-z0-9_]{0,31}$/;
 const MAX_SOURCES = 16;
 const MAX_CACHE_MARKER = 256;
@@ -81,14 +98,76 @@ function invalid(code, message) {
   return { error: { code, message } };
 }
 
-function contentProblem(content, role) {
+const nameOf = (value, otherwise) => (NAME.test(value) ? value : otherwise);
+
+// A key the client may not send is refused as field_not_allowed, like a
+// top-level field; a known key with a malformed value is invalid_request.
+function unknownKey(object, allowed, at) {
+  const key = Object.keys(object).find((name) => !allowed.has(name));
+  if (key === undefined) return null;
+  return invalid('field_not_allowed', `${at} may not carry ${nameOf(key, 'that key')}.`);
+}
+
+function imageSourceProblem(source, at) {
+  if (!isPlainObject(source) || typeof source.type !== 'string') {
+    return invalid('invalid_request', `${at}.source must be an object with a type.`);
+  }
+  const allowed = IMAGE_SOURCE_KEYS[source.type];
+  if (!allowed) {
+    return invalid('field_not_allowed', `${at}.source may be base64 or url, not ${nameOf(source.type, 'that type')}.`);
+  }
+  const extra = unknownKey(source, allowed, `${at}.source`);
+  if (extra) return extra;
+  if (source.type === 'base64') {
+    if (!IMAGE_MEDIA_TYPES.has(source.media_type)) {
+      return invalid('invalid_request', `${at}.source.media_type must be image/jpeg, image/png, image/gif or image/webp.`);
+    }
+    if (typeof source.data !== 'string' || source.data.length % 4 !== 0 || !BASE64.test(source.data)) {
+      return invalid('invalid_request', `${at}.source.data must be base64.`);
+    }
+    return null;
+  }
+  if (!isHttpsUrl(source.url)) {
+    return invalid('invalid_request', `${at}.source.url must be an https URL of at most ${MAX_IMAGE_URL} characters.`);
+  }
+  return null;
+}
+
+function isHttpsUrl(value) {
+  if (typeof value !== 'string' || value.length > MAX_IMAGE_URL) return false;
+  try {
+    return new URL(value).protocol === 'https:';
+  } catch {
+    return false;
+  }
+}
+
+function contentProblem(content, role, at) {
   if (typeof content === 'string') return null;
-  if (!Array.isArray(content) || content.length === 0) return 'must be a string or a non-empty array of content blocks';
-  for (const block of content) {
-    if (!isPlainObject(block) || typeof block.type !== 'string') return 'has a content block without a type';
-    if (!BLOCK_TYPES.has(block.type)) return `has a "${block.type}" block, which is not accepted here`;
-    if (role === 'system' && block.type !== 'text') return 'is a system message, which may only hold text';
-    if (block.type === 'text' && typeof block.text !== 'string') return 'has a text block without text';
+  if (!Array.isArray(content) || content.length === 0) {
+    return invalid('invalid_request', `${at} must be a string or a non-empty array of content blocks.`);
+  }
+  for (const [index, block] of content.entries()) {
+    const blockAt = `${at}[${index}]`;
+    if (!isPlainObject(block) || typeof block.type !== 'string') {
+      return invalid('invalid_request', `${blockAt} is a content block without a type.`);
+    }
+    const allowed = BLOCK_KEYS[block.type];
+    if (!allowed) {
+      return invalid('field_not_allowed', `${blockAt} is a ${nameOf(block.type, 'different')} block; only text and image blocks are accepted.`);
+    }
+    const extra = unknownKey(block, allowed, blockAt);
+    if (extra) return extra;
+    if (role === 'system' && block.type !== 'text') {
+      return invalid('invalid_request', `${blockAt} is in a system message, which may only hold text.`);
+    }
+    if (block.type === 'text' && typeof block.text !== 'string') {
+      return invalid('invalid_request', `${blockAt} is a text block without text.`);
+    }
+    if (block.type === 'image') {
+      const problem = imageSourceProblem(block.source, blockAt);
+      if (problem) return problem;
+    }
   }
   return null;
 }
@@ -104,7 +183,7 @@ export function parseCloudRequest(body) {
       'field_not_allowed',
       DECIDED_HERE.has(field)
         ? `${field} is decided by Scope Studio for your plan and cannot be sent.`
-        : `${field} is not part of a cloud request.`
+        : `${nameOf(field, 'That field')} is not part of a cloud request.`
     );
   }
 
@@ -124,8 +203,8 @@ export function parseCloudRequest(body) {
     if (Object.keys(message).some((key) => key !== 'role' && key !== 'content')) {
       return invalid('invalid_request', `messages[${index}] may only have a role and content.`);
     }
-    const problem = contentProblem(message.content, message.role);
-    if (problem) return invalid('invalid_request', `messages[${index}] ${problem}.`);
+    const problem = contentProblem(message.content, message.role, `messages[${index}].content`);
+    if (problem) return problem;
     if (message.role === 'system') systems += 1;
   }
   if (systems > 1) return invalid('invalid_request', 'messages may hold at most one system message.');
@@ -255,7 +334,12 @@ async function streamAnswer(req, res, { accountId, request, credential }) {
   }
 
   // The answer is charged whether it finished or not: a cancelled or failed
-  // answer was still billed for whatever the model read and wrote.
+  // answer was still billed for whatever the model read and wrote. Only a
+  // failure upstream spares the person one of their monthly answers: it is the
+  // platform's fault they got none. A client that hung up was being answered,
+  // and leaving it uncounted would make hanging up near the end a free answer.
+  const cancelled = upstream.signal.aborted;
+  const failedUpstream = Boolean(failure) && !cancelled;
   const usage = finished?.usage ?? partialUsage(seen, streamedChars);
   const cost = usage ? costUsd(model, usage) : null;
   if (usage) {
@@ -268,18 +352,19 @@ async function streamAnswer(req, res, { accountId, request, credential }) {
       outputTokens: usage.output_tokens,
       costUsd: cost,
       sources: request.sources,
+      completed: !failedUpstream,
     });
   }
 
   if (failure) {
     // A status or an error class only: the error's own text can quote the prompt.
-    const how = upstream.signal.aborted ? 'cancelled by the client' : 'failed upstream';
+    const how = cancelled ? 'cancelled by the client' : 'failed upstream';
     console.warn(`cloud: request ${request.requestId} ${how} (${failureKind(failure)}); usage ${usage ? 'recorded' : 'not reported'}`);
   }
 
   if (finished) {
     send({ done: true, usage: finished.usage, stopReason: finished.stopReason, model, costUsd: cost, economy: credential.economy });
-  } else if (!upstream.signal.aborted) {
+  } else if (!cancelled) {
     send({ error: describeError(failure), code: 'upstream_error' });
   }
   if (!res.writableEnded) res.end();
