@@ -44,3 +44,19 @@ export async function usageSince(accountId, since, pool = getPool()) {
   );
   return { spentUsd: rows[0].spent_usd, answers: rows[0].answers };
 }
+
+// The next spend to leave the rolling week: the oldest answer inside it, and
+// the moment it ages out. With no reset day to tell people, this is the
+// honest "more allowance on <date>" line. Null when the week holds no spend.
+export async function freesUpNext(accountId, now, pool = getPool()) {
+  const { rows } = await pool.query(
+    `SELECT cost_usd::float8 AS amount_usd, created_at
+     FROM usage_ledger
+     WHERE account_id = $1 AND created_at >= $2
+     ORDER BY created_at ASC, id ASC
+     LIMIT 1`,
+    [accountId, allowanceWeekStart(now)]
+  );
+  if (rows.length === 0) return null;
+  return { amountUsd: rows[0].amount_usd, at: new Date(rows[0].created_at.getTime() + 7 * DAY_MS) };
+}

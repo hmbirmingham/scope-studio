@@ -8,7 +8,8 @@ function createApp(env, { pool = getPool() } = {}) {
   const app = express();
   app.disable('x-powered-by');
   app.post('/v1/billing/webhook', express.raw({ type: '*/*', limit: '1mb' }), billingWebhook);
-  app.use(express.json());
+  // Platform cloud requests carry a packed prompt, larger than the 100kb default.
+  app.use(express.json({ limit: '2mb' }));
 
   // Railway holds a deploy back until this answers 200, so it checks the
   // database too: a control plane that cannot reach its ledger must not take
