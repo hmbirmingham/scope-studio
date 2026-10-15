@@ -5,7 +5,8 @@ build/
 .env.local
 *.log
 .DS_Store
-dev-notes/handoffs/
+# Plans and handoffs are working notes, never shipped.
+dev-notes/
 .vscode/
 *.pem
 coverage/

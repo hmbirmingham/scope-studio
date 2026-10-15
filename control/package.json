@@ -1,0 +1,25 @@
+{
+  "name": "scope-studio-control",
+  "version": "1.0.0",
+  "description": "Scope Studio control plane — accounts, billing and platform-paid cloud, hosted on Railway",
+  "main": "src/index.js",
+  "scripts": {
+    "start": "node src/index.js",
+    "dev": "node --watch src/index.js",
+    "test": "node --test --test-concurrency=1 \"test/**/*.test.js\"",
+    "test:unit": "node --test \"test/unit/**/*.test.js\"",
+    "migrate": "node src/db/migrate.js"
+  },
+  "keywords": [],
+  "author": "Hynes Birmingham",
+  "license": "ISC",
+  "type": "module",
+  "engines": {
+    "node": ">=26"
+  },
+  "dependencies": {
+    "dotenv": "^18.0.1",
+    "express": "^5.2.1",
+    "pg": "^8.23.0"
+  }
+}
