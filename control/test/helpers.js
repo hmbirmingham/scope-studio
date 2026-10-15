@@ -20,7 +20,7 @@ process.env.NODE_ENV = 'test';
 export async function startServer() {
   const pool = getPool();
   await migrate(pool, { log: () => {} });
-  await pool.query('TRUNCATE accounts, device_tokens, usage_ledger CASCADE');
+  await truncateAll(pool);
 
   const app = createApp(loadEnv());
   const server = await new Promise((resolve) => {
@@ -36,6 +36,14 @@ export async function startServer() {
       await pool.end();
     },
   };
+}
+
+// Every table a migration made, so a new one is cleaned without editing this.
+export async function truncateAll(pool) {
+  const { rows } = await pool.query(
+    `SELECT tablename FROM pg_tables WHERE schemaname = 'public' AND tablename <> 'schema_migrations'`
+  );
+  if (rows.length) await pool.query(`TRUNCATE ${rows.map((r) => `"${r.tablename}"`).join(', ')} CASCADE`);
 }
 
 export async function createAccount(pool, { email = 'test@scope.local', plan = 'free' } = {}) {

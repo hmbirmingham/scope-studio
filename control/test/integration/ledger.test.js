@@ -1,7 +1,7 @@
 import { after, before, beforeEach, test } from 'node:test';
 import assert from 'node:assert/strict';
 import { recordUsage, usageSince } from '../../src/models/ledger.js';
-import { createAccount, startServer } from '../helpers.js';
+import { createAccount, startServer, truncateAll } from '../helpers.js';
 
 let server;
 let account;
@@ -9,7 +9,7 @@ before(async () => {
   server = await startServer();
 });
 beforeEach(async () => {
-  await server.pool.query('TRUNCATE accounts, device_tokens, usage_ledger CASCADE');
+  await truncateAll(server.pool);
   account = await createAccount(server.pool, { plan: 'student' });
 });
 after(() => server.close());

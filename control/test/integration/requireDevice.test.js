@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import express from 'express';
 import { hashToken, newDeviceToken } from '../../src/auth/tokens.js';
 import { requireDevice } from '../../src/middleware/requireDevice.js';
-import { createAccount, startServer } from '../helpers.js';
+import { createAccount, startServer, truncateAll } from '../helpers.js';
 
 let server;
 let probe;
@@ -20,7 +20,7 @@ before(async () => {
   });
 });
 beforeEach(async () => {
-  await server.pool.query('TRUNCATE accounts, device_tokens, usage_ledger CASCADE');
+  await truncateAll(server.pool);
   account = await createAccount(server.pool, { plan: 'engineer' });
 });
 after(async () => {
