@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react';
 import { useIngest } from '../hooks/useIngest';
+import GitHubConnect from './GitHubConnect';
 
 function Progress({ job }) {
   if (!job) return null;
@@ -81,7 +82,7 @@ function CloudKey({ apiKey, onApiKeyChange, cloudModel, onCloudModelChange, choo
 }
 
 export default function SourcesOverlay({ open, onClose, onIngested, apiKey, onApiKeyChange, cloudModel, onCloudModelChange, chooseCloud }) {
-  const { connected, repos, job, error, loadRepos, ingest } = useIngest(onIngested);
+  const { connected, configured, repos, job, error, loadRepos, ingest, signIn, connect, cancelSignIn } = useIngest(onIngested);
   const [selected, setSelected] = useState(() => new Set());
 
   useEffect(() => {
@@ -120,12 +121,8 @@ export default function SourcesOverlay({ open, onClose, onIngested, apiKey, onAp
           chooseCloud={chooseCloud}
         />
 
-        {connected === false && (
-          <div className="inspector-block">
-            <a className="sources-connect" href="/api/plugins/github/authorize">
-              Connect GitHub
-            </a>
-          </div>
+        {(connected === false || signIn?.state === 'connected') && (
+          <GitHubConnect configured={configured} signIn={signIn} onConnect={connect} onCancel={cancelSignIn} />
         )}
 
         {error && <div className="sources-error">{error}</div>}

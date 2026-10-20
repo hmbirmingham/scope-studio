@@ -1,14 +1,24 @@
 import http from 'node:http';
 
+// The only key a dry benchmark run or a test ever sends. Not a credential: it
+// reaches nothing but this stand-in, which never checks it.
+export const FAKE_ANTHROPIC_KEY = 'fake-anthropic-test-key';
+
+// The error type the real API names for each status a test makes it return.
+const ERROR_TYPES = { 429: 'rate_limit_error', 529: 'overloaded_error' };
+
 // Speaks the Messages API's SSE shape so the cloud path can be tested without
 // a key and without spending anything. Records what it was sent.
 export async function startFakeAnthropic() {
   // `search`, when set, makes the first response run one web search and cite
   // its result; `pauseAfterSearch` ends that first response with pause_turn so
-  // the client has to resume it.
+  // the client has to resume it. `failAfter`, when set, answers that many
+  // requests and then fails every one after it with `failStatus` (a status
+  // code, or 'network' to drop the connection), the way an upstream outage
+  // lands partway through a run; `failModel` limits the outage to one model.
   const state = {
     requests: [], authHeaders: [], text: ['Cloud ', 'answer.'], status: 200, inputTokens: 1200, outputTokens: 40,
-    search: null, pauseAfterSearch: false,
+    search: null, pauseAfterSearch: false, failAfter: null, failStatus: 529, failModel: null,
   };
 
   const server = http.createServer(async (req, res) => {
@@ -22,6 +32,14 @@ export async function startFakeAnthropic() {
     if (sent.model === 'claude-haiku-4-5' && sent.output_config?.effort) {
       res.writeHead(400, { 'Content-Type': 'application/json' });
       return res.end(JSON.stringify({ type: 'error', error: { type: 'invalid_request_error', message: 'This model does not support the effort parameter.' } }));
+    }
+
+    const outage = state.failAfter != null && state.requests.length > state.failAfter;
+    if (outage && (!state.failModel || sent.model === state.failModel)) {
+      if (state.failStatus === 'network') return req.socket.destroy();
+      res.writeHead(state.failStatus, { 'Content-Type': 'application/json' });
+      const type = ERROR_TYPES[state.failStatus] ?? 'api_error';
+      return res.end(JSON.stringify({ type: 'error', error: { type, message: `stand-in ${type}` } }));
     }
 
     if (state.status !== 200) {

@@ -1,6 +1,6 @@
 import { Router } from 'express';
-import { randomBytes } from 'node:crypto';
 import requireAuth from '../../middleware/requireAuth.js';
+import { deviceFlowRouter } from '../../plugins/auth/deviceFlow.js';
 import githubPlugin from '../../plugins/github/index.js';
 import { getJob, presentJob, runningJobFor, startJob } from '../../plugins/jobs.js';
 import { listProjects } from '../../models/nodeStore.js';
@@ -17,42 +17,22 @@ function handleGitHubError(err, req, res, next) {
 
 function requireConnection(req, res) {
   if (req.session.githubToken) return true;
-  res.status(400).json({ error: 'GitHub not connected — call /authorize first' });
+  res.status(400).json({ error: 'GitHub not connected — connect GitHub first' });
   return false;
 }
 
 const router = Router();
 router.use(requireAuth);
 
+// `configured` lets the client say the engine has no GitHub app set up,
+// rather than offering a Connect button that can only fail.
 router.get('/status', (req, res) => {
-  res.json({ connected: Boolean(req.session.githubToken) });
+  res.json({ connected: Boolean(req.session.githubToken), configured: Boolean(process.env.GITHUB_CLIENT_ID) });
 });
 
-router.get('/authorize', (req, res, next) => {
-  try {
-    const state = randomBytes(16).toString('hex');
-    req.session.githubOAuthState = state;
-    res.redirect(githubPlugin.authenticate.getAuthorizeUrl(state));
-  } catch (err) {
-    next(err);
-  }
-});
-
-router.get('/callback', async (req, res, next) => {
-  try {
-    const { code, state } = req.query;
-    if (!state || state !== req.session.githubOAuthState) {
-      return res.status(400).json({ error: 'invalid or missing OAuth state' });
-    }
-    delete req.session.githubOAuthState;
-
-    const token = await githubPlugin.authenticate.exchangeCodeForToken(code);
-    req.session.githubToken = token;
-    res.json({ connected: true });
-  } catch (err) {
-    next(err);
-  }
-});
+// Sign-in: POST /device/start, then POST /device/poll until it settles. The
+// device code stays in the session; see plugins/auth/deviceFlow.js.
+router.use('/device', deviceFlowRouter({ provider: githubPlugin.authenticate, tokenKey: 'githubToken' }));
 
 // The picker: every repository the account can see, flagged with whether it is
 // already on the map, so ingesting is a choice rather than all-or-nothing.
@@ -108,7 +88,7 @@ router.get('/jobs/:id', (req, res) => {
 
 router.post('/sync', async (req, res, next) => {
   if (!req.session.githubToken) {
-    return res.status(400).json({ error: 'GitHub not connected — call /authorize first' });
+    return res.status(400).json({ error: 'GitHub not connected — connect GitHub first' });
   }
   const since = req.body.since ? new Date(req.body.since) : null;
   try {
