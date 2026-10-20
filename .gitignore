@@ -10,3 +10,4 @@ dev-notes/
 .vscode/
 *.pem
 coverage/
+server/benchmarks/results/
