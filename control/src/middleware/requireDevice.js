@@ -1,3 +1,4 @@
+import { effectivePlan } from '../auth/devMode.js';
 import { hashToken, looksLikeDeviceToken } from '../auth/tokens.js';
 import { getPool } from '../db/pool.js';
 import { sendError } from '../lib/errors.js';
@@ -14,13 +15,16 @@ export function requireDevice({ pool = getPool() } = {}) {
       `UPDATE device_tokens d SET last_used_at = now()
        FROM accounts a
        WHERE d.token_hash = $1 AND d.revoked_at IS NULL AND a.id = d.account_id
-       RETURNING d.id AS device_id, a.id, a.email, a.plan`,
+       RETURNING d.id AS device_id, d.dev_mode, a.id, a.email, a.plan`,
       [hashToken(token)]
     );
     if (rows.length === 0) return unauthenticated(res);
 
-    const { device_id: deviceId, ...account } = rows[0];
-    req.account = account;
+    // A dev-mode device runs as Engineer only while its email is still on
+    // DEV_MODE_EMAILS, checked here on every request; the stored plan is the
+    // billed one and is never changed for dev mode.
+    const { device_id: deviceId, dev_mode: deviceDevMode, id, email, plan } = rows[0];
+    req.account = { id, email, ...effectivePlan({ plan, email, devMode: deviceDevMode }) };
     req.deviceId = deviceId;
     next();
   };

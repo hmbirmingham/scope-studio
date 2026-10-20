@@ -91,6 +91,7 @@ jobs:
         env:
           NODE_ENV: test
           TEST_DATABASE_URL: postgresql://scope@localhost:5432/scope_control_test
+          CONTROL_SESSION_SECRET: ${{ secrets.SESSION_SECRET }}
 
   client:
     runs-on: ubuntu-latest
