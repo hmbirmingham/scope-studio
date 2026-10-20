@@ -100,25 +100,78 @@ Request:
 `sources` names the plug-ins whose nodes are in the packed context (`github`, `local_folder`,
 later `kicad`, `zotero`, …). It is stored on the ledger row so cost per answer can be measured per
 plug-in. Unknown names are accepted (plug-ins ship in the engine first); at most 16, each
-`^[a-z][a-z0-9_]{0,31}$`, else `400 { code: "invalid_sources" }`.
+`^[a-z][a-z0-9_]{0,31}$`, else `400 { code: "invalid_sources" }`. Repeated names are stored once.
+
+Field rules (else `400 { code: "invalid_request" }`, naming the field, never echoing content):
+- `requestId`: string, 8–128 characters. Unique across the whole ledger, not per account.
+- `messages`: non-empty; each is exactly `{ role, content }`; `content` is a string or a non-empty
+  array of content blocks (below). At most one `system` message, text only; at least one `user`
+  message.
+- `cacheMarker`: optional string, at most 256 characters. `hard`: optional boolean, default `false`.
+
+Content blocks carry exactly the keys listed for their type:
+- `{ "type": "text", "text": "…" }`
+- `{ "type": "image", "source": { "type": "base64", "media_type": "image/jpeg" | "image/png" |
+  "image/gif" | "image/webp", "data": "<base64>" } }`
+- `{ "type": "image", "source": { "type": "url", "url": "https://…" } }` (https only, at most 2,048
+  characters)
+
+Any other block type (`document`, `tool_use`, `tool_result`, `thinking`, …), any other source type,
+and any other key on a block or source (`cache_control`, `citations`, …) is refused with
+`400 { code: "field_not_allowed" }`. A listed key with a malformed value (a text block without
+text, data that is not base64, an unlisted media type, a URL that is not https) is
+`invalid_request`. Caching breakpoints are the control plane's decision, set only through
+`cacheMarker`: the client cannot place a `cache_control` (or the cache writes it bills) anywhere
+itself. Key and type names are echoed in the error only when they look like an identifier.
 
 The control plane decides everything else: whether the plan may use platform cloud, model
 (`plans.js` lives here as the authority), effort, `max_tokens`, economy/brevity. Web search is
-never available here (it is Key Pro only, on the user's own key, called from the engine).
+never available here (it is Key Pro only, on the user's own key, called from the engine). Any
+field not listed above — `model`, `max_tokens`, `effort`, `output_config`, `tools`,
+`tool_choice`, `webSearch`, or anything else — is refused with `400 { code: "field_not_allowed" }`
+rather than ignored.
 
-Refusals happen before any upstream call, as JSON:
-- `403 { code: "cloud_not_in_plan" }` — Free or Key Pro (Key Pro uses its own key locally).
-- `402 { code: "answer_limit_reached" }` / `402 { code: "allowance_exhausted" }` — include
-  `freesUpNext` where it applies.
-- `503 { code: "platform_cloud_unavailable" }` — no platform key configured.
-- `409 { code: "duplicate_request" }` — `requestId` already recorded.
+Model and ceiling follow `plans.js`: the plan's model for `hard` or not; from half the week's
+allowance spent (`economy`), Opus steps down to Sonnet, `max_tokens` drops from 2,048 to 700 and
+a brevity note is appended after the cache breakpoint.
 
-Success is `text/event-stream`. Each event is `data: <json>\n\n`, mirroring the engine's
-`streamChat` yields so the engine can swap generators without touching the chat route:
+Refusals happen before any upstream call, as JSON, checked in this order:
+1. `403 { code: "cloud_not_in_plan" }` — Free or Key Pro (Key Pro uses its own key locally).
+2. `503 { code: "platform_cloud_unavailable" }` — no platform key configured
+   (`PLATFORM_ANTHROPIC_API_KEY`).
+3. `409 { code: "duplicate_request" }` — `requestId` already recorded, or streaming right now.
+4. `402 { code: "answer_limit_reached", freesUpNext: { answers: 1, at } }` — the rolling 30 days
+   hold the plan's monthly answers (completed ledger rows only, see below); `at` is when the
+   oldest completed one ages out (`null` if none).
+5. `402 { code: "allowance_exhausted", freesUpNext: { amountUsd, at } }` — the rolling week's spend
+   has reached the weekly allowance; same `freesUpNext` as `GET /v1/me`.
+6. `429 { code: "too_many_streams" }` — two answers are already streaming for this account. The
+   cap also bounds how far concurrent answers can overshoot the allowance (each passed the check
+   before any was charged). It is counted per control plane instance.
+
+Success is `text/event-stream`, headers flushed at once. Each event is `data: <json>\n\n`,
+mirroring the engine's `streamChat` yields so the engine can swap one answer stream for the other
+without touching the chat route:
 - `{ "text": "…" }` — repeated.
-- `{ "done": true, "usage": { "input_tokens", "output_tokens", … }, "stopReason": "end_turn",
-     "model": "claude-sonnet-5", "costUsd": 0.0123, "economy": false }` — last on success.
+- `{ "done": true, "usage": { "input_tokens", "output_tokens", "cache_creation_input_tokens",
+     "cache_read_input_tokens" }, "stopReason": "end_turn", "model": "claude-sonnet-5",
+     "costUsd": 0.0123, "economy": false }` — last on success. `costUsd` includes cache writes
+  (1.25× input) and reads (0.1× input).
 - `{ "error": "<sentence>", "code": "upstream_error" }` — last on failure after streaming began.
+  The sentence is chosen from the kind of failure; upstream error text never reaches the engine.
 
-The ledger row is written once, when the upstream message completes, with the request id.
-Prompt and answer text are never logged or stored.
+The ledger row is written once per request id, before the `done` event is sent, so the next
+request is checked against it. `input_tokens` on the row is everything the model read (fresh,
+cache write and cache read); `cost_usd` prices each part. An answer that fails or whose client
+hangs up mid-stream is still charged: hanging up aborts the upstream call, and the row records the
+input counts the stream reported plus the larger of the reported output and an estimate from the
+streamed text (3 characters a token), so platform spend is never under-counted. Prompt and answer
+text are never logged or stored.
+
+Each row also records `completed`. An answer that fails upstream (the `upstream_error` event) is
+written with `completed = false`: its cost counts toward the weekly allowance like any other, but
+it does not use up one of the month's answers. A client that hangs up was still being answered,
+so its row is `completed = true` and counts as an answer. The weekly spend counts every row; the
+monthly answer count and its `freesUpNext` count only completed rows. A failed answer's
+`requestId` is still recorded, so a retry after `upstream_error` must send a new one (the old one
+is a `409 duplicate_request`).
