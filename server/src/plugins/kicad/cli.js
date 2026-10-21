@@ -136,10 +136,17 @@ export function createChecker({ sandbox, probe = createToolProbe(), makeScratch 
       const args = kind === 'erc'
         ? ['sch', 'erc', '--format', 'json', '--units', 'mm', '--severity-all', '--output', report, join(work, rel)]
         : ['pcb', 'drc', '--format', 'json', '--units', 'mm', '--severity-all', '--output', report, join(work, rel)];
+      // kicad-cli writes its settings and caches on start; inside the
+      // sandbox only the scratch directory is writable, so they go there.
+      const config = join(scratch.scratch, 'config');
+      const cache = join(scratch.scratch, 'cache');
+      await mkdir(config, { recursive: true });
+      await mkdir(cache, { recursive: true });
       const result = await sandbox.run({
         command: tool.path ?? 'kicad-cli',
         args,
         cwd: work,
+        env: { XDG_CONFIG_HOME: config, XDG_CACHE_HOME: cache },
         writable: [scratch.scratch],
         protect: ctx.localPath ? [ctx.localPath] : [],
         signal: ctx.signal,
@@ -181,15 +188,27 @@ export function createChecker({ sandbox, probe = createToolProbe(), makeScratch 
     }
     const named = kind === 'erc' ? result?.output?.schematic : result?.output?.board;
     let targets;
+    // Designs that exist but are not checked: the scan of the folder stopped
+    // early, or there are more than MAX_DESIGNS. A result that leaves any
+    // out is never a pass.
+    let scanTruncated = false;
+    let skipped = 0;
     if (typeof named === 'string' && named.endsWith(ext)) {
       targets = [await chooseDesign(root, { requested: named, ext })];
     } else {
-      const { files } = await listKicadFiles(root);
+      const { files, truncated } = await listKicadFiles(root);
+      scanTruncated = truncated;
       const candidates = files.filter((file) => file.endsWith(ext));
       targets = kind === 'erc' ? await rootSchematics(root, candidates) : candidates;
     }
-    if (targets.length === 0) return { ok: true, unavailable: true, detail: `the project has no ${ext} file to check` };
-    if (targets.length > MAX_DESIGNS) targets = targets.slice(0, MAX_DESIGNS);
+    if (targets.length === 0) {
+      if (scanTruncated) return { ok: false, unverified: true, detail: `${kind.toUpperCase()} not run: the project folder has too many files to scan, and no ${ext} file was found before the scan stopped` };
+      return { ok: true, unavailable: true, detail: `the project has no ${ext} file to check` };
+    }
+    if (targets.length > MAX_DESIGNS) {
+      skipped = targets.length - MAX_DESIGNS;
+      targets = targets.slice(0, MAX_DESIGNS);
+    }
 
     const tool = await probe();
     if (!tool.available) return { ok: true, unavailable: true, detail: `${kind.toUpperCase()} not run: ${tool.reason}` };
@@ -205,9 +224,17 @@ export function createChecker({ sandbox, probe = createToolProbe(), makeScratch 
 
     const checks = [];
     for (const target of targets) checks.push(await checkOne(kind, root, target, ctx, tool));
+    const passed = checks.every((entry) => entry.ok);
+    const partial = skipped > 0 || scanTruncated;
+    const notes = [];
+    if (skipped > 0) notes.push(`${kind.toUpperCase()} checked ${checks.length} of ${checks.length + skipped} designs; ${skipped} not checked (at most ${MAX_DESIGNS} run per step).`);
+    if (scanTruncated) notes.push(`${kind.toUpperCase()} checked only the designs found before the folder scan stopped (too many files or folders too deep); others may be unchecked.`);
     return {
-      ok: checks.every((entry) => entry.ok),
-      detail: checks.map((entry) => entry.detail).join('\n\n'),
+      ok: passed && !partial,
+      ...(passed && partial ? { unverified: true } : {}),
+      ...(skipped > 0 ? { skipped } : {}),
+      ...(scanTruncated ? { truncated: true } : {}),
+      detail: [...notes, ...checks.map((entry) => entry.detail)].join('\n\n'),
       tool: 'kicad-cli',
       version: tool.version ?? null,
       checks: checks.map(({ violations, ...entry }) => entry),

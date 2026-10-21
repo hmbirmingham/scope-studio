@@ -123,6 +123,8 @@ describe('ERC and DRC verifiers', () => {
     assert.ok(call.input.startsWith(call.writable[0]));
     assert.ok(!call.input.startsWith(FIXTURES), 'kicad-cli never sees the project folder itself');
     assert.equal(call.readOnly, undefined);
+    // KiCad's settings and caches land in the scratch directory too.
+    assert.deepEqual(call.env, { XDG_CONFIG_HOME: join(call.writable[0], 'config'), XDG_CACHE_HOME: join(call.writable[0], 'cache') });
     assert.deepEqual(call.protect, [join(FIXTURES, 'ldo-led')]);
     assert.ok(!existsSync(call.writable[0]), 'the scratch copy is removed');
   });
@@ -169,6 +171,45 @@ describe('ERC and DRC verifiers', () => {
     const garbled = await checker(fakeSandbox({ reply: { report: '{"sheets": ' } })).check('erc', { output: {} }, ctxFor('ldo-led'));
     assert.equal(garbled.ok, false);
     assert.match(garbled.detail, /unreadable report/);
+  });
+
+  // A project folder in a scratch directory holding `boards` copies of the
+  // fixture board, plus `padding` empty project files.
+  function manyBoards(boards, padding = 0) {
+    const dir = mkdtempSync(join(tmpdir(), 'scope-kicad-many-'));
+    scratches.push(dir);
+    const board = readFileSync(join(FIXTURES, 'ldo-led', 'ldo-led.kicad_pcb'));
+    for (let i = 0; i < boards; i++) writeFileSync(join(dir, `b${String(i).padStart(2, '0')}.kicad_pcb`), board);
+    for (let i = 0; i < padding; i++) writeFileSync(join(dir, `z${String(i).padStart(4, '0')}.kicad_pro`), '{}');
+    return { localPath: dir, project: 'p' };
+  }
+  const cleanDrc = { report: { kicad_version: '8.0.5', violations: [], unconnected_items: [], schematic_parity: [] } };
+
+  test('more designs than one step checks: the clean ones checked are not a pass', async () => {
+    const sandbox = fakeSandbox({ reply: cleanDrc });
+    const outcome = await checker(sandbox).check('drc', { output: {} }, manyBoards(11));
+    assert.equal(sandbox.calls.length, 10);
+    assert.equal(outcome.ok, false);
+    assert.equal(outcome.unverified, true);
+    assert.equal(outcome.skipped, 1);
+    assert.match(outcome.detail, /^DRC checked 10 of 11 designs; 1 not checked/);
+
+    // Ten boards fit, and all clean is a pass.
+    const ten = await checker(fakeSandbox({ reply: cleanDrc })).check('drc', { output: {} }, manyBoards(10));
+    assert.equal(ten.ok, true, ten.detail);
+    assert.equal(ten.unverified, undefined);
+  });
+
+  test('a folder scan that stopped early is not a pass, and finding nothing in it is not "nothing to check"', async () => {
+    // The scan lists at most 500 files; the board sorts first.
+    const outcome = await checker(fakeSandbox({ reply: cleanDrc })).check('drc', { output: {} }, manyBoards(1, 500));
+    assert.deepEqual([outcome.ok, outcome.unverified, outcome.truncated], [false, true, true]);
+    assert.match(outcome.detail, /folder scan stopped/);
+
+    const sandbox = fakeSandbox({ reply: cleanDrc });
+    const empty = await checker(sandbox).check('erc', { output: {} }, manyBoards(0, 501));
+    assert.deepEqual([empty.ok, empty.unverified, empty.unavailable], [false, true, undefined]);
+    assert.equal(sandbox.calls.length, 0);
   });
 
   test('nothing to check is unavailable; a path outside the project is refused', async () => {
