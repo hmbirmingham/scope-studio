@@ -200,8 +200,27 @@ describe('the task catalog', () => {
     assert.match(readFileSync(join(FIXTURES_DIR, 'README.md'), 'utf8'), /written for this benchmark, MIT/);
   });
 
-  test('KiCad, research, physics and CAD are pending gates that say what makes them ready', () => {
-    for (const kind of ['kicad', 'research', 'physics', 'cad']) {
+  test('the research task is ready: a paper set, an answer key and a scripted dry run', () => {
+    const research = TASKS.filter((entry) => entry.kind === 'research');
+    assert.ok(research.length >= 1);
+    for (const entry of research) {
+      assert.equal(entry.status, 'ready');
+      assert.equal(entry.check.kind, 'answer');
+      const library = JSON.parse(readFileSync(join(fixturePath(entry), 'library.json'), 'utf8'));
+      assert.ok(library.items.length >= 5, `${entry.id} has at least five papers`);
+      assert.ok(library.items.some((item) => item.citationKey === entry.check.citekey), 'the paper with the answer is in the set');
+      for (const item of library.items) assert.ok(existsSync(join(fixturePath(entry), item.attachments[0].path)), item.citationKey);
+      assert.match(readFileSync(join(fixturePath(entry), 'README.md'), 'utf8'), /CC0/);
+      assert.ok(entry.dry.actions.every((action) => action.capability.startsWith('research.')));
+      assert.match(entry.dry.summary, new RegExp(`\\[@${entry.check.citekey}\\]`));
+    }
+    const broken = { ...research[0], check: { kind: 'answer', method: 'Kelp' } };
+    assert.match(validateTask(broken).join(), /answer against a key/);
+    assert.match(validateTask({ ...research[0], fixture: 'nope' }).join(), /missing its library\.json/);
+  });
+
+  test('KiCad, physics and CAD are pending gates that say what makes them ready', () => {
+    for (const kind of ['kicad', 'physics', 'cad']) {
       const gates = TASKS.filter((entry) => entry.kind === kind);
       assert.ok(gates.length >= 1, kind);
       for (const gate of gates) {

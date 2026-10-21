@@ -1,0 +1,137 @@
+{
+  "config": {
+    "label": "BetterBibTeX JSON"
+  },
+  "items": [
+    {
+      "itemType": "journalArticle",
+      "itemKey": "HARB0001",
+      "citationKey": "ito2020harbor",
+      "title": "The Harbor Benchmark for Noisy Speech",
+      "abstractNote": "We introduce Harbor, a benchmark of transcribed speech recorded in noisy ports, and report baseline word error rates.",
+      "date": "2020",
+      "DOI": "10.5555/harbor.0001",
+      "creators": [
+        {
+          "firstName": "Kenji",
+          "lastName": "Ito",
+          "creatorType": "author"
+        }
+      ],
+      "attachments": [
+        {
+          "itemKey": "HARBPDF1",
+          "path": "pdfs/ito2020harbor.pdf",
+          "contentType": "application/pdf"
+        }
+      ],
+      "notes": [],
+      "relations": {}
+    },
+    {
+      "itemType": "journalArticle",
+      "itemKey": "TIDE0002",
+      "citationKey": "novak2021tidal",
+      "title": "Tidal: Convolutional Acoustic Models for Noisy Speech",
+      "abstractNote": "Tidal stacks dilated convolutions to model long acoustic context in noisy recordings.",
+      "date": "2021",
+      "DOI": "10.5555/harbor.0002",
+      "creators": [
+        {
+          "firstName": "Eva",
+          "lastName": "Novak",
+          "creatorType": "author"
+        }
+      ],
+      "attachments": [
+        {
+          "itemKey": "TIDEPDF2",
+          "path": "pdfs/novak2021tidal.pdf",
+          "contentType": "application/pdf"
+        }
+      ],
+      "notes": [],
+      "relations": {}
+    },
+    {
+      "itemType": "journalArticle",
+      "itemKey": "KELP0003",
+      "citationKey": "osei2022kelp",
+      "title": "Kelp: Streaming Transformers for Speech in Noise",
+      "abstractNote": "Kelp is a streaming transformer with a noise-aware front end.",
+      "date": "2022",
+      "DOI": "10.5555/harbor.0003",
+      "creators": [
+        {
+          "firstName": "Ama",
+          "lastName": "Osei",
+          "creatorType": "author"
+        },
+        {
+          "firstName": "Luis",
+          "lastName": "Ortega",
+          "creatorType": "author"
+        }
+      ],
+      "attachments": [
+        {
+          "itemKey": "KELPPDF3",
+          "path": "pdfs/osei2022kelp.pdf",
+          "contentType": "application/pdf"
+        }
+      ],
+      "notes": [],
+      "relations": {}
+    },
+    {
+      "itemType": "journalArticle",
+      "itemKey": "REEF0004",
+      "citationKey": "park2022reef",
+      "title": "Reef: Data Augmentation for Noisy Speech",
+      "abstractNote": "Reef mixes recorded engine and wind noise into training audio.",
+      "date": "2022",
+      "DOI": "10.5555/harbor.0004",
+      "creators": [
+        {
+          "firstName": "Ji-woo",
+          "lastName": "Park",
+          "creatorType": "author"
+        }
+      ],
+      "attachments": [
+        {
+          "itemKey": "REEFPDF4",
+          "path": "pdfs/park2022reef.pdf",
+          "contentType": "application/pdf"
+        }
+      ],
+      "notes": [],
+      "relations": {}
+    },
+    {
+      "itemType": "journalArticle",
+      "itemKey": "DRFT0005",
+      "citationKey": "silva2023drift",
+      "title": "Drift: Self-Training at Scale for Speech",
+      "abstractNote": "Drift self-trains on unlabelled audio and approaches a 7% word error rate on noisy benchmarks.",
+      "date": "2023",
+      "DOI": "10.5555/harbor.0005",
+      "creators": [
+        {
+          "firstName": "Rita",
+          "lastName": "Silva",
+          "creatorType": "author"
+        }
+      ],
+      "attachments": [
+        {
+          "itemKey": "DRFTPDF5",
+          "path": "pdfs/silva2023drift.pdf",
+          "contentType": "application/pdf"
+        }
+      ],
+      "notes": [],
+      "relations": {}
+    }
+  ]
+}

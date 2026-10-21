@@ -1,0 +1,60 @@
+%PDF-1.4
+1 0 obj
+<< /Type /Catalog /Pages 2 0 R >>
+endobj
+2 0 obj
+<< /Type /Pages /Kids [5 0 R 7 0 R] /Count 2 >>
+endobj
+3 0 obj
+<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica /Encoding /WinAnsiEncoding >>
+endobj
+4 0 obj
+<< /Length 239 >>
+stream
+BT
+/F1 11 Tf
+14 TL
+72 740 Td
+(The Harbor Benchmark for Noisy Speech) Tj T*
+(Kenji Ito) Tj T*
+(Harbor holds 120 hours of speech recorded on docks and ships.) Tj T*
+(Every system is scored by word error rate on the Harbor test set.) Tj T*
+ET
+endstream
+endobj
+5 0 obj
+<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Resources << /Font << /F1 3 0 R >> >> /Contents 4 0 R >>
+endobj
+6 0 obj
+<< /Length 202 >>
+stream
+BT
+/F1 11 Tf
+14 TL
+72 740 Td
+(3 Baselines) Tj T*
+(Table 1: Word error rate on the Harbor benchmark.) Tj T*
+(Hidden Markov baseline 14.2) Tj T*
+(Recurrent baseline 11.6) Tj T*
+(Lower is better.) Tj T*
+ET
+endstream
+endobj
+7 0 obj
+<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Resources << /Font << /F1 3 0 R >> >> /Contents 6 0 R >>
+endobj
+xref
+0 8
+0000000000 65535 f 
+0000000009 00000 n 
+0000000058 00000 n 
+0000000121 00000 n 
+0000000218 00000 n 
+0000000508 00000 n 
+0000000634 00000 n 
+0000000887 00000 n 
+trailer
+<< /Size 8 /Root 1 0 R >>
+startxref
+1013
+%%EOF

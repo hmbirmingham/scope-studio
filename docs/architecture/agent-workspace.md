@@ -593,7 +593,14 @@ the tokens run (local, $0) more than from how many there are. The dry run
 measures the harness and the economics, not model quality; that is what
 `--live-local` and `--live` are for.
 
-KiCad, research, physics and CAD tasks are defined as pending acceptance gates
+A research task (`research-cited-summary`) runs too: its paper set is
+ingested into the graph for each arm, the Scope arms run as a Researcher and
+the baselines get the Researcher's tools, and the check reads the final
+answer against the task's key (it must name the method, cite the paper by
+citekey and name the table, and every citation in it must resolve to an
+ingested paper).
+
+KiCad, physics and CAD tasks are defined as pending acceptance gates
 (why each is pending and which plug-in and verifier make it ready) and are
 listed in every report, never run and never counted as failures.
 
@@ -634,3 +641,48 @@ capabilities, verifiers, fixtures and benchmark tasks, and one line in
 
 Reserved migration numbers: KiCad 040–049, research 050–059, physics 060–069,
 CAD 070–079.
+
+### Research (`server/src/plugins/research/`)
+
+**Ingest** (`POST /api/plugins/research/ingest { path, project?, privacy?,
+storageDir? }` → 202 job, polled at `GET /api/plugins/research/jobs/:id`;
+`GET /api/plugins/research/status` says whether pdftotext is installed).
+`path` is an absolute path to Zotero's `zotero.sqlite` (copied, then opened
+read-only with `node:sqlite`, so Zotero's lock never matters; attachments are
+read from the `storage/` folder beside it unless `storageDir` says otherwise)
+or a Better BibTeX JSON export. Items become `paper` nodes, notes `note`
+nodes (`part_of` their paper), PDF pages `excerpt` nodes `part_of` their
+paper (text from `pdftotext`, run with `execFile`, a fixed argument list, a
+time limit and an output cap; chunked within a page, never across one), and
+`dc:relation` / `cito:cites` relations `cites` edges. Source `zotero`,
+`project` default `zotero`, privacy default `local` (the user may choose
+`cloud`), external ids `<project>/item/<key>`, `<project>/note/<key>`,
+`<project>/item/<key>/pdf/<attachment>/p<page>c<chunk>`. Migration 050 adds
+`research_items` (one row per paper, note or excerpt node: citekey, DOI,
+title, authors, year, attachments; an excerpt's page and exact text), which
+citations and quotations are checked against. Ingesting again updates in
+place and removes what the library no longer holds; without pdftotext papers
+and notes still ingest and any page text from an earlier ingest is kept.
+
+| Capability | Permission | Tags | What it does |
+|---|---|---|---|
+| `research.sweep` | `read_graph` (source `zotero`) | `research` | Ranked papers for a question, each with the excerpts (page, text) that make it relevant. Lexical and deterministic. |
+| `research.extract` | `read_graph` (source `zotero`) | `research` | An extraction table: for given columns, one row per paper; a cell is kept only with the excerpt, page and a quote that is verbatim in that excerpt, otherwise it is empty and marked unsupported. The model only reads. |
+| `research.related_work` | `read_graph` (source `zotero`) | `research` | A related-work paragraph drafted through `ctx.model` from excerpts only, citing `[@citekey]` and quoting `"…" [@citekey, p. N]`. |
+| `research.web_search` | `web` | `research`, `web` | Web search through a provider-neutral interface (`{ name, search({ query, maxResults, signal }) }`); a SearXNG adapter is chosen by `SEARXNG_URL`. With no provider it refuses (`web_search_unavailable`); offline it refuses (`offline`). |
+
+The first three run the verifiers `research.citations_resolve` (every citekey
+and DOI in the output and its artifacts resolves to a paper the agent may
+read; a draft may cite only the papers whose excerpts it was given, and must
+cite something) and `research.quotes_match` (every quotation, structured or
+in the text, appears verbatim after whitespace and typographic folding in
+the excerpt or page it cites; elisions `...` match in order; a quotation
+without a citation must come from a paper the result cites). A paper with no
+stored page text is checked against its PDF with pdftotext; without the tool
+that quotation is reported `unavailable`, never passed.
+
+A capability that sends library text to `ctx.model` (extract, related work)
+refuses with `private_sources` when any of that text is `local` and the
+agent could reach the cloud (online, and `cloud_model` not denied for it),
+because the model router decides by the step's slice, not by what the
+capability read.
