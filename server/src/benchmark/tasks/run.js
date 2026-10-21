@@ -61,7 +61,7 @@ export function assumptions(mode) {
       ? 'counted from the prompts actually built, at four characters a token (the corpus counts nodes the same way)'
       : 'as the model reported them; prompt sizes for the curve are the same four-characters-a-token estimate when a model reports none',
     replies: mode === 'dry' ? 'scripted: both arms play the same capability calls in the same order (catalog.js dry.actions)' : 'chosen by the models',
-    completion: 'objective only: the task check (for code, the fixture’s test script with its original tests restored, run in the OS sandbox on the result; for research, the final answer against the task’s key, with every citation resolving to an ingested paper)',
+    completion: 'objective only: the task check (for code, the fixture’s test script with its original tests restored, run in the OS sandbox on the result; for research, the final answer against the task’s key, with every citation resolving to an ingested paper; for physics, the last verified computation within tolerance of a reference kept out of the fixture)',
     prices: 'USD per million tokens from lib/anthropic.js; cache writes at 1.25x input, cache reads at 0.1x input',
     baseline: {
       loop: 'full transcript: every turn re-sends the system prompt, the tool list and the whole conversation; one tool call per turn',
@@ -71,7 +71,7 @@ export function assumptions(mode) {
       contextWindowTokens: BASELINE_WINDOW_TOKENS,
     },
     scope: {
-      runner: 'executeRun with the registered plug-ins, the run sandbox and the OS sandbox; agent level sandboxed, role Debugger (code tasks) or Researcher (research tasks)',
+      runner: 'executeRun with the registered plug-ins, the run sandbox and the OS sandbox; agent level sandboxed, role Debugger (code tasks), Researcher (research tasks) or Physicist (physics tasks)',
       memory: `the graph: each step reads one packed slice of at most ${SLICE_TOKENS} tokens and ${SLICE_NODES} nodes, never a transcript`,
       localCost: 'local model calls cost $0 (electricity and hardware not counted)',
       cloud: `scope_local_cloud runs on the ${SCOPE_CLOUD_PLAN} plan's rules: planning and hard steps may use the platform model it would pick, priced without caching`,
@@ -187,7 +187,7 @@ export async function runTaskBenchmark({
           try {
             const check = task.check.kind === 'answer'
               ? await answerCheck(task, { answer: result.answer, ownerId: owner, project: result.project, db })
-              : await objectiveCheck(task, { resultDir: result.resultDir, workspace, label: arm.name, ...(sandbox ? { sandbox } : {}) });
+              : await objectiveCheck(task, { resultDir: result.resultDir, answers: result.answers, workspace, label: arm.name, ...(sandbox ? { sandbox } : {}) });
             row = taskRow({ task, arm, result: { ...result, check } });
           } catch (err) {
             row = errorRow(task, arm, err);

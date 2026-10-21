@@ -9,9 +9,11 @@ import { outputText } from '../../workspace/runner/writeBack.js';
 import { createSandbox, removeSandbox } from '../../workspace/sandbox/index.js';
 import { withTranscriptBreakpoints } from '../endurance/arms.js';
 import { estimateTokens, priceRequest, promptTokens, worstCaseUsd } from '../endurance/economics.js';
+import { problemContent } from '../../plugins/physics/ingest.js';
+import { problemOf } from './catalog.js';
 import { createCallLog, createScript } from './models.js';
 import { prepareLibrary } from './research.js';
-import { ROLE_FOR_KIND } from './scopeArm.js';
+import { ROLE_FOR_KIND, roleFor } from './scopeArm.js';
 import { prepareProject, snapshotTree } from './workspace.js';
 
 // The cloud-agent baseline: the standard tool loop. The model sees the task,
@@ -42,10 +44,11 @@ function toolSpec(capability) {
 const INTRO = {
   code: 'You work in a copy of a software project and fix the task you are given, one tool call per turn.',
   research: 'You answer the task you are given from the papers in a reference library, one tool call per turn.',
+  physics: 'You solve the physics problem you are given with the tools below, one tool call per turn.',
 };
 
-export function baselineSystem(capabilities, kind = 'code') {
-  const role = roleTemplate(ROLE_FOR_KIND[kind] ?? ROLE_FOR_KIND.code);
+export function baselineSystem(capabilities, kind = 'code', roleName = ROLE_FOR_KIND[kind] ?? ROLE_FOR_KIND.code) {
+  const role = roleTemplate(roleName);
   return [
     role.embodiment,
     INTRO[kind] ?? INTRO.code,
@@ -60,11 +63,13 @@ function clipResult(text) {
   return text.length > TOOL_RESULT_MAX_CHARS ? `${text.slice(0, TOOL_RESULT_MAX_CHARS)}\n… output truncated` : text;
 }
 
-async function callTool(capability, input, ctx) {
+async function callTool(capability, input, ctx, answers) {
   const invalid = validateInput(capability.input, input);
   if (invalid) return `error: invalid_input: ${invalid}`;
   try {
     const result = await capability.run(input, ctx);
+    // Kept for a check that reads a result rather than a working tree.
+    answers.push({ capability: capability.name, output: result?.output ?? null });
     return clipResult(outputText(result?.output));
   } catch (err) {
     return `error: ${err?.code ?? 'failed'}: ${err?.message ?? 'the tool failed'}`;
@@ -100,23 +105,24 @@ function libraryReader(project) {
   return { state: 'active', level: 'sandboxed', modelPolicy: 'local_only', overrides: {}, scopes: { read: { projects: [project], sources: ['*'] }, write: { projects: [] } } };
 }
 
-// The tools the baseline loop may call for a kind of task. The baseline calls
-// them without can(), so it is given none that reach the web
-// (research.web_search would use SEARXNG_URL if it were set): a benchmark run
-// stays offline whatever the engine's environment says.
-export function baselineCapabilities(kind) {
-  return capabilitiesForTags(roleTemplate(ROLE_FOR_KIND[kind] ?? ROLE_FOR_KIND.code).tags).filter((capability) => capability.permission !== 'web');
+// The tools the baseline loop may call for a kind of task (the role's tags,
+// as the Scope arm's agent has them). The baseline calls them without can(),
+// so it is given none that reach the web (research.web_search would use
+// SEARXNG_URL if it were set): a benchmark run stays offline whatever the
+// engine's environment says.
+export function baselineCapabilities(kind, roleName = ROLE_FOR_KIND[kind] ?? ROLE_FOR_KIND.code) {
+  return capabilitiesForTags(roleTemplate(roleName).tags).filter((capability) => capability.permission !== 'web');
 }
 
 export async function runBaselineTask({ task, arm, workspace, mode = 'dry', cap, apiKey, stream = streamAnthropic, maxTurns = BASELINE_MAX_TURNS, ownerId = null, db }) {
   registerBuiltInPlugins();
-  const capabilities = baselineCapabilities(task.kind);
+  const roleName = roleFor(task);
+  const capabilities = baselineCapabilities(task.kind, roleName);
   const byName = new Map(capabilities.map((capability) => [capability.name, capability]));
-  const research = task.kind === 'research';
   const project = `bench-${task.id}-${arm.name}`;
   let box = null;
   let ctx;
-  if (research) {
+  if (task.kind === 'research') {
     if (!ownerId) throw new Error('a research task needs the benchmark owner to ingest its library for');
     await prepareLibrary(task, { ownerId, project, db, embed: mode !== 'dry' });
     // The tools that draft with a model (extract, related work) get none:
@@ -125,12 +131,18 @@ export async function runBaselineTask({ task, arm, workspace, mode = 'dry', cap,
   } else {
     const repo = await prepareProject(task, workspace, arm.name);
     box = await createSandbox({ runId: `bench-${arm.name}-${randomUUID().slice(0, 8)}`, repoPath: repo, env: workspace.sandboxEnv });
+    // A physics capability writes its nodes for an owner and reads them back
+    // under an agent's read scope, so the baseline acts as the benchmark's
+    // account, scoped to the arm's project.
+    const physics = task.kind === 'physics';
     ctx = {
-      ownerId: null,
-      agent: null,
+      ownerId: physics ? ownerId : null,
+      agent: physics
+        ? { state: 'active', level: 'sandboxed', overrides: {}, role: roleTemplate(roleName), scopes: { read: { projects: [project], sources: ['*'] }, write: { projects: [project] } } }
+        : null,
       run: null,
       step: null,
-      project: null,
+      project: physics ? project : null,
       localPath: repo,
       sandbox: box,
       model: null,
@@ -139,11 +151,14 @@ export async function runBaselineTask({ task, arm, workspace, mode = 'dry', cap,
     };
   }
 
-  const system = baselineSystem(capabilities, task.kind);
+  const system = baselineSystem(capabilities, task.kind, roleName);
+  const answers = [];
   const script = mode === 'dry' ? createScript(task) : null;
   const cache = new Set();
   const log = createCallLog();
-  const transcript = [{ role: 'user', content: `Task:\n${task.instructions}` }];
+  // The baseline has no graph, so a physics problem comes in its first message.
+  const problem = task.kind === 'physics' ? `\n\nProject notes:\n${problemContent(problemOf(task))}` : '';
+  const transcript = [{ role: 'user', content: `Task:\n${task.instructions}${problem}` }];
   let claimedDone = false;
   let answer = null;
   let stopped = null;
@@ -187,7 +202,7 @@ export async function runBaselineTask({ task, arm, workspace, mode = 'dry', cap,
         break;
       }
       const capability = byName.get(choice.capability);
-      const result = capability ? await callTool(capability, choice.input, ctx) : `error: unknown tool ${choice.capability}`;
+      const result = capability ? await callTool(capability, choice.input, ctx, answers) : `error: unknown tool ${choice.capability}`;
       toolCalls += 1;
       transcript.push({ role: 'user', content: `Result of ${choice.capability}:\n${result}` });
     }
@@ -202,6 +217,7 @@ export async function runBaselineTask({ task, arm, workspace, mode = 'dry', cap,
     runError: null,
     claimedDone,
     resultDir,
+    answers,
     project,
     answer,
     wallMs,

@@ -15,7 +15,12 @@ original tests and `package.json` put back first.
 | `batch-queue` | Async ordering: `forEach(async …)` returns before the jobs finish and runs them all at once. |
 | `order-quote` | Unit mismatch: shipping bands priced in kilograms are given grams, two modules from the symptom. |
 
-No fixture has dependencies or touches the network; each runs with
+`physics-projectile` is not a Node project: it holds the statement of a
+projectile-with-drag problem (`problem.json`, no answer), which the benchmark
+ingests into the task's graph. Its check compares the computation the arm
+produced with a reference value kept in the catalog, never in the fixture.
+
+No code fixture has dependencies or touches the network; each runs with
 `node --test` alone and is deterministic.
 
 `research-harbor` is the research task's paper set rather than a project: a

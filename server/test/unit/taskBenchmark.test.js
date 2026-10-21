@@ -219,8 +219,9 @@ describe('the task catalog', () => {
     assert.match(validateTask({ ...research[0], fixture: 'nope' }).join(), /missing its library\.json/);
   });
 
-  test('KiCad, physics and CAD are pending gates that say what makes them ready', () => {
-    for (const kind of ['kicad', 'physics', 'cad']) {
+  // Physics is ready now that its plug-in exists (physicsBenchmark.test.js).
+  test('KiCad and CAD are pending gates that say what makes them ready', () => {
+    for (const kind of ['kicad', 'cad']) {
       const gates = TASKS.filter((entry) => entry.kind === kind);
       assert.ok(gates.length >= 1, kind);
       for (const gate of gates) {

@@ -600,9 +600,17 @@ answer against the task's key (it must name the method, cite the paper by
 citekey and name the table, and every citation in it must resolve to an
 ingested paper).
 
-KiCad, physics and CAD tasks are defined as pending acceptance gates
+KiCad and CAD tasks are defined as pending acceptance gates
 (why each is pending and which plug-in and verifier make it ready) and are
 listed in every report, never run and never counted as failures.
+
+The physics task (`physics-projectile-range`) is ready. A task may name its
+role (`role: 'physicist'`); its fixture holds only the problem statement,
+which the Scope arm ingests into the task's graph and the baseline gets in
+its first message. Its check is a quantity check (`check.kind:
+'quantity'`): the arm's last `physics.compute` result that passed its own
+verifiers (a computation node was written), in metres, within 0.5% of a
+reference kept in the catalog and never shown to an arm.
 
 ## Plug-in registration
 
@@ -686,3 +694,61 @@ refuses with `private_sources` when any of that text is `local` and the
 agent could reach the cloud (online, and `cloud_model` not denied for it),
 because the model router decides by the step's slice, not by what the
 capability read.
+
+### Physics
+
+The physics plug-in (`server/src/plugins/physics/`, tag `physics`) needs no
+migration of its own: it uses 039's `derivation` and `computation` types,
+source `physics`, and the existing `spec` type for ingested problems.
+
+| Capability | Permission | Verifiers | What it does |
+|---|---|---|---|
+| `physics.derive` | `write_notes` | `physics.units`, `physics.limits` | Asks `ctx.model` for a derivation as JSON (result expression and units, variables with representative values and units, explicit assumptions, steps, at least one limiting case), with one repair request if the reply does not validate. Written as a `derivation` node, `derived_from` the problem node when given `problemId`. |
+| `physics.compute` | `run_generated_code` | `physics.units`, `physics.rederive` | Runs model-written Python (or the `expression` template: the derivation's closed form) on Pint quantities, and a required `crossCheck` by a different method, each in its own OS-sandboxed process. Written as a `computation` node `derived_from` its derivation. |
+| `physics.check` | `run_generated_code` | — | Runs the checks again on a stored derivation or computation and reports them as a finding. |
+
+- **Verifiers.** `physics.units` evaluates the result with Pint quantities:
+  adding unlike dimensions, a dimensioned argument to `sin`/`exp`/…, or a
+  result whose dimensions differ from its declared units fails; for a
+  computation, every output must convert to its declared units.
+  `physics.limits` evaluates each declared limiting case (variables set near
+  the limit) against its expected expression or value within `rtol`/`atol`.
+  `physics.rederive` compares the computation with its independent
+  cross-check within `tolerance` (default 1e-3, at most 0.05).
+- **Expressions** are parsed with Python's `ast` and evaluated by a
+  whitelist (numbers, declared variables, `pi`, `e`, `+ - * / **`, a fixed
+  list of functions); anything else is refused before evaluation.
+- **Everything Python runs through `runSandboxed`** (`python3 -I -B` and a
+  fixed harness, `harness.py`, copied with the job into a fresh directory in
+  the run's scratch space, the only writable path; thread counts pinned to 1).
+  `PHYSICS_PYTHON` may name another interpreter (a virtual environment); its
+  prefix is mounted read-only. Availability is probed by running the harness
+  in the sandbox. Model-written code runs in a `run` job whose result says
+  only which plain values (number and unit string) the code reports: the code
+  shares that process and could print a result line of its own, so no check
+  outcome is taken from it. The units check (conversion to the declared
+  units, finiteness) and the conversion the cross-check comparison uses run
+  in a separate `convert` job that runs no model-written code. The job file
+  holding a run's nonce is deleted before the job starts. Without the sandbox, `python3`, NumPy, SciPy or Pint the
+  verifiers return `{ ok: true, unavailable: true, detail }`,
+  `physics.compute` refuses with `physics_unavailable`, and a derivation is
+  written marked "unverified".
+- **Write-back.** The runner's write-back makes only findings, decisions,
+  questions and artifacts, so these capabilities write their own node. To
+  keep "nothing is written before it is verified", the capability runs the
+  checks first and writes the node only when they pass (or are unavailable);
+  the verifiers report those results for that result object, or run the
+  checks themselves for a result they did not see made. The node is keyed by
+  step (`external_id` `derivation:<stepId>`), so a resumed step updates it.
+  Each capability also returns a finding naming the node, so the next step's
+  slice carries its id.
+- **Privacy.** `ctx` does not say whether the step's slice held a private
+  node, so physics nodes are written `local` unless `ctx.privateContext ===
+  false` and every node they were built on is `cloud`. For the same reason
+  `physics.derive` sends a `problemId` node's text to the model only when that
+  node is `cloud` or `ctx.privateContext === true`.
+- **Ingest.** `POST /api/plugins/physics/ingest { project, problems: [{ id,
+  title?, statement, given?, find? }], privacy? }` (a background job, like
+  GitHub ingest; privacy defaults to `local`) writes `spec` nodes with
+  `external_id` `problem:<id>`, never an answer. `GET /status` reports whether
+  the toolchain is usable, and `GET /jobs/:id` a physics job.

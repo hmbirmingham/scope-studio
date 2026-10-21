@@ -1,4 +1,4 @@
-import { existsSync, statSync } from 'node:fs';
+import { existsSync, readFileSync, statSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -14,6 +14,8 @@ import { fileURLToPath } from 'node:url';
 
 const here = dirname(fileURLToPath(import.meta.url));
 export const FIXTURES_DIR = join(here, 'fixtures');
+// Kinds whose plug-in, verifiers and check exist; the rest are pending gates.
+export const RUNNABLE_KINDS = ['code', 'research', 'physics'];
 
 // The check puts these back from the pristine fixture before it runs, so a
 // result that "passes" by editing the tests or the test script does not.
@@ -23,6 +25,28 @@ const runTests = (summary) => ({ capability: 'code.run_script', input: { script:
 const read = (path, summary = `Read ${path}`) => ({ capability: 'code.read', input: { path }, summary });
 const search = (query, summary = `Search for ${query}`) => ({ capability: 'code.search', input: { query }, summary });
 const edit = (path, search, replace, summary) => ({ capability: 'code.edit', input: { path, search, replace }, summary });
+
+// The dry run's computation for the projectile task: a terminal-event
+// solve_ivp integration, cross-checked by a hand-written fixed-step RK4. It
+// lives here, not in the fixture, so a live run's agent never sees it.
+const PROJECTILE = Object.freeze({
+  "title": "Baseball range with quadratic drag",
+  "method": "solve_ivp with a terminal ground-crossing event",
+  "code": "from scipy.integrate import solve_ivp\nk = (0.5 * rho * Cd * np.pi * r**2 / m).to('1/m').magnitude\ngg = g.to('m/s**2').magnitude\nspeed = v0.to('m/s').magnitude\nangle = theta.to('rad').magnitude\n\ndef rhs(s, y):\n    vx, vy = y[2], y[3]\n    v = np.hypot(vx, vy)\n    return [vx, vy, -k * v * vx, -gg - k * v * vy]\n\ndef ground(s, y):\n    return y[1]\nground.terminal = True\nground.direction = -1\nsol = solve_ivp(rhs, [0, 60], [0, 0, speed * np.cos(angle), speed * np.sin(angle)], events=ground, rtol=1e-10, atol=1e-10)\nresult = {'range': Q_(sol.y_events[0][0][0], 'm')}\n",
+  "inputs": {
+    "m": "0.145 kg",
+    "r": "3.66 cm",
+    "Cd": "0.47",
+    "rho": "1.225 kg/m^3",
+    "v0": "40 m/s",
+    "theta": "35 deg",
+    "g": "9.81 m/s^2"
+  },
+  "crossCheck": {
+    "method": "a fixed-step fourth-order Runge-Kutta integration with linear interpolation of the landing point",
+    "code": "k = (0.5 * rho * Cd * math.pi * r**2 / m).to('1/m').magnitude\ngg = g.to('m/s**2').magnitude\nspeed = v0.to('m/s').magnitude\nangle = theta.to('rad').magnitude\n\ndef f(state):\n    x, y, vx, vy = state\n    v = math.hypot(vx, vy)\n    return (vx, vy, -k * v * vx, -gg - k * v * vy)\n\ndef step(state, h):\n    a = f(state)\n    b = f([s + h / 2 * d for s, d in zip(state, a)])\n    c = f([s + h / 2 * d for s, d in zip(state, b)])\n    d4 = f([s + h * d for s, d in zip(state, c)])\n    return [s + h / 6 * (p + 2 * q + 2 * u + w) for s, p, q, u, w in zip(state, a, b, c, d4)]\n\nh = 1e-3\nstate = [0.0, 0.0, speed * math.cos(angle), speed * math.sin(angle)]\nwhile True:\n    nxt = step(state, h)\n    if nxt[1] < 0 and nxt[3] < 0:\n        frac = state[1] / (state[1] - nxt[1])\n        landing = state[0] + frac * (nxt[0] - state[0])\n        break\n    state = nxt\nresult = {'range': Q_(landing, 'm')}\n"
+  }
+});
 
 export const TASKS = [
   {
@@ -241,14 +265,41 @@ export const TASKS = [
   {
     id: 'physics-projectile-range',
     kind: 'physics',
-    status: 'pending',
+    status: 'ready',
     title: 'Compute a projectile range with drag, units checked',
-    instructions: 'Compute the range of the projectile described in the project notes, with quadratic drag, to three significant figures, in metres.',
-    fixture: { kind: 'problem statement', description: 'a projectile problem with a reference solution computed independently' },
-    check: { description: 'the result is within 0.5% of the reference and carries metres as its unit' },
-    pending: {
-      reason: 'no physics plug-in is registered yet, so there is no units-checked computation capability',
-      readyWhen: 'the physics plug-in registers a computation capability and a physics.units verifier that checks dimensions and the reference value',
+    role: 'physicist',
+    fixture: 'physics-projectile',
+    problem: 'problem.json',
+    instructions:
+      'Compute the range of the projectile described in the project notes, with quadratic drag, to three significant figures, in metres. Cross-check it with an independent method.',
+    check: {
+      kind: 'quantity',
+      capability: 'physics.compute',
+      output: 'range',
+      units: 'm',
+      // Computed independently with SciPy's solve_ivp (rtol and atol 1e-12);
+      // see fixtures/physics-projectile/README.md.
+      reference: 84.65925243092497,
+      rtol: 0.005,
+      description: 'a physics.compute result that passed its units and cross-check verifiers, in metres, within 0.5% of the reference',
+    },
+    dry: {
+      plan: '1. Read the problem.\n2. Integrate the equations of motion with quadratic drag, cross-checked by a second integrator.\n3. Report the range in metres.',
+      actions: [
+        {
+          capability: 'physics.compute',
+          input: {
+            title: PROJECTILE.title,
+            method: PROJECTILE.method,
+            code: PROJECTILE.code,
+            outputs: { range: 'm' },
+            inputs: PROJECTILE.inputs,
+            crossCheck: PROJECTILE.crossCheck,
+          },
+          summary: 'Integrate the trajectory with drag and cross-check it with a fixed-step RK4',
+        },
+      ],
+      summary: 'The range with quadratic drag is 84.7 m, cross-checked by two integrators.',
     },
   },
   {
@@ -277,6 +328,7 @@ export function validateTask(task) {
     if (!task.pending?.reason || !task.pending?.readyWhen) problems.push('a pending task says why it is pending and what makes it ready');
     return problems;
   }
+  if (!RUNNABLE_KINDS.includes(task.kind)) problems.push(`only ${RUNNABLE_KINDS.slice(0, -1).join(', ')} and ${RUNNABLE_KINDS.at(-1)} tasks can run so far, not ${task.kind}`);
   const dir = typeof task.fixture === 'string' ? join(FIXTURES_DIR, task.fixture) : null;
   if (task.kind === 'code') {
     if (!dir || !existsSync(join(dir, 'package.json')) || !statSync(dir).isDirectory()) problems.push(`fixture ${task.fixture} is missing`);
@@ -287,14 +339,24 @@ export function validateTask(task) {
     if (task.check?.kind !== 'answer' || !['method', 'citekey', 'table'].every((key) => typeof task.check?.[key] === 'string' && task.check[key])) {
       problems.push('a research task checks its answer against a key: method, citekey and table');
     }
-  } else {
-    problems.push(`only code and research tasks can run so far, not ${task.kind}`);
+  } else if (task.kind === 'physics') {
+    if (!dir || typeof task.problem !== 'string' || !existsSync(join(dir, task.problem))) problems.push(`fixture ${task.fixture} has no problem statement`);
+    const check = task.check ?? {};
+    if (check.kind !== 'quantity' || typeof check.capability !== 'string' || typeof check.output !== 'string' || typeof check.units !== 'string' || !Number.isFinite(check.reference) || !(check.rtol > 0)) {
+      problems.push('a physics task checks a quantity: capability, output, units, reference and rtol');
+    }
   }
   if (!Array.isArray(task.dry?.actions) || task.dry.actions.length === 0) problems.push('a ready task scripts its dry run');
   for (const action of task.dry?.actions ?? []) {
     if (typeof action?.capability !== 'string' || !action.input || typeof action.input !== 'object') problems.push('every dry action names a capability and an input');
   }
   return problems;
+}
+
+// A physics task's problem statement, which the arms are given (the Scope
+// arm through its graph, the baseline in its first message).
+export function problemOf(task) {
+  return JSON.parse(readFileSync(join(fixturePath(task), task.problem), 'utf8'));
 }
 
 export function fixturePath(task) {
