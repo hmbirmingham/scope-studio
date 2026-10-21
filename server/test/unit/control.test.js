@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict';
+import { readFile } from 'node:fs/promises';
 import { beforeEach, describe, test } from 'node:test';
 import { ControlError, controlUrl, readJson } from '../../src/control/client.js';
 import { FAILURE_TTL_MS, PLAN_TTL_MS, controlState, forgetFailures } from '../../src/control/plan.js';
@@ -6,6 +7,7 @@ import { MAX_ATTEMPTS, PlatformUnavailable, parseSse, platformCall, sourcesOf } 
 import { challengeFor, newState, newVerifier, signinUrl, startSignIn, stateMatches } from '../../src/control/signin.js';
 import { openToken, sealToken } from '../../src/control/tokenBox.js';
 import { platformAdapter } from '../../src/workspace/modelPort.js';
+import { webUrl } from '../../../client/src/lib/webUrl.js';
 import { doneEvent, meFor, startFakeControl } from '../fakeControl.js';
 
 const SECRET = 'test-session-secret-not-real';
@@ -433,6 +435,24 @@ describe('control plane link: plan cache', () => {
     } finally {
       delete process.env.CONTROL_URL;
     }
+  });
+});
+
+describe('plan overlay links', () => {
+  test('only http(s) links from the server are opened', () => {
+    assert.equal(webUrl('https://checkout.stripe.test/c/pay/cs_1'), 'https://checkout.stripe.test/c/pay/cs_1');
+    assert.equal(webUrl('http://127.0.0.1:4000/signin?state=x'), 'http://127.0.0.1:4000/signin?state=x');
+    for (const bad of ['javascript:alert(1)', 'JavaScript:alert(1)', ' javascript:alert(1)', 'data:text/html,<script>1</script>', 'file:///etc/passwd', 'vbscript:x', '/relative', '', null, undefined, 42, {}]) {
+      assert.equal(webUrl(bad), null, String(bad));
+    }
+  });
+
+  test('the overlay opens nothing but a checked link', async () => {
+    const source = await readFile(new URL('../../../client/src/components/PlanOverlay.jsx', import.meta.url), 'utf8');
+    const opens = [...source.matchAll(/window\.open\(([^,]+),/g)].map((m) => m[1].trim());
+    assert.ok(opens.length >= 2);
+    assert.ok(opens.every((arg) => arg === 'url'), `window.open is called with ${opens.join(', ')}`);
+    assert.equal([...source.matchAll(/const url = webUrl\(/g)].length, opens.length, 'each opened url comes from webUrl');
   });
 });
 

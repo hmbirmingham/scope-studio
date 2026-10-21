@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
+import { webUrl } from '../lib/webUrl.js';
 
 // What each plan sells, in the words a buyer reads. Limits mirror
 // control/src/billing/plans.js; the control plane enforces them, this only describes.
@@ -93,7 +94,9 @@ export default function PlanOverlay({ open, onClose, onPlanChanged }) {
     const { ok, body } = await post('/api/control/signin');
     setBusy(null);
     if (!ok || !body.url) return setProblem(body.error ?? 'Could not start signing in.');
-    window.open(body.url, '_blank', 'noopener');
+    const url = webUrl(body.url);
+    if (!url) return setProblem('The sign-in link was not a web address, so it was not opened.');
+    window.open(url, '_blank', 'noopener');
     waitFor('signin', (next) => next.signedIn);
   }
 
@@ -116,7 +119,9 @@ export default function PlanOverlay({ open, onClose, onPlanChanged }) {
     const { ok, body: payload } = await post(path, body);
     setBusy(null);
     if (!ok || !payload.url) return setProblem(payload.error ?? 'Could not reach billing.');
-    window.open(payload.url, '_blank', 'noopener');
+    const url = webUrl(payload.url);
+    if (!url) return setProblem('The billing link was not a web address, so it was not opened.');
+    window.open(url, '_blank', 'noopener');
     waitFor(label, (next) => next.plan !== before || (label === 'portal' && next.cancelAt !== billing?.cancelAt));
   }
 
@@ -165,7 +170,11 @@ export default function PlanOverlay({ open, onClose, onPlanChanged }) {
           </div>
         )}
         {signedIn && billing.online && !billing.configured && (
-          <div className="row-note is-warn">Billing isn't set up on the account service yet.</div>
+          <div className="row-note is-warn">
+            {billing.billingError
+              ? `Billing could not be loaded: ${billing.billingError.error}`
+              : "Billing isn't set up on the account service yet."}
+          </div>
         )}
         {waiting && waiting !== 'signin' && <div className="row-note">Finish in the tab that opened; this updates when it's done.</div>}
         {problem && <div className="row-note is-warn">{problem}</div>}
