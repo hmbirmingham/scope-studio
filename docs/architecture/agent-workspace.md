@@ -542,3 +542,34 @@ Step is `{ id, index, kind, capability, status, input, output, verification, ada
 `registerBuiltInPlugins()` registers them once and is safe to call again; the
 runner's worker calls it when it is created. A vertical adds itself there. Schedules use `server/src/workspace/cron.js`
 (`validateCron`, `nextRunAt`).
+
+## Verticals (Wave 4)
+
+Each vertical is a plug-in in `server/src/plugins/<name>/` that adds ingest,
+capabilities, verifiers, fixtures and benchmark tasks, and one line in
+`server/src/plugins/registry.js`. Conventions every vertical follows:
+
+- **Node vocabulary** comes from migration 039, shared by all four: KiCad
+  `schematic`, `board`, `symbol`, `net`, `footprint`, `bom_row`; research
+  `paper` (existing), `note`, `excerpt`; physics `derivation`, `computation`;
+  CAD `part`, `assembly`. Sources `kicad`, `zotero`, `pdf`, `physics`, `cad`.
+  Relationships `connects`, `implements`, `cites`, `contains`. A vertical that
+  needs more adds them in a later migration that keeps every value above.
+- **Ingest** writes nodes with `owner_id`, `project`, `external_id` (stable,
+  so re-ingest updates rather than duplicates) and the source's privacy; it
+  runs as a background job like GitHub ingest and never needs the network.
+- **Capabilities** carry the vertical's tag (`kicad`, `research`, `physics`,
+  `cad`), so every role with that tag can use them. Anything that executes
+  model-written code or an external tool on model input runs through the
+  sandbox (`runSandboxed`), never on the host.
+- **Verifiers** that depend on an external tool (`kicad-cli`, `pdftotext`,
+  Python packages, CadQuery) report `{ ok: true, unavailable: true, detail }`
+  when the tool is missing, never a pass they did not check; tests cover the
+  real tool when present and recorded outputs otherwise.
+- **Fixtures** are small and permissively licensed; each fixture folder has a
+  README naming its source and licence. No proprietary files.
+- **Benchmark tasks** for the vertical move from `pending` to ready in the
+  task benchmark when its plug-in and verifiers land.
+
+Reserved migration numbers: KiCad 040–049, research 050–059, physics 060–069,
+CAD 070–079.
