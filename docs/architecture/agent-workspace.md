@@ -671,7 +671,13 @@ source `physics`, and the existing `spec` type for ingested problems.
   the run's scratch space, the only writable path; thread counts pinned to 1).
   `PHYSICS_PYTHON` may name another interpreter (a virtual environment); its
   prefix is mounted read-only. Availability is probed by running the harness
-  in the sandbox; without the sandbox, `python3`, NumPy, SciPy or Pint the
+  in the sandbox. Model-written code runs in a `run` job whose result says
+  only which plain values (number and unit string) the code reports: the code
+  shares that process and could print a result line of its own, so no check
+  outcome is taken from it. The units check (conversion to the declared
+  units, finiteness) and the conversion the cross-check comparison uses run
+  in a separate `convert` job that runs no model-written code. The job file
+  holding a run's nonce is deleted before the job starts. Without the sandbox, `python3`, NumPy, SciPy or Pint the
   verifiers return `{ ok: true, unavailable: true, detail }`,
   `physics.compute` refuses with `physics_unavailable`, and a derivation is
   written marked "unverified".
@@ -686,7 +692,9 @@ source `physics`, and the existing `spec` type for ingested problems.
   slice carries its id.
 - **Privacy.** `ctx` does not say whether the step's slice held a private
   node, so physics nodes are written `local` unless `ctx.privateContext ===
-  false` and every node they were built on is `cloud`.
+  false` and every node they were built on is `cloud`. For the same reason
+  `physics.derive` sends a `problemId` node's text to the model only when that
+  node is `cloud` or `ctx.privateContext === true`.
 - **Ingest.** `POST /api/plugins/physics/ingest { project, problems: [{ id,
   title?, statement, given?, find? }], privacy? }` (a background job, like
   GitHub ingest; privacy defaults to `local`) writes `spec` nodes with

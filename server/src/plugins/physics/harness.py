@@ -13,9 +13,16 @@ Modes:
             of a closed-form result. The expression is parsed with `ast` and
             evaluated by a whitelist evaluator: arithmetic, a fixed set of
             functions and the declared variables, nothing else.
-  compute   run a computation (model-written code, or the closed-form
-            expression of a derivation) on Pint quantities and return each
-            declared output in its declared units.
+  run       run one side of a computation (model-written code, or the
+            closed-form expression of a derivation) on Pint quantities and
+            report each output as a plain number and unit string. Model-written
+            code runs in this process, so it could print a result line of its
+            own; nothing in this mode's result is trusted beyond "these are
+            the values the code reports".
+  convert   the units check of a computation, in a separate sandboxed process
+            that runs no model-written code: read the reported values into
+            Pint, convert them to the declared units and check they are
+            finite. Only this mode's result can pass physics.units.
 """
 
 import ast
@@ -24,6 +31,7 @@ import io
 import json
 import math
 import operator
+import os
 import sys
 
 MARK = "@@physics-result@@"
@@ -334,9 +342,41 @@ def check(job):
 
 
 RESERVED = {"ureg", "Q_", "np", "numpy", "scipy", "math", "inputs", "result"}
+MAX_UNITS = 200
 
 
-def compute(job):
+def plain_value(value, numpy, reg):
+    """What a computation produced for one output, as plain JSON.
+
+    This runs in the same process as model-written code, so nothing here is
+    trusted: the code can replace this function or print a line of its own.
+    That only lets it choose the numbers and unit strings it reports, which
+    it could do anyway by setting them in `result`. Whether those values are
+    finite and in the declared units is decided by the `convert` job, which
+    runs no model-written code.
+    """
+    if isinstance(value, reg.Quantity):
+        magnitude, units = value.magnitude, str(value.units)
+    elif isinstance(value, bool) or not isinstance(value, (int, float, numpy.floating, numpy.integer)):
+        return {"invalid": "not a number or a quantity"}
+    else:
+        magnitude, units = value, "dimensionless"
+    if numpy.ndim(magnitude) != 0:
+        return {"invalid": "a single value, not an array, is required"}
+    try:
+        number = float(magnitude)
+    except Exception:
+        return {"invalid": "not a number or a quantity"}
+    # JSON has no NaN or infinity; the convert job reports them as not finite.
+    return {"value": number if math.isfinite(number) else None, "units": units}
+
+
+def run(job):
+    """Runs one side of a computation and reports its outputs as plain JSON.
+
+    The expression template is evaluated by the whitelist evaluator; code is
+    model-written and runs with exec, in the sandbox.
+    """
     import numpy
     import scipy
     import scipy.integrate  # noqa: F401  the submodules most computations use
@@ -365,42 +405,76 @@ def compute(job):
         if not isinstance(result, dict):
             return {"ok": False, "error": "no_result", "detail": "the computation must set result = {name: quantity, ...}", "log": log.getvalue()[-MAX_LOG:]}
 
+    values = {}
+    for name in job["outputs"]:
+        if name in result:
+            values[name] = plain_value(result[name], numpy, reg)
+    return {"ok": True, "values": values, "log": log.getvalue()[-MAX_LOG:]}
+
+
+def convert_side(declared, values):
+    """Checks one side's reported values against the declared output units."""
+    reg = ureg()
+    values = values if isinstance(values, dict) else {}
     outputs = {}
     units = {}
-    for name, declared in job["outputs"].items():
-        if name not in result:
+    for name, target in declared.items():
+        entry = values.get(name)
+        if not isinstance(entry, dict):
             units[name] = {"ok": False, "detail": "the computation did not produce '%s'" % name}
             continue
-        value = result[name]
-        if not isinstance(value, reg.Quantity):
-            if isinstance(value, bool) or not isinstance(value, (int, float, numpy.floating, numpy.integer)):
-                units[name] = {"ok": False, "detail": "'%s' is not a number or a quantity" % name}
-                continue
-            value = reg.Quantity(float(value))
-        magnitude = value.magnitude
-        if numpy.ndim(magnitude) != 0:
-            units[name] = {"ok": False, "detail": "'%s' must be a single value, not an array" % name}
+        if entry.get("invalid") is not None:
+            units[name] = {"ok": False, "detail": "'%s' is %s" % (name, str(entry["invalid"])[:200])}
+            continue
+        magnitude = entry.get("value")
+        if magnitude is None:
+            units[name] = {"ok": False, "detail": "'%s' is not finite" % name}
+            continue
+        source = entry.get("units")
+        if isinstance(magnitude, bool) or not isinstance(magnitude, (int, float)) or not isinstance(source, str) or len(source) > MAX_UNITS:
+            units[name] = {"ok": False, "detail": "'%s' was not reported as a number with units" % name}
             continue
         try:
-            converted = value.to(declared)
+            value = reg.Quantity(float(magnitude), source or "dimensionless")
         except Exception as err:
-            units[name] = {"ok": False, "detail": "'%s' is in %s, which cannot be expressed in %s: %s" % (name, value.units, declared, error_text(err))}
+            units[name] = {"ok": False, "detail": "'%s' has units this check cannot read: %s" % (name, error_text(err))}
+            continue
+        try:
+            converted = value.to(target)
+        except Exception as err:
+            units[name] = {"ok": False, "detail": "'%s' is in %s, which cannot be expressed in %s: %s" % (name, value.units, target, error_text(err))}
             continue
         number = float(converted.magnitude)
         if not finite(number):
             units[name] = {"ok": False, "detail": "'%s' is not finite" % name}
             continue
-        outputs[name] = {"value": number, "units": declared}
-        units[name] = {"ok": True, "detail": "'%s' = %.9g %s" % (name, number, declared)}
-    return {"ok": True, "outputs": outputs, "units": units, "log": log.getvalue()[-MAX_LOG:]}
+        outputs[name] = {"value": number, "units": target}
+        units[name] = {"ok": True, "detail": "'%s' = %.9g %s" % (name, number, target)}
+    return {"outputs": outputs, "units": units}
 
 
-MODES = {"probe": probe, "check": check, "compute": compute}
+def convert(job):
+    """The units check of a computation, in a process that runs no
+    model-written code: each side's plain values are read back into Pint,
+    converted to the declared units and checked to be finite. Only this
+    process ever holds the nonce of the result it prints."""
+    declared = job["outputs"]
+    for name, target in declared.items():
+        unit(target)
+    return {"ok": True, "sides": {side: convert_side(declared, values) for side, values in job["sides"].items()}}
+
+
+MODES = {"probe": probe, "check": check, "run": run, "convert": convert}
 
 
 def main():
     with open(sys.argv[1], encoding="utf-8") as handle:
         job = json.load(handle)
+    # The job file holds the nonce. It is gone before any job runs, so code
+    # run by this process cannot read it from disk; the `run` job's result is
+    # not trusted for anything that matters anyway (see `convert`).
+    with contextlib.suppress(OSError):
+        os.remove(sys.argv[1])
     nonce = str(job.get("nonce", ""))
     try:
         payload = MODES[job["mode"]](job)

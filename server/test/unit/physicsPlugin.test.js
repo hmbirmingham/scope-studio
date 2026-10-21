@@ -216,9 +216,9 @@ describe('the sandboxed Python runner', () => {
 
   test('reports the time limit and a crash as errors, with the output tail', async () => {
     const limited = recordedSandbox((job) => (job.mode === 'probe' ? PROBE_OK : { raw: 'partial', timedOut: true, limit: 'timeout', exitCode: null }));
-    await assert.rejects(createPythonRunner({ sandbox: limited }).run({ mode: 'compute' }), { code: 'python_limit', limit: 'timeout' });
+    await assert.rejects(createPythonRunner({ sandbox: limited }).run({ mode: 'run' }), { code: 'python_limit', limit: 'timeout' });
     const crashed = recordedSandbox((job) => (job.mode === 'probe' ? PROBE_OK : { raw: 'Segmentation fault', exitCode: 139 }));
-    await assert.rejects(createPythonRunner({ sandbox: crashed }).run({ mode: 'compute' }), (err) => err.code === 'python_failed' && /Segmentation fault/.test(err.message));
+    await assert.rejects(createPythonRunner({ sandbox: crashed }).run({ mode: 'run' }), (err) => err.code === 'python_failed' && /Segmentation fault/.test(err.message));
   });
 
   for (const [label, answer, reason] of [
@@ -233,7 +233,7 @@ describe('the sandboxed Python runner', () => {
       const state = await py.availability();
       assert.equal(state.available, false);
       assert.match(state.reason, reason);
-      await assert.rejects(py.run({ mode: 'compute', code: 'result = {}' }), (err) => err.code === 'physics_unavailable' && reason.test(err.message));
+      await assert.rejects(py.run({ mode: 'run', code: 'result = {}' }), (err) => err.code === 'physics_unavailable' && reason.test(err.message));
       assert.ok(sandbox.calls.every((call) => call.job.mode === 'probe'), 'only the probe was attempted');
     });
   }
@@ -311,6 +311,45 @@ describe('physics plug-in', () => {
     const compute = plugin.capabilities.find((entry) => entry.name === 'physics.compute');
     const rc = FIXTURES[1];
     await assert.rejects(compute.run({ ...rc.computation, inputs: rc.given }, { ownerId: null }), { code: 'physics_unavailable' });
+  });
+
+  test('a computation’s units are checked in a job that runs no model-written code, never taken from the run', async () => {
+    const values = { V: { value: 3.1606, units: 'volt' } };
+    const sandbox = recordedSandbox((job) => {
+      if (job.mode === 'probe') return PROBE_OK;
+      if (job.mode === 'run') {
+        // The run claims a pass; only its values may be used.
+        return { ok: true, values, units: { V: { ok: true, detail: 'claimed' } }, checks: { units: { ok: true } }, log: '' };
+      }
+      assert.equal(job.mode, 'convert');
+      assert.equal(job.code, undefined);
+      assert.equal(job.expression, undefined);
+      assert.equal(JSON.stringify(job).includes('result ='), false, 'no code reaches the convert job');
+      assert.deepEqual(job.outputs, { V: 'V' });
+      assert.deepEqual(job.sides, { primary: values, cross: values });
+      const side = { outputs: {}, units: { V: { ok: false, detail: 'checked by convert' } } };
+      return { ok: true, sides: { primary: side, cross: side } };
+    });
+    const plugin = createPhysicsPlugin({ sandbox, embed: null });
+    const compute = plugin.capabilities.find((entry) => entry.name === 'physics.compute');
+    const result = await compute.run({ code: "result = {'V': V0}", inputs: { V0: '5 V' }, outputs: { V: 'V' }, crossCheck: { code: "result = {'V': V0 * 1.0}" } }, {});
+    assert.equal(result.output.computationId, null);
+    assert.deepEqual(result.output.checks.units, { ok: false, detail: 'checked by convert' });
+    assert.equal(result.output.checks.rederive.ok, false);
+    assert.deepEqual(sandbox.calls.map((call) => call.job.mode), ['probe', 'run', 'run', 'convert']);
+    const units = plugin.verifiers.find((entry) => entry.name === 'physics.units');
+    assert.equal((await units.verify(result, {})).ok, false);
+  });
+
+  test('a run that reports a check outcome but no values fails the step', async () => {
+    const sandbox = recordedSandbox((job) => (job.mode === 'probe' ? PROBE_OK : { ok: true, outputs: { V: { value: 5, units: 'V' } }, units: { V: { ok: true } } }));
+    const plugin = createPhysicsPlugin({ sandbox, embed: null });
+    const compute = plugin.capabilities.find((entry) => entry.name === 'physics.compute');
+    await assert.rejects(
+      compute.run({ code: "result = {'V': V0}", inputs: { V0: '5 V' }, outputs: { V: 'V' }, crossCheck: { code: "result = {'V': V0 * 1.0}" } }, {}),
+      (err) => err.code === 'computation_failed' && /reported no values/.test(err.message)
+    );
+    assert.equal(sandbox.calls.some((call) => call.job.mode === 'convert'), false);
   });
 
   test('physics.compute rejects bad input before any sandbox work', async () => {

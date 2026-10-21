@@ -80,16 +80,24 @@ export function createPhysicsPlugin({ sandbox = defaultSandbox, python = default
   }
 
   // Runs one side of a computation. A computation that raises is an error of
-  // the step, not a check result.
+  // the step, not a check result. Model-written code runs in the same Python
+  // process that prints this result, so the result says no more than which
+  // values the code reports: it carries no check outcome, and anything
+  // other than a plain `values` object is treated as a failed run.
   async function runSide(job, ctx, timeoutMs, label) {
-    const payload = await py.run({ mode: 'compute', ...job }, { ctx, timeoutMs });
-    if (payload.ok) return payload;
-    const log = payload.log ? `\n${String(payload.log).slice(-1_000)}` : '';
-    return { failed: true, detail: `${label} failed: ${payload.detail ?? payload.error ?? 'unknown error'}${log}` };
+    const payload = await py.run({ mode: 'run', ...job }, { ctx, timeoutMs });
+    const log = payload?.log ? `\n${String(payload.log).slice(-1_000)}` : '';
+    if (payload?.ok !== true) return { failed: true, detail: `${label} failed: ${payload?.detail ?? payload?.error ?? 'unknown error'}${log}` };
+    const values = payload.values;
+    if (!values || typeof values !== 'object' || Array.isArray(values)) return { failed: true, detail: `${label} failed: it reported no values${log}` };
+    return { values, log: typeof payload.log === 'string' ? payload.log : '' };
   }
 
   // The primary computation and its independent cross-check, each in its
-  // own sandboxed process, and the units and agreement checks on them.
+  // own sandboxed process, and the units and agreement checks on them. The
+  // units check, and the conversion the agreement check compares, run in a
+  // third sandboxed process that runs no model-written code: only that
+  // process holds the nonce of a result that can pass a check.
   async function computationChecks(plan, ctx) {
     const state = await py.availability({ ctx });
     if (!state.available) throw new PhysicsError('physics_unavailable', `the physics toolchain is unavailable: ${state.reason}`, { reason: state.reason });
@@ -99,23 +107,31 @@ export function createPhysicsPlugin({ sandbox = defaultSandbox, python = default
       : { ...shared, code: plan.code };
     const primary = await runSide(primaryJob, ctx, plan.timeoutMs, 'the computation');
     if (primary.failed) throw new PhysicsError('computation_failed', primary.detail);
+    const cross = await runSide({ ...shared, code: plan.crossCheck.code }, ctx, plan.timeoutMs, 'the cross-check');
 
-    const unitRows = Object.values(primary.units ?? {});
+    const sides = { primary: primary.values, ...(cross.failed ? {} : { cross: cross.values }) };
+    const converted = await py.run({ mode: 'convert', outputs: plan.outputs, sides }, { ctx });
+    if (converted?.ok !== true) {
+      const detail = `the units check did not run: ${converted?.detail ?? converted?.error ?? 'unknown error'}`;
+      return { outputs: {}, log: primary.log, checks: { results: { units: { ok: false, detail }, rederive: { ok: false, detail } } } };
+    }
+    const checkedPrimary = converted.sides?.primary ?? {};
+    const unitRows = Object.values(checkedPrimary.units ?? {});
     const units = {
-      ok: unitRows.length > 0 && unitRows.every((row) => row.ok),
+      ok: unitRows.length > 0 && unitRows.every((row) => row.ok === true),
       detail: unitRows.map((row) => row.detail).join('; ') || 'no outputs were declared',
     };
-    const cross = await runSide({ ...shared, code: plan.crossCheck.code }, ctx, plan.timeoutMs, 'the cross-check');
+    const outputs = checkedPrimary.outputs ?? {};
     let rederive;
     if (cross.failed) rederive = { ok: false, detail: cross.detail };
     else {
-      const missing = Object.keys(plan.outputs).filter((name) => !primary.outputs?.[name]);
-      const compared = compareOutputs(primary.outputs ?? {}, cross.outputs ?? {}, plan.tolerance);
+      const missing = Object.keys(plan.outputs).filter((name) => !outputs[name]);
+      const compared = compareOutputs(outputs, converted.sides?.cross?.outputs ?? {}, plan.tolerance);
       rederive = missing.length
         ? { ok: false, detail: `the computation produced no usable ${missing.join(', ')}, so it cannot be compared` }
         : { ok: compared.ok, detail: compared.detail, rows: compared.rows };
     }
-    return { outputs: primary.outputs ?? {}, log: primary.log ?? '', checks: { results: { units, rederive } } };
+    return { outputs, log: primary.log, checks: { results: { units, rederive } } };
   }
 
   // A derivation as stored in a node, re-validated: the content can have
@@ -182,7 +198,12 @@ export function createPhysicsPlugin({ sandbox = defaultSandbox, python = default
     if (input.problemId != null) {
       const node = await readNode(ctx, input.problemId);
       sources.push(node);
-      context = node.content;
+      // The step's model is chosen by its slice, not by this node, so a
+      // private node read here could otherwise reach a cloud model. Its text
+      // goes to the model only when the node is cloud or the context says
+      // outright that the step is private (and so routed to a local model).
+      // The derivation is still built on it, and so inherits its privacy.
+      if (node.privacy === 'cloud' || ctx.privateContext === true) context = node.content;
     }
     const { derivation, attempts } = await requestDerivation({ model: ctx.model, agent: ctx.agent, problem, context, signal: ctx.signal });
     const checks = await derivationChecks(derivation, DERIVATION_CHECKS, ctx);
