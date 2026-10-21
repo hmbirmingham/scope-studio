@@ -21,9 +21,10 @@ export const DEFAULT_SWEEP_MS = 60_000;
 
 // The adapters a background run can use. own_key is absent on purpose: the
 // user's Key Pro key travels per request and is never stored, so a run that
-// outlives the request has no key, and selectAdapter keeps it local.
+// outlives the request has no key, and selectAdapter keeps it local. The
+// platform adapter is made per run, for the run's owner (see resolvePort in models.js).
 export function defaultAdapters() {
-  return { local: localAdapter(), platform: platformAdapter() };
+  return { local: localAdapter(), platform: (run) => platformAdapter({ ownerId: run.owner_id }) };
 }
 
 export function createWorker({

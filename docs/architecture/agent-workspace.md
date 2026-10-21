@@ -327,6 +327,11 @@ port.stream({ messages, maxTokens, signal, purpose })
 
 - **local**: Ollama on this machine. Always available offline. Cost 0.
 - **own_key**: Anthropic directly with the user's Key Pro key.
+- The plan a run is routed under is the control plane's, read with
+  `currentPlan(ownerId)` (cached `/v1/me`): signed out, offline or unreachable
+  is Free, so the run stays local. The worker makes the platform adapter per
+  run, for the run's owner: an adapter entry may be a function of the run
+  (`resolvePort` in `runner/models.js`).
 - **platform**: the control plane's `POST /v1/cloud/messages` with the device
   token (Wave 2, path F). A fresh `requestId` on every attempt, retries
   included. `platformAdapter({ ownerId, sources })` reads the owner's token

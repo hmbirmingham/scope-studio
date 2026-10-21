@@ -42,6 +42,14 @@ async function ensureCloudApproval({ run, agent, publish }, db) {
   return findCloudApproval(run.id, db);
 }
 
+// An adapter entry is either a port or a function that makes one for a run.
+// The platform adapter is the second kind: it speaks for the run's owner, with
+// that owner's device token, so one engine-wide port cannot serve every run.
+export function resolvePort(entry, run) {
+  if (typeof entry === 'function' && typeof entry.stream !== 'function') return entry(run);
+  return entry ?? null;
+}
+
 export function createModelRouter({ agent, run, userPlan = 'free', online, adapters, publish, onCall = () => {}, db = getPool() }) {
   if (typeof online !== 'boolean') throw new Error('the model router needs an explicit online flag');
   // The agent may be passed as a getter so a runner that re-reads it between
@@ -77,7 +85,7 @@ export function createModelRouter({ agent, run, userPlan = 'free', online, adapt
   // chunk carries `adapter` and `fallbackFrom` so the step can record them.
   async function* stream({ purpose, hard = false, privateContext, stepId = null, messages, maxTokens, signal, format }) {
     const choice = await choose({ purpose, hard, privateContext });
-    let port = choice.name === 'local' ? local : adapters[choice.name];
+    let port = choice.name === 'local' ? local : resolvePort(adapters[choice.name], run);
     let fallbackFrom = null;
     if (!port) {
       port = local;
