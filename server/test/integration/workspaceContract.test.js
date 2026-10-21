@@ -42,14 +42,14 @@ describe('agent-workspace contract', () => {
     assert.deepEqual(rows[0], { agents: 0, steps: 0 });
   });
 
-  test('stubbed routes need a session and answer 501 until their path lands', async () => {
+  test('workspace routes need a session, and the path B stub answers 501 until it lands', async () => {
     const anonymous = session(server.base);
     for (const path of ['/api/agents', '/api/tasks', '/api/approvals', '/api/agent-runs', '/api/workspace/events']) {
       assert.equal((await anonymous('GET', path)).status, 401, path);
     }
-    for (const path of ['/api/agents', '/api/agents/x/kill', '/api/tasks', '/api/approvals', '/api/agent-runs']) {
-      assert.equal((await api('GET', path)).status, 501, path);
-    }
+    // /api/agents, /api/tasks and /api/approvals are implemented by path A and
+    // have their own suites; only the runner's route is still a stub.
+    assert.equal((await api('GET', '/api/agent-runs')).status, 501);
   });
 
   test('the event stream delivers only the signed-in owner’s events', async () => {
