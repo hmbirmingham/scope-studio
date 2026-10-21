@@ -62,6 +62,11 @@ jobs:
           sudo apt-get install -y bubblewrap
           sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
 
+      # The research plug-in reads PDF text with pdftotext; its tests run the
+      # real tool when it is installed and recorded output otherwise.
+      - name: Install poppler-utils (pdftotext)
+        run: sudo apt-get install -y --no-install-recommends poppler-utils
+
       - run: npm ci
         working-directory: server
 
