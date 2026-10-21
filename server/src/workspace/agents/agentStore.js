@@ -107,7 +107,10 @@ export function pauseAgent(ownerId, id) {
 export function resumeAgent(ownerId, id) {
   return transition(ownerId, id, { fromStates: ['paused'], toState: 'active' }, async (client, agent) => {
     const { rows } = await client.query(
-      `UPDATE agent_runs SET status = 'queued'
+      // The lease is cleared too: a run paused under a worker keeps that
+      // worker's lease, and a queued run must be free for any worker to claim
+      // without the old one still looking like its holder.
+      `UPDATE agent_runs SET status = 'queued', lease_owner = NULL, lease_until = NULL
        WHERE agent_id = $1 AND owner_id = $2 AND status = 'paused' RETURNING id`,
       [agent.id, ownerId]
     );

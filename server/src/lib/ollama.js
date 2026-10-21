@@ -59,13 +59,15 @@ export async function* parseNdjson(byteStream) {
   if (buffer.trim()) yield JSON.parse(buffer);
 }
 
-export async function* streamChat({ model = localChatModel(), messages, options, signal }) {
+// `format: 'json'` constrains the reply to one JSON value; callers that parse
+// the answer (the agent runner's step chooser) ask for it.
+export async function* streamChat({ model = localChatModel(), messages, options, format, signal }) {
   const response = await fetch(`${ollamaUrl()}/api/chat`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     // Thinking off: a grounded answer over retrieved context gains little from
     // it on a 9B model, and it would add seconds before the first visible token.
-    body: JSON.stringify({ model, messages, options, stream: true, think: false }),
+    body: JSON.stringify({ model, messages, options, ...(format ? { format } : {}), stream: true, think: false }),
     signal,
   });
   if (!response.ok) {
