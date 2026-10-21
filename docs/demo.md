@@ -70,10 +70,24 @@ The agent runs on whatever `OLLAMA_CHAT_MODEL` names; the default is
   twice as fast. Smaller models keep to the strict step format less
   reliably, so do one full run with it before the demo.
 
-Measured on the machine this was built on (a 4-core cloud VM with no GPU,
-sharing its CPU with other jobs), `qwen3:8b` took 10 min 22 s for the planning
-call alone. A laptop CPU without Metal would be similarly slow: run the demo on
-Apple silicon, and do one full run beforehand so the model is warm.
+Measured with `qwen3:8b` on the machine this was built on (a 4-core cloud VM,
+CPU only, no GPU), one full *Check my lab report against the data* run,
+approved straight away:
+
+| Step | Time | Model tokens in / out |
+|---|---|---|
+| Plan | 1 min 26 s | 1,975 / 75 |
+| Run code in the sandbox (writing the code; running it took 0.04 s) | 5 min 34 s | 2,039 / 568 |
+| Save to the map | 2 min 45 s | 2,166 / 219 |
+| Wrap-up | 1 min 19 s | 2,067 / 36 |
+| **Whole run** | **11 min 2 s** | 9,145 total, $0 |
+
+The code it wrote computed slope 4.035 s²/m, g = 9.783 m/s² and 1.794 s at
+0.80 m, the same as the reference analysis. Its list of fixes caught the slope,
+g, the outlier and the uncertainty, but called the mean periods correct, so
+know the answers in step 6 of the talk track. A CPU without a GPU is this
+slow: run the demo on Apple silicon, and do one full run beforehand so the
+model is warm and you have seen its output.
 
 ## What is in the demo
 
@@ -136,13 +150,15 @@ leave the browser on the map. Close other heavy apps.
    in it. It can't run anything without me, and when I approve it runs in a
    sandbox with no network and no access to my files." Click **Approve**.
 
-6. **The result (60 s).** The step prints the fit: slope 4.035 ± 0.016 s²/m,
-   g = 9.78 ± 0.04 m/s², and the mean period at 0.80 m. Then *Save to the map*
-   and the run **Succeeded**. Under **Findings and artifacts** click **Read**
-   on *Lab report check*: "My 0.80 m row was copied from the 0.60 m one, that's
-   why I thought it was an outlier and got 9.62. The uncertainty should come
-   from the spread of the trials. And I can't claim the period doesn't depend
-   on amplitude at any angle, since I only tested 10°."
+6. **The result (60 s).** The step prints what the code computed: a slope of
+   about 4.03 s²/m, g ≈ 9.78 m/s², and a mean period of about 1.79 s at 0.80 m
+   (the report says 1.556 s). Then *Save to the map* and the run
+   **Succeeded**. Under **Findings and artifacts** click **Read** on the list of
+   fixes: "My 0.80 m row was copied from the 0.60 m one, that's why I thought
+   it was an outlier and got 9.62." The correct answers, if the model's list
+   misses one: the uncertainty should come from the spread of the trials
+   (about ±0.04 m/s², not ±0.01), and the data can't show the period is
+   independent of amplitude at any angle, since every trial was at about 10°.
 
 7. **It's in the map (30 s).** Click the artifact's name: the map flies to the
    new node, and the inspector shows what it was derived from: the report, the
@@ -154,9 +170,17 @@ If there is time: run *Make a study guide from my lecture notes*. Writing a
 note is allowed, so it runs straight through with no approval.
 
 Expect the model's wording, its exact plan and the number of steps to vary
-from run to run; the numbers it prints are computed, not written by the model.
-A small model sometimes takes an extra step or a failed one (marked ✗ with the
-reason), and the next step reads that failure from the map and carries on.
+from run to run; the numbers the code step prints are computed, not written by
+the model. A local model sometimes takes an extra step or a failed one (marked
+Failed with the reason, e.g. `chooser_not_json` when its reply was cut off),
+and the next step reads that failure from the map and tries again; five
+failures in a row stop the run. If that happens on stage, say so: it is the
+safety net working. Then run the task again.
+
+If, after *Save to the map*, it asks to run the code a second time (an 8B
+model sometimes loses track of the last step), click **Reject**: the
+rejection is written to the map and the next step usually finishes. If it
+keeps going, click **Stop run**; the list of fixes is already saved.
 
 ## Why switch (what can honestly be said)
 

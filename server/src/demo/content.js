@@ -166,12 +166,15 @@ export const DEMO_TASKS = [
     // Written the way a student would after a first try: a small local model
     // follows a short, explicit recipe far more reliably than an open goal,
     // and the data are in the map, not in a file the sandbox could open.
+    // A step's whole reply (code included, escaped inside JSON) has to fit
+    // the runner's per-step output limit, so the code is asked to be short.
     instructions:
-      'Recompute g from pendulum-data.csv and check my lab report against it, in three steps. ' +
-      '1) One code step (node): write the 15 rows of the CSV into the code (there is no file to open), take T = time for 10 oscillations / 10, ' +
-      'fit T² against L through all 15 trials, and print the slope, g = 4π²/slope with its uncertainty, and the mean T at each length. ' +
+      'Recompute g from pendulum-data.csv and check my lab report against it, in three steps. Keep the plan to three one-line steps, with no code in it. ' +
+      '1) One code step with language "node": plain JavaScript, no libraries, no plots, under 20 lines. Write the 15 rows of the CSV into the code ' +
+      '(there is no file to open), take T = time for 10 oscillations / 10, fit T² against L through all 15 trials by least squares, and print the slope, ' +
+      'g = 4π²/slope and the mean T at each length. ' +
       '2) Compare that with my lab report draft and the handout’s rubric, and save one short list of every number or claim to fix with graph.write_artifact. ' +
-      '3) Finish.',
+      '3) Once that list is saved the task is complete: do not run the code again, reply done with a one-sentence summary.',
     schedule: null,
   },
   {
