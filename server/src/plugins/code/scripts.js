@@ -5,10 +5,15 @@ import { runSandboxed, sandboxStatus } from '../../workspace/sandbox/run.js';
 import { CodeError, checkoutRoot } from './paths.js';
 
 // Declared scripts are the project's own code, the same thing a user approves
-// at /api/runs today. In a sandbox they run inside the OS sandbox when one is
-// available (no network, nothing outside the sandbox copy writable); without
-// an OS sandbox they still run only in the sandbox copy, never on a string a
-// model wrote.
+// at /api/runs today, and in the user's checkout (a run with no sandbox copy)
+// they run the same way /api/runs does. A sandbox copy is different: code.edit
+// can rewrite package.json, the tests and the sources there, so a declared
+// script in the copy is model-written code. It runs only inside the OS
+// sandbox (no network, nothing outside the copy writable), and without one it
+// is refused with `sandbox_unavailable`, never run on the host.
+
+// The OS sandbox the default plug-in uses; tests pass their own.
+export const defaultSandbox = Object.freeze({ status: sandboxStatus, run: runSandboxed });
 
 // npm init's placeholder is "declared" but is not a test suite.
 const PLACEHOLDER = /no test specified/i;
@@ -33,15 +38,19 @@ export async function projectScripts(root) {
   return names.filter((name) => typeof bodies[name] === 'string' && !PLACEHOLDER.test(bodies[name]));
 }
 
-export async function runDeclaredScript(ctx, script) {
+export async function runDeclaredScript(ctx, script, sandbox = defaultSandbox) {
   const root = checkoutRoot(ctx);
   const scripts = await projectScripts(root);
   if (!scripts.includes(script)) {
     throw new CodeError('undeclared_script', `the project does not declare a "${script}" script`, { available: scripts });
   }
 
-  if (ctx.sandbox?.worktree && (await sandboxStatus()).available) {
-    const result = await runSandboxed({
+  if (ctx.sandbox?.worktree) {
+    const state = await probeSandbox(sandbox);
+    if (!state.available) {
+      throw new CodeError('sandbox_unavailable', `no OS sandbox is available (${state.reason}); refusing to run "${script}" in the sandbox copy unsandboxed`);
+    }
+    const result = await sandbox.run({
       command: 'npm',
       args: ['run', '--silent', script],
       cwd: root,
@@ -62,6 +71,7 @@ export async function runDeclaredScript(ctx, script) {
     };
   }
 
+  // The user's own checkout, which no capability edits.
   const result = await execute({ cwd: root, script });
   return {
     script,
@@ -73,4 +83,12 @@ export async function runDeclaredScript(ctx, script) {
     limit: result.timedOut ? 'timeout' : null,
     sandboxed: false,
   };
+}
+
+async function probeSandbox(sandbox) {
+  try {
+    return await sandbox.status();
+  } catch (err) {
+    return { available: false, reason: err?.message ?? 'the sandbox probe failed' };
+  }
 }

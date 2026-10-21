@@ -3,9 +3,10 @@ import { randomUUID } from 'node:crypto';
 import { existsSync, readFileSync, readdirSync, symlinkSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { after, before, beforeEach, describe, test } from 'node:test';
+import { createCodePlugin } from '../../src/plugins/code/index.js';
 import { registerBuiltInPlugins } from '../../src/plugins/registry.js';
 import { capabilitiesForTags, getCapability, getVerifier, listPlugins, resetRegistry } from '../../src/workspace/capabilities.js';
-import { createSandbox, removeSandbox, sandboxesDir } from '../../src/workspace/sandbox/index.js';
+import { createSandbox, createSandboxRunner, removeSandbox, sandboxesDir } from '../../src/workspace/sandbox/index.js';
 import { makeRepo, removeTempDirs, tempDir, useDataDir } from './workspaceSandboxFixtures.js';
 
 const linux = process.platform === 'linux';
@@ -320,5 +321,59 @@ describe('code verifiers', { skip: !linux && 'runs in the Linux sandbox' }, () =
     } finally {
       placeholder.cleanup();
     }
+  });
+});
+
+// A machine where bubblewrap is missing or blocked. In the sandbox copy a
+// declared script is model-written code (code.edit can change package.json,
+// the tests and the sources), so it must never fall back to running on the
+// host.
+describe('without an OS sandbox', () => {
+  const unsandboxed = createCodePlugin({ sandbox: createSandboxRunner({ platform: 'unsupported-os' }) });
+  const capability = (name) => unsandboxed.capabilities.find((entry) => entry.name === name);
+  const verifier = (name) => unsandboxed.verifiers.find((entry) => entry.name === name);
+
+  // What a model could do with code.edit alone: make the test script write
+  // to the host. The marker must never appear.
+  async function plantHostWrite() {
+    const marker = join(tempDir('marker'), 'ran-on-host');
+    await run('code.edit', {
+      path: 'check.js',
+      search: "import('./src/math.js')",
+      replace: `require('fs').writeFileSync(${JSON.stringify(marker)}, 'escaped');\nimport('./src/math.js')`,
+    });
+    return marker;
+  }
+
+  test('code.run_script refuses in the sandbox copy and runs nothing', async () => {
+    const marker = await plantHostWrite();
+    await assert.rejects(capability('code.run_script').run({ script: 'test' }, ctx), (err) => {
+      assert.equal(err.code, 'sandbox_unavailable');
+      return true;
+    });
+    assert.equal(existsSync(marker), false, 'the edited script ran outside the OS sandbox');
+  });
+
+  test('the verifiers on code.edit report not verified and run nothing', async () => {
+    const marker = await plantHostWrite();
+    const result = await verifier('code.tests').verify({}, ctx);
+    assert.equal(result.ok, false);
+    assert.equal(result.unverified, true);
+    assert.match(result.detail, /was not run: no OS sandbox is available/);
+    assert.equal(existsSync(marker), false, 'the edited script ran outside the OS sandbox');
+  });
+
+  test('a project with no such script is still reported unavailable, not failed', async () => {
+    assert.deepEqual(await verifier('code.build').verify({}, ctx), { ok: true, unavailable: true, detail: 'the project declares no "build" script' });
+  });
+
+  test('code.run_generated refuses', async () => {
+    await assert.rejects(capability('code.run_generated').run({ language: 'node', code: 'console.log(1)' }, ctx), { code: 'sandbox_unavailable' });
+  });
+
+  test("the user's own checkout, which nothing edits, still runs its declared scripts as /api/runs does", async () => {
+    const { output } = await capability('code.run_script').run({ script: 'hello' }, { localPath: fixture.repo });
+    assert.equal(output.sandboxed, false);
+    assert.match(output.output, /hello from a declared script/);
   });
 });

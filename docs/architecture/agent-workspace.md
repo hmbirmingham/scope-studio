@@ -223,6 +223,10 @@ and returns `{ ok, exitCode, signal, timedOut, limit, output, truncated,
 durationMs, mechanism }`. Linux uses bubblewrap (no network, read-only system,
 only `writable` writable, clear environment, prlimit limits); macOS uses
 `sandbox-exec`. With neither it throws `sandbox_unavailable` and runs nothing.
+When the engine runs as root the process runs as `nobody`; the `writable`
+directories are handed to that uid before each run by a `find -P … chown -h`
+inside a sandbox of its own, so a symlink left by an earlier run can never
+make the engine change the owner of a host file.
 
 The code plug-in (`server/src/plugins/code/`):
 
@@ -231,12 +235,16 @@ The code plug-in (`server/src/plugins/code/`):
 | `code.search` | `read_graph` | `code` | sandbox copy, else the checkout |
 | `code.read` | `read_graph` | `code` | sandbox copy, else the checkout |
 | `code.edit` | `edit_files` | `code` | sandbox copy only (`sandbox_required`) |
-| `code.run_script` | `run_scripts` | `scripts` | declared scripts; in the OS sandbox when the run has a sandbox copy |
+| `code.run_script` | `run_scripts` | `scripts` | declared scripts; in a sandbox copy only inside the OS sandbox (else `sandbox_unavailable`), in the user's checkout as `/api/runs` does |
 | `code.run_generated` | `run_generated_code` | `sandbox` | OS sandbox only |
 
 Verifiers `code.typecheck`, `code.lint`, `code.build`, `code.tests` run the
 matching declared script and return `{ ok, detail }`, or `{ ok: true,
-unavailable: true, detail }` when the project declares none.
+unavailable: true, detail }` when the project declares none. In a sandbox copy
+with no OS sandbox they run nothing and return `{ ok: false, unverified: true,
+detail }`. They are attached to `code.edit`, so they run under that step's
+`edit_files` decision; the script runs in the OS sandbox, in the copy the
+step just edited.
 
 ### ModelPort
 

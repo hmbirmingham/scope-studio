@@ -4,9 +4,8 @@ import { constants } from 'node:fs';
 import { lstat, mkdir, open, readFile, rm, writeFile } from 'node:fs/promises';
 import { dirname, join } from 'node:path';
 import { createScratchSandbox, removeSandbox, sandboxGit } from '../../workspace/sandbox/checkout.js';
-import { runSandboxed } from '../../workspace/sandbox/run.js';
 import { CodeError, checkoutRoot, resolveInside } from './paths.js';
-import { projectScripts, runDeclaredScript } from './scripts.js';
+import { defaultSandbox, projectScripts, runDeclaredScript } from './scripts.js';
 
 // The code vertical (docs/architecture/agent-workspace.md, "Plug-in
 // capability contract"). Reading and searching work in the run's sandbox copy
@@ -186,9 +185,9 @@ async function edit(input, ctx) {
   };
 }
 
-async function runScript(input, ctx) {
+async function runScript(input, ctx, sandbox) {
   const script = requireString(input, 'script', { max: 100 });
-  return { output: await runDeclaredScript(ctx, script) };
+  return { output: await runDeclaredScript(ctx, script, sandbox) };
 }
 
 const LANGUAGES = {
@@ -196,7 +195,7 @@ const LANGUAGES = {
   python: { command: 'python3', extension: 'py' },
 };
 
-async function runGenerated(input, ctx) {
+async function runGenerated(input, ctx, sandboxRunner) {
   const language = LANGUAGES[input?.language];
   if (!language) throw new CodeError('invalid_input', `language must be one of ${Object.keys(LANGUAGES).join(', ')}`);
   const code = requireString(input, 'code', { max: MAX_GENERATED_CHARS });
@@ -209,7 +208,7 @@ async function runGenerated(input, ctx) {
   const file = join(sandbox.scratch, `generated-${randomUUID()}.${language.extension}`);
   try {
     await writeFile(file, code, { mode: 0o644 });
-    const result = await runSandboxed({
+    const result = await sandboxRunner.run({
       command: language.command,
       args: [file],
       cwd: sandbox.scratch,
@@ -244,7 +243,7 @@ async function runGenerated(input, ctx) {
 // A verifier runs the project's own script for that check. A project that
 // declares none is not failed for it: the result says the check is
 // unavailable, so the step is verified by what the project does have.
-function scriptVerifier(name, scripts) {
+function scriptVerifier(name, scripts, sandbox) {
   return {
     name: `code.${name}`,
     tags: ['code'],
@@ -258,7 +257,15 @@ function scriptVerifier(name, scripts) {
       const declared = await projectScripts(root);
       const script = scripts.find((candidate) => declared.includes(candidate));
       if (!script) return { ok: true, unavailable: true, detail: `the project declares no ${scripts.map((s) => `"${s}"`).join(' or ')} script` };
-      const run = await runDeclaredScript(ctx, script);
+      let run;
+      try {
+        run = await runDeclaredScript(ctx, script, sandbox);
+      } catch (err) {
+        // A sandbox copy with no OS sandbox cannot be checked safely. That is
+        // not a pass: the step stays unverified and is not written back.
+        if (err.code !== 'sandbox_unavailable') throw err;
+        return { ok: false, unverified: true, detail: `npm run ${script} was not run: ${err.message}`, script, sandboxed: false };
+      }
       const tail = run.output.length > 2_000 ? `…${run.output.slice(-2_000)}` : run.output;
       const status = run.ok ? 'passed' : run.timedOut ? 'timed out' : `failed (exit ${run.exitCode})`;
       return { ok: run.ok, detail: `npm run ${script} ${status}${tail ? `\n${tail}` : ''}`, script, sandboxed: run.sandboxed };
@@ -268,88 +275,95 @@ function scriptVerifier(name, scripts) {
 
 const EDIT_VERIFIERS = ['code.typecheck', 'code.lint', 'code.build', 'code.tests'];
 
-export default {
-  name: 'code',
-  capabilities: [
-    {
-      name: 'code.search',
-      tags: ['code'],
-      permission: 'read_graph',
-      input: {
-        type: 'object',
-        required: ['query'],
-        properties: {
-          query: { type: 'string', description: 'Text to find (a fixed string unless regex is true).' },
-          path: { type: 'string', description: 'Limit the search to this file or directory, relative to the project.' },
-          regex: { type: 'boolean' },
-          ignoreCase: { type: 'boolean' },
-          maxResults: { type: 'integer', minimum: 1, maximum: MAX_RESULTS },
+// The plug-in, built around the OS sandbox it runs model-written code in.
+// The registry uses the default; tests pass a runner from
+// createSandboxRunner to exercise a machine without a sandbox.
+export function createCodePlugin({ sandbox = defaultSandbox } = {}) {
+  return {
+    name: 'code',
+    capabilities: [
+      {
+        name: 'code.search',
+        tags: ['code'],
+        permission: 'read_graph',
+        input: {
+          type: 'object',
+          required: ['query'],
+          properties: {
+            query: { type: 'string', description: 'Text to find (a fixed string unless regex is true).' },
+            path: { type: 'string', description: 'Limit the search to this file or directory, relative to the project.' },
+            regex: { type: 'boolean' },
+            ignoreCase: { type: 'boolean' },
+            maxResults: { type: 'integer', minimum: 1, maximum: MAX_RESULTS },
+          },
         },
+        verifiers: [],
+        run: search,
       },
-      verifiers: [],
-      run: search,
-    },
-    {
-      name: 'code.read',
-      tags: ['code'],
-      permission: 'read_graph',
-      input: {
-        type: 'object',
-        required: ['path'],
-        properties: {
-          path: { type: 'string' },
-          startLine: { type: 'integer', minimum: 1 },
-          maxLines: { type: 'integer', minimum: 1, maximum: MAX_READ_LINES },
+      {
+        name: 'code.read',
+        tags: ['code'],
+        permission: 'read_graph',
+        input: {
+          type: 'object',
+          required: ['path'],
+          properties: {
+            path: { type: 'string' },
+            startLine: { type: 'integer', minimum: 1 },
+            maxLines: { type: 'integer', minimum: 1, maximum: MAX_READ_LINES },
+          },
         },
+        verifiers: [],
+        run: read,
       },
-      verifiers: [],
-      run: read,
-    },
-    {
-      name: 'code.edit',
-      tags: ['code'],
-      permission: 'edit_files',
-      input: {
-        type: 'object',
-        required: ['path', 'search', 'replace'],
-        properties: {
-          path: { type: 'string' },
-          search: { type: 'string', description: 'Exact text that occurs exactly once in the file; empty only to create a new file.' },
-          replace: { type: 'string' },
+      {
+        name: 'code.edit',
+        tags: ['code'],
+        permission: 'edit_files',
+        input: {
+          type: 'object',
+          required: ['path', 'search', 'replace'],
+          properties: {
+            path: { type: 'string' },
+            search: { type: 'string', description: 'Exact text that occurs exactly once in the file; empty only to create a new file.' },
+            replace: { type: 'string' },
+          },
         },
+        verifiers: EDIT_VERIFIERS,
+        run: edit,
       },
-      verifiers: EDIT_VERIFIERS,
-      run: edit,
-    },
-    {
-      name: 'code.run_script',
-      tags: ['scripts'],
-      permission: 'run_scripts',
-      input: { type: 'object', required: ['script'], properties: { script: { type: 'string', description: 'A script the project declares in package.json.' } } },
-      verifiers: [],
-      run: runScript,
-    },
-    {
-      name: 'code.run_generated',
-      tags: ['sandbox'],
-      permission: 'run_generated_code',
-      input: {
-        type: 'object',
-        required: ['language', 'code'],
-        properties: {
-          language: { type: 'string', enum: Object.keys(LANGUAGES) },
-          code: { type: 'string' },
-          timeoutMs: { type: 'integer', minimum: 100, maximum: MAX_GENERATED_TIMEOUT_MS },
+      {
+        name: 'code.run_script',
+        tags: ['scripts'],
+        permission: 'run_scripts',
+        input: { type: 'object', required: ['script'], properties: { script: { type: 'string', description: 'A script the project declares in package.json.' } } },
+        verifiers: [],
+        run: (input, ctx) => runScript(input, ctx, sandbox),
+      },
+      {
+        name: 'code.run_generated',
+        tags: ['sandbox'],
+        permission: 'run_generated_code',
+        input: {
+          type: 'object',
+          required: ['language', 'code'],
+          properties: {
+            language: { type: 'string', enum: Object.keys(LANGUAGES) },
+            code: { type: 'string' },
+            timeoutMs: { type: 'integer', minimum: 100, maximum: MAX_GENERATED_TIMEOUT_MS },
+          },
         },
+        verifiers: [],
+        run: (input, ctx) => runGenerated(input, ctx, sandbox),
       },
-      verifiers: [],
-      run: runGenerated,
-    },
-  ],
-  verifiers: [
-    scriptVerifier('tests', ['test']),
-    scriptVerifier('build', ['build']),
-    scriptVerifier('typecheck', ['typecheck', 'type-check', 'tsc']),
-    scriptVerifier('lint', ['lint']),
-  ],
-};
+    ],
+    verifiers: [
+      scriptVerifier('tests', ['test'], sandbox),
+      scriptVerifier('build', ['build'], sandbox),
+      scriptVerifier('typecheck', ['typecheck', 'type-check', 'tsc'], sandbox),
+      scriptVerifier('lint', ['lint'], sandbox),
+    ],
+  };
+}
+
+export default createCodePlugin();
