@@ -211,16 +211,31 @@ export const TASKS = [
     },
   },
   {
+    // A research task: the paper set is ingested into the graph, and the
+    // check compares the run's final answer with the key. One paper holds
+    // the answer; two are near misses (a lower number on another benchmark,
+    // an abstract that rounds down).
     id: 'research-cited-summary',
     kind: 'research',
-    status: 'pending',
+    status: 'ready',
     title: 'Answer a question from a fixed paper set, with citations',
-    instructions: 'Using only the papers in the project, state which method has the lowest reported error on the benchmark and cite the table it comes from.',
-    fixture: { kind: 'paper set', description: 'five open-licence papers ingested as nodes, one of which holds the answer' },
-    check: { description: 'the named method and the cited paper and table match the answer key, and every citation resolves to an ingested node' },
-    pending: {
-      reason: 'no research plug-in is registered yet, so there is no citation capability or citation verifier',
-      readyWhen: 'the research plug-in registers a cited-answer capability and a research.citations verifier that resolves every citation to a node',
+    fixture: 'research-harbor',
+    instructions:
+      'Using only the papers in the project, state which method has the lowest reported word error rate on the Harbor benchmark, and cite the paper and the table it comes from, citing papers as [@citekey].',
+    check: {
+      kind: 'answer',
+      method: 'Kelp',
+      citekey: 'osei2022kelp',
+      table: 'Table 2',
+      description: 'the final answer names Kelp, cites [@osei2022kelp] and Table 2, and every citation in it resolves to an ingested paper',
+    },
+    dry: {
+      plan: '1. Sweep the library for word error rates on Harbor.\n2. Compare the lowest candidates.\n3. Answer with the method, paper and table.',
+      actions: [
+        { capability: 'research.sweep', input: { question: 'lowest word error rate on the Harbor benchmark', maxPapers: 5 }, summary: 'Find every paper reporting a word error rate on Harbor' },
+        { capability: 'research.sweep', input: { question: 'Table word error rate Harbor', papers: ['osei2022kelp', 'silva2023drift', 'park2022reef'] }, summary: 'Compare the three lowest Harbor results and their tables' },
+      ],
+      summary: 'Kelp has the lowest reported word error rate on the Harbor benchmark, 7.4, in Table 2 of [@osei2022kelp]; Drift reports 7.9 [@silva2023drift] and Reef 8.1 [@park2022reef].',
     },
   },
   {
@@ -262,10 +277,19 @@ export function validateTask(task) {
     if (!task.pending?.reason || !task.pending?.readyWhen) problems.push('a pending task says why it is pending and what makes it ready');
     return problems;
   }
-  if (task.kind !== 'code') problems.push(`only code tasks can run so far, not ${task.kind}`);
   const dir = typeof task.fixture === 'string' ? join(FIXTURES_DIR, task.fixture) : null;
-  if (!dir || !existsSync(join(dir, 'package.json')) || !statSync(dir).isDirectory()) problems.push(`fixture ${task.fixture} is missing`);
-  if (typeof task.check?.script !== 'string') problems.push('a code task names the script its check runs');
+  if (task.kind === 'code') {
+    if (!dir || !existsSync(join(dir, 'package.json')) || !statSync(dir).isDirectory()) problems.push(`fixture ${task.fixture} is missing`);
+    if (typeof task.check?.script !== 'string') problems.push('a code task names the script its check runs');
+  } else if (task.kind === 'research') {
+    // A research fixture is a reference library: a Better BibTeX export and its PDFs.
+    if (!dir || !existsSync(join(dir, 'library.json'))) problems.push(`fixture ${task.fixture} is missing its library.json`);
+    if (task.check?.kind !== 'answer' || !['method', 'citekey', 'table'].every((key) => typeof task.check?.[key] === 'string' && task.check[key])) {
+      problems.push('a research task checks its answer against a key: method, citekey and table');
+    }
+  } else {
+    problems.push(`only code and research tasks can run so far, not ${task.kind}`);
+  }
   if (!Array.isArray(task.dry?.actions) || task.dry.actions.length === 0) problems.push('a ready task scripts its dry run');
   for (const action of task.dry?.actions ?? []) {
     if (typeof action?.capability !== 'string' || !action.input || typeof action.input !== 'object') problems.push('every dry action names a capability and an input');

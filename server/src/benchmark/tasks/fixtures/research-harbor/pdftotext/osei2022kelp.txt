@@ -1,0 +1,10 @@
+Kelp: Streaming Transformers for Speech in Noise
+Ama Osei and Luis Ortega
+Kelp attends over a sliding window of 64 frames.
+
+4 Experiments
+Table 2: Word error rate on the Harbor benchmark.
+Tidal 9.8
+Kelp 7.4
+
+

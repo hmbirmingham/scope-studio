@@ -1,0 +1,64 @@
+%PDF-1.4
+1 0 obj
+<< /Type /Catalog /Pages 2 0 R >>
+endobj
+2 0 obj
+<< /Type /Pages /Kids [5 0 R 7 0 R] /Count 2 >>
+endobj
+3 0 obj
+<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica /Encoding /WinAnsiEncoding >>
+endobj
+4 0 obj
+<< /Length 459 >>
+stream
+BT
+/F1 11 Tf
+14 TL
+72 740 Td
+(Sparse Attention for Long Documents) Tj T*
+(Jane Doe and Rex Roe) Tj T*
+(Abstract. We study sparse attention patterns that let a transformer read) Tj T*
+(documents of one hundred thousand tokens.) Tj T*
+(1 Introduction) Tj T*
+(Dense attention compares every token with every other token.) Tj T*
+(Its cost grows quadratically with the length of the input.) Tj T*
+(Attention cost grows linearly with length in our design.) Tj T*
+ET
+endstream
+endobj
+5 0 obj
+<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Resources << /Font << /F1 3 0 R >> >> /Contents 4 0 R >>
+endobj
+6 0 obj
+<< /Length 339 >>
+stream
+BT
+/F1 11 Tf
+14 TL
+72 740 Td
+(4 Results) Tj T*
+(Our sparse model reaches a perplexity of 18.2 on the LongText benchmark.) Tj T*
+(The dense baseline reaches a perplexity of 21.7 on the same benchmark.) Tj T*
+(The model was trained on 8 GPUs for 3 days.) Tj T*
+(Table 2 reports the error on the LongText benchmark for every method.) Tj T*
+ET
+endstream
+endobj
+7 0 obj
+<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Resources << /Font << /F1 3 0 R >> >> /Contents 6 0 R >>
+endobj
+xref
+0 8
+0000000000 65535 f 
+0000000009 00000 n 
+0000000058 00000 n 
+0000000121 00000 n 
+0000000218 00000 n 
+0000000728 00000 n 
+0000000854 00000 n 
+0000001244 00000 n 
+trailer
+<< /Size 8 /Root 1 0 R >>
+startxref
+1370
+%%EOF
