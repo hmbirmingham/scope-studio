@@ -210,6 +210,13 @@ async function embedChanged(ownerId, records, embed) {
   return vectors;
 }
 
+// The external-id stems of every node a failed file produced on an earlier
+// ingest: `<project>|<kind>|<file>`, alone or followed by `|<name>`.
+const NODE_KINDS = ['schematic', 'symbol', 'net', 'bom_row', 'board', 'footprint'];
+export function keptForErrors(project, errors = []) {
+  return errors.flatMap(({ file }) => NODE_KINDS.map((kind) => externalId(project, kind, file)));
+}
+
 const toVector = (embedding) => (embedding ? `[${embedding.join(',')}]` : null);
 
 // Writes one project's graph. The whole replacement is one transaction, so
@@ -243,14 +250,18 @@ export async function writeProjectGraph({ ownerId, project, privacy, graph, embe
     }
 
     // What is no longer in the files goes, unless the scan stopped early
-    // and so cannot say what is gone.
+    // and so cannot say what is gone. A design that could not be read this
+    // time (half-saved, grown past the size cap, syntax the reader rejects)
+    // keeps the nodes of its last good ingest: deleting them would cascade to
+    // every link an agent's notes have to them.
     let pruned = 0;
     if (!graph.truncated) {
       const prefix = `${encodeURIComponent(project)}|`;
       ({ rowCount: pruned } = await client.query(
         `DELETE FROM nodes
-         WHERE owner_id = $1 AND source = $2 AND starts_with(external_id, $3) AND NOT (external_id = ANY($4::text[]))`,
-        [ownerId, SOURCE, prefix, [...ids.keys()]]
+         WHERE owner_id = $1 AND source = $2 AND starts_with(external_id, $3) AND NOT (external_id = ANY($4::text[]))
+           AND NOT EXISTS (SELECT 1 FROM unnest($5::text[]) AS kept(id) WHERE external_id = kept.id OR starts_with(external_id, kept.id || '|'))`,
+        [ownerId, SOURCE, prefix, [...ids.keys()], keptForErrors(project, graph.errors)]
       ));
     }
 

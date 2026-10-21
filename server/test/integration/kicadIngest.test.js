@@ -183,6 +183,45 @@ describe('KiCad ingest', () => {
     assert.equal(kept.rowCount, 1, 'the agent’s link to R1 survives re-ingest');
   });
 
+  test('a design that ingested before but now fails to load keeps its nodes and the notes linked to them', async () => {
+    const dir = projectFolder();
+    const sch = 'ldo-led.kicad_sch';
+    const pcb = 'ldo-led.kicad_pcb';
+    await ingestProject({ ownerId, project: 'half-saved', localPath: dir, embed: fakeEmbed().embed });
+    const before = await nodesOf('half-saved');
+    const r1 = await nodeId('half-saved', 'symbol', sch, 'R1');
+    const r1Footprint = await nodeId('half-saved', 'footprint', pcb, 'R1');
+    const { rows: [note] } = await server.pool.query(
+      "INSERT INTO nodes (owner_id, type, content, source, project) VALUES ($1, 'finding', 'R1 sets the LED current', 'agent', 'half-saved') RETURNING id",
+      [ownerId]
+    );
+    await server.pool.query(
+      "INSERT INTO node_relationships (source_id, target_id, type) VALUES ($1, $2, 'derived_from'), ($1, $3, 'derived_from')",
+      [note.id, r1, r1Footprint]
+    );
+
+    // A half-saved schematic and board: both stop mid-file.
+    for (const file of [sch, pcb]) {
+      const text = readFileSync(join(dir, file), 'utf8');
+      writeFileSync(join(dir, file), text.slice(0, Math.floor(text.length / 2)));
+    }
+    const summary = await ingestProject({ ownerId, project: 'half-saved', localPath: dir, embed: fakeEmbed().embed });
+    assert.deepEqual(summary.errors.map((entry) => entry.file), [pcb, sch]);
+    assert.equal(summary.pruned, 0, 'nothing of a design that failed to load is pruned');
+    assert.deepEqual((await nodesOf('half-saved')).map((node) => node.id), before.map((node) => node.id));
+    assert.equal(await nodeId('half-saved', 'symbol', sch, 'R1'), r1);
+    const links = await server.pool.query("SELECT target_id FROM node_relationships WHERE source_id = $1 AND type = 'derived_from' ORDER BY target_id", [note.id]);
+    assert.deepEqual(links.rows.map((row) => row.target_id), [r1, r1Footprint].sort());
+
+    // Once the schematic loads again, pruning applies to it as usual.
+    writeFileSync(join(dir, sch), readFileSync(join(FIXTURES, 'ldo-led-faulty', 'ldo-led-faulty.kicad_sch')));
+    const repaired = await ingestProject({ ownerId, project: 'half-saved', localPath: dir, embed: fakeEmbed().embed });
+    assert.deepEqual(repaired.errors.map((entry) => entry.file), [pcb]);
+    assert.equal(await nodeId('half-saved', 'symbol', sch, 'C2'), undefined, 'C2 left the repaired schematic');
+    assert.equal(await nodeId('half-saved', 'symbol', sch, 'R1'), r1);
+    assert.equal(await nodeId('half-saved', 'footprint', pcb, 'R1'), r1Footprint, 'the board still fails, so its footprints stay');
+  });
+
   test('projects and owners are kept apart', async () => {
     const dir = projectFolder();
     await ingestProject({ ownerId, project: 'one', localPath: dir, embed: fakeEmbed().embed });
