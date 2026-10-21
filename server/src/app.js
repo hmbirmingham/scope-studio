@@ -11,6 +11,7 @@ import actionsRouter from './routes/actions.js';
 import billingRouter from './routes/billing.js';
 import controlRouter from './control/routes.js';
 import nodesRouter from './routes/nodes.js';
+import cadPluginRouter from './routes/plugins/cad.js';
 import githubPluginRouter from './routes/plugins/github.js';
 import graphRouter from './routes/graph.js';
 import queryRouter from './routes/query.js';
@@ -57,6 +58,7 @@ function createApp(env) {
   app.use('/api/control', controlRouter);
   app.use('/api/graph', graphRouter);
   app.use('/api/nodes', nodesRouter);
+  app.use('/api/plugins/cad', cadPluginRouter);
   app.use('/api/plugins/github', githubPluginRouter);
   app.use('/api/query', queryRouter);
   app.use('/api/usage', usageRouter);
