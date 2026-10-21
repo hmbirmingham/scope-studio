@@ -2,7 +2,7 @@ import { extractJsonObject } from '../../workspace/runner/chooser.js';
 import { assertModelMayRead, byline, clip, complete, optionalInt, optionalRefs, requireText, scopeFor } from './common.js';
 import { excerptsOf, scorer } from './store.js';
 import { rankPapers, resolveRefs } from './sweep.js';
-import { ResearchError, normalizeText, terms } from './text.js';
+import { ResearchError, normalizeText, terms, withoutDoubleQuotes } from './text.js';
 
 // research.extract: an extraction table. Given columns (what to pull out of
 // each paper), one row per paper whose cells each carry the value, the
@@ -94,8 +94,10 @@ export function checkCell(cell, offered) {
   return { value: value.slice(0, VALUE_CHARS), status: 'supported', excerptId: entry.excerpt.id, page: entry.excerpt.page, quote };
 }
 
-function table(columns, rows) {
-  const esc = (text) => String(text).replace(/\|/g, '\\|').replace(/\s+/g, ' ');
+export function extractionTable(columns, rows) {
+  // Table text is shown without double quotes, so only the evidence lines
+  // below read as quotations to the verifier.
+  const esc = (text) => withoutDoubleQuotes(text).replace(/\|/g, '\\|').replace(/\s+/g, ' ');
   const lines = [`| Paper | ${columns.map((c) => esc(c.name)).join(' | ')} |`, `|---|${columns.map(() => '---').join('|')}|`];
   for (const row of rows) {
     const cells = columns.map((column) => {
@@ -109,7 +111,7 @@ function table(columns, rows) {
       .map((column) => ({ column, cell: row.cells[column.name] }))
       // A quote that itself holds a double quote cannot be written as a
       // quotation here; it is still in the structured output and checked.
-      .filter(({ cell }) => cell.status === 'supported' && !cell.quote.includes('"'))
+      .filter(({ cell }) => cell.status === 'supported' && !/["“”]/.test(cell.quote))
       .map(({ column, cell }) => `- ${esc(column.name)}, @${row.citekey}: "${cell.quote}" [@${row.citekey}, p. ${cell.page}]`)
   );
   return [...lines, '', 'Evidence:', ...(evidence.length > 0 ? evidence : ['- (no supported cells)'])].join('\n');
@@ -180,6 +182,6 @@ export async function extract(input, ctx) {
   return {
     output: { columns: columns.map((c) => c.name), rows, quotes, citations: rows.map((row) => ({ citekey: row.citekey })), supported, cells: rows.length * columns.length },
     touchedNodeIds: [...touched],
-    artifacts: [{ name: `Extraction table: ${columns.map((c) => c.name).join(', ')}`, content: table(columns, rows) }],
+    artifacts: [{ name: `Extraction table: ${columns.map((c) => c.name).join(', ')}`, content: extractionTable(columns, rows) }],
   };
 }

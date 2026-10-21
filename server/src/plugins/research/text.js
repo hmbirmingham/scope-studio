@@ -21,6 +21,14 @@ const FOLD = [
   [/­/g, ''],
 ];
 
+// Library text shown in a report (a title, an excerpt, a model's cell
+// value) with its double quotes made single, so the verifier's quotation
+// reader cannot pair a quote mark in one line with one in another and report
+// a quotation nobody wrote. Structured output keeps the exact text.
+export function withoutDoubleQuotes(text) {
+  return String(text ?? '').replace(/["“”„‟″]/g, "'");
+}
+
 export function normalizeText(text) {
   let out = String(text ?? '').normalize('NFKC');
   for (const [pattern, replacement] of FOLD) out = out.replace(pattern, replacement);
@@ -29,12 +37,20 @@ export function normalizeText(text) {
 
 const ENTITIES = { amp: '&', lt: '<', gt: '>', quot: '"', apos: "'", nbsp: ' ' };
 
-// Zotero stores notes as HTML. Only the text matters to the graph.
+// Notes have no size limit in Zotero; a note longer than this is cut before
+// it is converted, so one huge note cannot hold up an ingest.
+export const MAX_NOTE_CHARS = 500_000;
+
+// Zotero stores notes as HTML. Only the text matters to the graph. The tag
+// patterns stop at the next '<' as well as at '>', so text full of unclosed
+// '<' is scanned once rather than once from every '<' to the end of the
+// string (which took seconds for a 200 KB note and blocked the event loop).
 export function htmlToText(html) {
   return normalizeText(
     String(html ?? '')
-      .replace(/<(br|\/p|\/div|\/li|\/h\d)\b[^>]*>/gi, ' ')
-      .replace(/<[^>]*>/g, '')
+      .slice(0, MAX_NOTE_CHARS)
+      .replace(/<(br|\/p|\/div|\/li|\/h\d)\b[^<>]*>/gi, ' ')
+      .replace(/<[^<>]*>/g, '')
       .replace(/&(#x[0-9a-f]+|#\d+|[a-z]+);/gi, (match, entity) => {
         if (entity[0] === '#') {
           const code = entity[1].toLowerCase() === 'x' ? parseInt(entity.slice(2), 16) : parseInt(entity.slice(1), 10);
@@ -86,8 +102,16 @@ export function findDois(text) {
   return [...found];
 }
 
-// Pandoc citation groups: `[@key]`, `[@key, p. 3]`, `[@a; @b, pp. 2-3]`.
-const CITATION_GROUP = /\[([^\[\]]*@[^\[\]]*)\]/g;
+// The most text the citation and quotation readers scan. Model replies and
+// artifacts are far shorter; the verifiers refuse longer text outright rather
+// than check only part of it.
+export const MAX_SCAN_CHARS = 1_000_000;
+
+// Pandoc citation groups: `[@key]`, `[@key, p. 3]`, `[@a; @b, pp. 2-3]`. The
+// part before the first '@' may not hold another '@', so a group can match in
+// only one way; with `[^\[\]]*@` a '[' followed by many '@' and no ']' was
+// retried at every '@' (quadratic).
+const CITATION_GROUP = /\[([^\[\]@]*@[^\[\]]*)\]/g;
 const CITATION = /@([\p{L}\p{N}_][\p{L}\p{N}_:.#+\-/]*)(?:\s*,\s*(?:pp?\.?|page)\s*(\d+))?/gu;
 
 function cleanKey(key) {
@@ -96,7 +120,7 @@ function cleanKey(key) {
 
 export function findCitations(text) {
   const out = [];
-  for (const group of String(text ?? '').matchAll(CITATION_GROUP)) {
+  for (const group of String(text ?? '').slice(0, MAX_SCAN_CHARS).matchAll(CITATION_GROUP)) {
     for (const cite of group[1].matchAll(CITATION)) {
       out.push({ citekey: cleanKey(cite[1]), page: cite[2] ? Number(cite[2]) : null });
     }
@@ -108,11 +132,11 @@ export function findCitations(text) {
 // citation it comes from. A quoted span of three or more words with no
 // citation is reported too (citekey null), since the verifier cannot tie it
 // to a source and must say so.
-const QUOTE = /["“]([^"“”]{3,600}?)["”]\s*(\[[^\[\]]*@[^\[\]]*\])?/g;
+const QUOTE = /["“]([^"“”]{3,600}?)["”]\s*(\[[^\[\]@]*@[^\[\]]*\])?/g;
 
 export function findQuotes(text) {
   const out = [];
-  for (const match of String(text ?? '').matchAll(QUOTE)) {
+  for (const match of String(text ?? '').slice(0, MAX_SCAN_CHARS).matchAll(QUOTE)) {
     const quoted = normalizeText(match[1]);
     if (quoted.split(' ').length < 3) continue;
     const cite = match[2] ? findCitations(match[2])[0] : null;

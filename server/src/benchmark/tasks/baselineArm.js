@@ -100,9 +100,17 @@ function libraryReader(project) {
   return { state: 'active', level: 'sandboxed', modelPolicy: 'local_only', overrides: {}, scopes: { read: { projects: [project], sources: ['*'] }, write: { projects: [] } } };
 }
 
+// The tools the baseline loop may call for a kind of task. The baseline calls
+// them without can(), so it is given none that reach the web
+// (research.web_search would use SEARXNG_URL if it were set): a benchmark run
+// stays offline whatever the engine's environment says.
+export function baselineCapabilities(kind) {
+  return capabilitiesForTags(roleTemplate(ROLE_FOR_KIND[kind] ?? ROLE_FOR_KIND.code).tags).filter((capability) => capability.permission !== 'web');
+}
+
 export async function runBaselineTask({ task, arm, workspace, mode = 'dry', cap, apiKey, stream = streamAnthropic, maxTurns = BASELINE_MAX_TURNS, ownerId = null, db }) {
   registerBuiltInPlugins();
-  const capabilities = capabilitiesForTags(roleTemplate(ROLE_FOR_KIND[task.kind] ?? ROLE_FOR_KIND.code).tags);
+  const capabilities = baselineCapabilities(task.kind);
   const byName = new Map(capabilities.map((capability) => [capability.name, capability]));
   const research = task.kind === 'research';
   const project = `bench-${task.id}-${arm.name}`;

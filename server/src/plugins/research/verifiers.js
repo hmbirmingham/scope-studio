@@ -1,5 +1,5 @@
 import { excerptById, excerptsOf, findPapers, readableProjects } from './store.js';
-import { findCitations, findDois, findQuotes, normalizeDoi, normalizeText } from './text.js';
+import { MAX_SCAN_CHARS, findCitations, findDois, findQuotes, normalizeDoi, normalizeText } from './text.js';
 
 // The research verifiers. Both read the capability's structured output and
 // re-read its artifacts' text, so a citation or quotation that appears only in
@@ -16,6 +16,13 @@ function textsOf(result) {
     else if (typeof artifact?.content === 'string') out.push(artifact.content);
   }
   return out;
+}
+
+// The citation and quotation readers scan at most MAX_SCAN_CHARS of a text;
+// a longer one fails the check instead of passing on what was not read.
+function tooLong(result) {
+  const long = textsOf(result).find((text) => text.length > MAX_SCAN_CHARS);
+  return long === undefined ? null : { ok: false, detail: `the result's text is ${long.length} characters, more than the ${MAX_SCAN_CHARS} that can be checked` };
 }
 
 function listed(items, render) {
@@ -41,6 +48,8 @@ function citedBy(result) {
 }
 
 export async function verifyCitations(result, ctx) {
+  const refused = tooLong(result);
+  if (refused) return refused;
   const projects = readableProjects(ctx.agent);
   const { keys, dois } = citedBy(result);
   if (keys.length + dois.length === 0) {
@@ -147,6 +156,8 @@ async function checkQuote(quote, ctx, projects, pdf, citedPapers) {
 }
 
 export async function verifyQuotes(result, ctx, pdf) {
+  const refused = tooLong(result);
+  if (refused) return refused;
   const projects = readableProjects(ctx.agent);
   const seen = new Set();
   const quotes = [];

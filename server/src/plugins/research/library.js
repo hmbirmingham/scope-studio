@@ -129,88 +129,107 @@ function attachmentPath(path, { storageDir, attachmentKey }) {
 export async function readZoteroSqlite(path, { storageDir = join(dirname(path), 'storage') } = {}) {
   const { db, close } = await openCopy(path);
   try {
-    const fields = hasTable(db, 'fieldsCombined') ? 'fieldsCombined' : 'fields';
-    const types = hasTable(db, 'itemTypesCombined') ? 'itemTypesCombined' : 'itemTypes';
-    const deleted = hasTable(db, 'deletedItems') ? 'AND i.itemID NOT IN (SELECT itemID FROM deletedItems)' : '';
-
-    const rows = db.prepare(`SELECT i.itemID AS id, i.key, t.typeName AS type FROM items i JOIN ${types} t ON t.itemTypeID = i.itemTypeID WHERE 1 = 1 ${deleted} ORDER BY i.itemID`).all();
-    const byId = new Map();
-    const items = [];
-    for (const row of rows) {
-      if (SKIP_TYPES.has(row.type)) continue;
-      const item = { key: row.key, itemType: row.type, title: null, creators: [], year: null, doi: null, abstract: null, citekey: null, publication: null, attachments: [], notes: [], relations: [], fields: {} };
-      byId.set(row.id, item);
-      items.push(item);
-    }
-
-    for (const row of db.prepare(`SELECT d.itemID AS id, f.fieldName AS name, v.value FROM itemData d JOIN ${fields} f ON f.fieldID = d.fieldID JOIN itemDataValues v ON v.valueID = d.valueID`).all()) {
-      const item = byId.get(row.id);
-      if (item) item.fields[row.name] = row.value == null ? null : String(row.value);
-    }
-
-    for (const row of db.prepare('SELECT ic.itemID AS id, c.firstName AS first, c.lastName AS last, c.fieldMode AS mode, ct.creatorType AS type FROM itemCreators ic JOIN creators c ON c.creatorID = ic.creatorID JOIN creatorTypes ct ON ct.creatorTypeID = ic.creatorTypeID ORDER BY ic.itemID, ic.orderIndex').all()) {
-      const item = byId.get(row.id);
-      if (!item) continue;
-      const single = row.mode === 1 || !row.first;
-      item.creators.push({ name: single ? (row.last || row.first || '').trim() : `${row.first} ${row.last}`.trim(), type: row.type, family: single ? row.last || row.first : row.last });
-    }
-
-    const keyOf = new Map(db.prepare('SELECT itemID AS id, key FROM items').all().map((row) => [row.id, row.key]));
-    const live = (id) => !deleted || !db.prepare('SELECT 1 FROM deletedItems WHERE itemID = ?').get(id);
-
-    for (const row of db.prepare('SELECT a.itemID AS id, a.parentItemID AS parent, a.contentType, a.path FROM itemAttachments a ORDER BY a.itemID').all()) {
-      const item = byId.get(row.parent);
-      if (!item || !live(row.id) || !isPdf(row.path, row.contentType)) continue;
-      const key = keyOf.get(row.id);
-      item.attachments.push({ key, path: attachmentPath(row.path, { storageDir, attachmentKey: key }), stored: row.path, contentType: row.contentType ?? null });
-    }
-
-    const notes = [];
-    for (const row of db.prepare('SELECT n.itemID AS id, n.parentItemID AS parent, n.note FROM itemNotes n ORDER BY n.itemID').all()) {
-      if (!live(row.id)) continue;
-      const text = htmlToText(row.note);
-      if (!text) continue;
-      const note = { key: keyOf.get(row.id), text };
-      if (row.parent == null) notes.push(note);
-      else byId.get(row.parent)?.notes.push(note);
-    }
-
-    if (hasTable(db, 'itemRelations') && hasTable(db, 'relationPredicates')) {
-      for (const row of db.prepare('SELECT r.itemID AS id, p.predicate, r.object FROM itemRelations r JOIN relationPredicates p ON p.predicateID = r.predicateID').all()) {
-        const match = RELATION_PREDICATES.has(row.predicate) ? String(row.object).match(ITEM_URI) : null;
-        if (match) byId.get(row.id)?.relations.push(match[1]);
-      }
-    }
-
-    for (const item of items) {
-      const f = item.fields;
-      item.title = f.title ?? null;
-      item.abstract = f.abstractNote ?? null;
-      item.year = yearOf(f.date);
-      item.doi = normalizeDoi(f.DOI) ?? normalizeDoi(fromExtra(f.extra, 'DOI'));
-      item.citekey = f.citationKey || fromExtra(f.extra, 'Citation Key');
-      item.publication = f.publicationTitle ?? f.proceedingsTitle ?? f.bookTitle ?? null;
-      delete item.fields;
-    }
-    return finish('zotero-sqlite', items, notes);
+    return readZoteroTables(db, storageDir);
+  } catch (err) {
+    // A database with Zotero's items table but not the rest of its schema
+    // (an old, partial or damaged copy) is unreadable, not an engine error.
+    if (err?.code === 'ERR_SQLITE_ERROR') throw new ResearchError('library_unreadable', `${basename(path)} is not a complete Zotero database: ${err.message}`);
+    throw err;
   } finally {
     await close();
   }
+}
+
+function readZoteroTables(db, storageDir) {
+  const fields = hasTable(db, 'fieldsCombined') ? 'fieldsCombined' : 'fields';
+  const types = hasTable(db, 'itemTypesCombined') ? 'itemTypesCombined' : 'itemTypes';
+  const deleted = hasTable(db, 'deletedItems') ? 'AND i.itemID NOT IN (SELECT itemID FROM deletedItems)' : '';
+
+  const rows = db.prepare(`SELECT i.itemID AS id, i.key, t.typeName AS type FROM items i JOIN ${types} t ON t.itemTypeID = i.itemTypeID WHERE 1 = 1 ${deleted} ORDER BY i.itemID`).all();
+  const byId = new Map();
+  const items = [];
+  for (const row of rows) {
+    if (SKIP_TYPES.has(row.type)) continue;
+    const item = { key: row.key, itemType: row.type, title: null, creators: [], year: null, doi: null, abstract: null, citekey: null, publication: null, attachments: [], notes: [], relations: [], fields: {} };
+    byId.set(row.id, item);
+    items.push(item);
+  }
+
+  for (const row of db.prepare(`SELECT d.itemID AS id, f.fieldName AS name, v.value FROM itemData d JOIN ${fields} f ON f.fieldID = d.fieldID JOIN itemDataValues v ON v.valueID = d.valueID`).all()) {
+    const item = byId.get(row.id);
+    if (item) item.fields[row.name] = row.value == null ? null : String(row.value);
+  }
+
+  for (const row of db.prepare('SELECT ic.itemID AS id, c.firstName AS first, c.lastName AS last, c.fieldMode AS mode, ct.creatorType AS type FROM itemCreators ic JOIN creators c ON c.creatorID = ic.creatorID JOIN creatorTypes ct ON ct.creatorTypeID = ic.creatorTypeID ORDER BY ic.itemID, ic.orderIndex').all()) {
+    const item = byId.get(row.id);
+    if (!item) continue;
+    const single = row.mode === 1 || !row.first;
+    item.creators.push({ name: single ? (row.last || row.first || '').trim() : `${row.first} ${row.last}`.trim(), type: row.type, family: single ? row.last || row.first : row.last });
+  }
+
+  const keyOf = new Map(db.prepare('SELECT itemID AS id, key FROM items').all().map((row) => [row.id, row.key]));
+  const live = (id) => !deleted || !db.prepare('SELECT 1 FROM deletedItems WHERE itemID = ?').get(id);
+
+  for (const row of db.prepare('SELECT a.itemID AS id, a.parentItemID AS parent, a.contentType, a.path FROM itemAttachments a ORDER BY a.itemID').all()) {
+    const item = byId.get(row.parent);
+    if (!item || !live(row.id) || !isPdf(row.path, row.contentType)) continue;
+    const key = keyOf.get(row.id);
+    item.attachments.push({ key, path: attachmentPath(row.path, { storageDir, attachmentKey: key }), stored: row.path, contentType: row.contentType ?? null });
+  }
+
+  const notes = [];
+  for (const row of db.prepare('SELECT n.itemID AS id, n.parentItemID AS parent, n.note FROM itemNotes n ORDER BY n.itemID').all()) {
+    if (!live(row.id)) continue;
+    const text = htmlToText(row.note);
+    if (!text) continue;
+    const note = { key: keyOf.get(row.id), text };
+    if (row.parent == null) notes.push(note);
+    else byId.get(row.parent)?.notes.push(note);
+  }
+
+  if (hasTable(db, 'itemRelations') && hasTable(db, 'relationPredicates')) {
+    for (const row of db.prepare('SELECT r.itemID AS id, p.predicate, r.object FROM itemRelations r JOIN relationPredicates p ON p.predicateID = r.predicateID').all()) {
+      const match = RELATION_PREDICATES.has(row.predicate) ? String(row.object).match(ITEM_URI) : null;
+      if (match) byId.get(row.id)?.relations.push(match[1]);
+    }
+  }
+
+  for (const item of items) {
+    const f = item.fields;
+    item.title = f.title ?? null;
+    item.abstract = f.abstractNote ?? null;
+    item.year = yearOf(f.date);
+    item.doi = normalizeDoi(f.DOI) ?? normalizeDoi(fromExtra(f.extra, 'DOI'));
+    item.citekey = f.citationKey || fromExtra(f.extra, 'Citation Key');
+    item.publication = f.publicationTitle ?? f.proceedingsTitle ?? f.bookTitle ?? null;
+    delete item.fields;
+  }
+  return finish('zotero-sqlite', items, notes);
 }
 
 // ------------------------------------------------------- Better BibTeX JSON
 
 function bbtCreators(creators) {
   return (Array.isArray(creators) ? creators : []).map((creator) => {
-    const single = typeof creator?.name === 'string' && creator.name;
-    const name = single ? creator.name : `${creator?.firstName ?? ''} ${creator?.lastName ?? ''}`.trim();
-    return { name, type: creator?.creatorType ?? 'author', family: single ? creator.name : creator?.lastName ?? '' };
+    const single = str(creator?.name);
+    const name = single ?? `${str(creator?.firstName) ?? ''} ${str(creator?.lastName) ?? ''}`.trim();
+    return { name, type: str(creator?.creatorType) ?? 'author', family: single ?? str(creator?.lastName) ?? '' };
   });
+}
+
+// A field of a hand-edited or damaged export may be any JSON value; only a
+// non-empty string is taken.
+function str(value) {
+  return typeof value === 'string' && value ? value : null;
 }
 
 function bbtNotes(notes) {
   return (Array.isArray(notes) ? notes : [])
-    .map((note, index) => ({ key: typeof note === 'object' ? note.key ?? note.itemKey ?? `N${index}` : `N${index}`, text: htmlToText(typeof note === 'string' ? note : note?.note) }))
+    .map((note, index) => {
+      const object = note !== null && typeof note === 'object';
+      const key = object ? str(note.key) ?? str(note.itemKey) : null;
+      return { key: key ?? `N${index}`, text: htmlToText(typeof note === 'string' ? note : object ? str(note.note) : null) };
+    })
     .filter((note) => note.text);
 }
 
@@ -243,9 +262,9 @@ export async function readBetterBibtexJson(path) {
   const notes = [];
   for (const [index, entry] of data.items.entries()) {
     if (!entry || typeof entry !== 'object') continue;
-    const key = String(entry.itemKey ?? entry.key ?? `ITEM${index}`);
+    const key = str(entry.itemKey) ?? str(entry.key) ?? `ITEM${index}`;
     if (entry.itemType === 'note') {
-      const text = htmlToText(entry.note);
+      const text = htmlToText(str(entry.note));
       if (text) notes.push({ key, text });
       continue;
     }
@@ -253,23 +272,23 @@ export async function readBetterBibtexJson(path) {
     const creators = bbtCreators(entry.creators);
     items.push({
       key,
-      itemType: entry.itemType ?? 'document',
-      title: entry.title ?? null,
+      itemType: str(entry.itemType) ?? 'document',
+      title: str(entry.title),
       creators,
-      year: yearOf(entry.date),
-      doi: normalizeDoi(entry.DOI) ?? normalizeDoi(fromExtra(entry.extra, 'DOI')),
-      abstract: entry.abstractNote ?? null,
-      citekey: entry.citationKey || entry.citekey || fromExtra(entry.extra, 'Citation Key'),
-      publication: entry.publicationTitle ?? entry.proceedingsTitle ?? entry.bookTitle ?? null,
+      year: yearOf(str(entry.date)),
+      doi: normalizeDoi(entry.DOI) ?? normalizeDoi(fromExtra(str(entry.extra), 'DOI')),
+      abstract: str(entry.abstractNote),
+      citekey: str(entry.citationKey) ?? str(entry.citekey) ?? fromExtra(str(entry.extra), 'Citation Key'),
+      publication: str(entry.publicationTitle) ?? str(entry.proceedingsTitle) ?? str(entry.bookTitle),
       attachments: (Array.isArray(entry.attachments) ? entry.attachments : [])
-        .filter((attachment) => typeof attachment?.path === 'string' && isPdf(attachment.path, attachment.contentType ?? attachment.mimeType))
+        .filter((attachment) => str(attachment?.path) && isPdf(attachment.path, str(attachment.contentType) ?? str(attachment.mimeType)))
         .map((attachment, i) => ({
-          key: String(attachment.itemKey ?? attachment.key ?? `${key}-A${i}`),
+          key: str(attachment.itemKey) ?? str(attachment.key) ?? `${key}-A${i}`,
           // Better BibTeX writes absolute paths; a relative one is taken
           // relative to the export, which keeps a moved export readable.
           path: isAbsolute(attachment.path) ? attachment.path : resolve(base, attachment.path),
           stored: attachment.path,
-          contentType: attachment.contentType ?? attachment.mimeType ?? null,
+          contentType: str(attachment.contentType) ?? str(attachment.mimeType),
         })),
       notes: bbtNotes(entry.notes),
       relations: bbtRelations(entry.relations),

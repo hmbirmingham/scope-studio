@@ -1,6 +1,6 @@
 import { byline, clip, optionalInt, optionalRefs, requireText, scopeFor } from './common.js';
 import { findPapers, papersByIds, scorer, searchLibrary } from './store.js';
-import { ResearchError, normalizeDoi, terms } from './text.js';
+import { ResearchError, normalizeDoi, terms, withoutDoubleQuotes } from './text.js';
 
 // research.sweep: which papers in the library bear on a question, and the
 // excerpts that make each relevant. Ranking is lexical and deterministic
@@ -94,12 +94,16 @@ function present(entry) {
   };
 }
 
-function report(question, papers) {
-  if (papers.length === 0) return `Literature sweep: ${question}\n\nNothing in the library matches this question.`;
-  const lines = [`Literature sweep: ${question}`, ''];
+// The report shows library text without its double quotes: the excerpts are
+// checked through the structured output, and a quote mark left in one excerpt
+// would otherwise pair with one in the next line and fail the verifier.
+export function sweepReport(question, papers) {
+  const shown = withoutDoubleQuotes;
+  if (papers.length === 0) return `Literature sweep: ${shown(question)}\n\nNothing in the library matches this question.`;
+  const lines = [`Literature sweep: ${shown(question)}`, ''];
   papers.forEach((paper, i) => {
-    lines.push(`${i + 1}. ${paper.title ?? '(untitled)'} (${byline(paper)}) [@${paper.citekey}]${paper.doi ? ` doi:${paper.doi}` : ''} · score ${paper.score}`);
-    for (const excerpt of paper.excerpts) lines.push(`   > p. ${excerpt.page}: ${excerpt.text}`);
+    lines.push(`${i + 1}. ${shown(paper.title ?? '(untitled)')} (${shown(byline(paper))}) [@${paper.citekey}]${paper.doi ? ` doi:${paper.doi}` : ''} · score ${paper.score}`);
+    for (const excerpt of paper.excerpts) lines.push(`   > p. ${excerpt.page}: ${shown(excerpt.text)}`);
   });
   return lines.join('\n');
 }
@@ -125,7 +129,7 @@ export async function sweep(input, ctx) {
       quotes,
     },
     touchedNodeIds: papers.flatMap((paper) => [paper.paperId, ...paper.excerpts.map((excerpt) => excerpt.excerptId)]),
-    artifacts: [{ name: `Literature sweep: ${clip(question, 120)}`, content: report(question, papers) }],
+    artifacts: [{ name: `Literature sweep: ${clip(question, 120)}`, content: sweepReport(question, papers) }],
     findings: papers.length > 0 ? [`For "${clip(question, 200)}" the library's most relevant papers are ${papers.slice(0, 5).map((p) => `@${p.citekey}`).join(', ')}.`] : [],
   };
 }
