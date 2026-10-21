@@ -397,7 +397,6 @@ export function resolveDesign(files, rootPath) {
   for (const { key, entry } of realPins) {
     const group = groupOf(key);
     if (!group.pins.some((pin) => pin.reference === entry.reference && pin.number === entry.number)) group.pins.push(entry);
-    else entry.duplicate = true;
   }
   for (const [key, list] of names) groupOf(key).names.push(...list);
   for (const key of noConnectKeys) groupOf(key).noConnect = true;
