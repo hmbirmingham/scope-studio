@@ -47,7 +47,8 @@ describe('agent-workspace contract', () => {
     for (const path of ['/api/agents', '/api/tasks', '/api/approvals', '/api/agent-runs', '/api/workspace/events']) {
       assert.equal((await anonymous('GET', path)).status, 401, path);
     }
-    for (const path of ['/api/agents', '/api/agents/x/kill', '/api/tasks', '/api/approvals', '/api/agent-runs']) {
+    // /api/agent-runs is implemented by the runner (workspaceRunnerApi.test.js).
+    for (const path of ['/api/agents', '/api/agents/x/kill', '/api/tasks', '/api/approvals']) {
       assert.equal((await api('GET', path)).status, 501, path);
     }
   });

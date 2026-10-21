@@ -31,7 +31,7 @@ An agent is a user-owned, fully editable record:
 | `overrides` | Per-capability `allow` / `ask` / `deny` that replace the level's default for that capability. |
 | `scopes` | `{ read: { projects, sources }, write: { projects } }`. `projects` is a list of project names or `['*']`; `sources` is a list of plug-in sources (`github`, `kicad`, …) or `['*']`. |
 | `modelPolicy` | `local_only`, `local_cloud` (cloud for planning and hard steps where the plan allows it) or `own_key` (Key Pro: the user's own Anthropic key for planning and hard steps). |
-| `budget` | Per-run limits `{ maxTokens, maxUsd, maxWallMs }`. A run stops with `budget_exceeded` at the first limit it crosses. |
+| `budget` | Per-run limits `{ maxTokens, maxUsd, maxWallMs, maxSteps }`. A run may override any of them. A run stops with `budget_exceeded` at the first limit it crosses; `maxSteps` defaults to 50 so every run has a step limit. |
 | `state` | `active`, `paused` (no new steps start) or `killed` (the kill switch: every run is stopped and nothing new starts until the user re-activates the agent). |
 | `color` | The colour the agent's cursor uses on the map. |
 
@@ -165,6 +165,28 @@ Planning may use the cloud when the model policy and plan allow it; execution
 steps run on the local adapter unless the step is marked hard and the policy
 allows the cloud.
 
+The runner (`server/src/workspace/runner/`) implements this as follows.
+
+- The first step of a run is the planning step: writing the plan is its one
+  act (`can(write_notes)`), and it creates the run's `plan` node.
+- Every later step's act starts with the **step chooser**, one model call that
+  sees the goal, the packed slice and the role's capabilities and replies with
+  strict JSON `{ capability, input, hard?, done?, summary? }`. The reply is
+  validated (the capability is one the role may use, the input matches its
+  schema's required fields and types) before `can()` is asked. `done: true`
+  with no capability ends the run as `succeeded`. `hard` marks the step hard
+  for the model calls its capability makes through `ctx.model`.
+- The slice has a fixed budget (1,500 tokens, 8 nodes). The run's plan and its
+  most recent notes compete for it with boosted scores, so the next step reads
+  what the last one learned. They are the run's own memory, so they are
+  readable to it whatever its read sources say (they carry source `agent`);
+  the project scope still applies.
+- A step that cannot proceed (invalid chooser reply, `deny`, a capability
+  error, failed verification) is failed, and its step node records why, so the
+  next step sees it. Five failed steps in a row fail the run.
+- A kill aborts the step in flight. A pause lets the step in flight finish and
+  checkpoint, and stops at the next step boundary.
+
 ### Plug-in capability contract
 
 A plug-in (`server/src/plugins/<name>/`) declares what it can do:
@@ -179,7 +201,7 @@ export default {
       permission: 'read_graph',     // the capability `can()` is asked about
       input: { type: 'object', required: ['query'], properties: { query: { type: 'string' } } },
       verifiers: [],                // names of verifiers run after this capability
-      async run(input, ctx) { … },  // returns { output, touchedNodeIds?, artifacts? }
+      async run(input, ctx) { … },  // returns { output, touchedNodeIds?, artifacts?, findings?, decisions?, questions? }
     },
   ],
   verifiers: [
@@ -187,6 +209,12 @@ export default {
   ],
 };
 ```
+
+A capability may also declare `source` (the plug-in data it reads), which the
+runner passes to `can()`; without it a `read_graph` capability is allowed only
+for an agent whose read sources are `['*']`. `findings`, `decisions`,
+`questions` and `artifacts` in the result (each a string or
+`{ content, name? }`) become write-back nodes once the step is verified.
 
 `registerPlugin` (`server/src/workspace/capabilities.js`) validates the
 declaration and refuses duplicates. A role's tags select the capabilities an
@@ -276,11 +304,27 @@ none can point at another user's agent.
 `FOR UPDATE SKIP LOCKED`, increments `attempts` and holds a lease
 (`lease_owner`, `lease_until`); a run whose lease expired is reclaimed after a
 crash, and a run claimed more than three times is failed rather than
-reclaimed forever. A recurring run records the schedule slot it was queued
+reclaimed forever. `attempts` counts claims since the run last made progress:
+a checkpoint, parking for an approval or a clean hand-back resets it, so a
+long run with many approvals is not mistaken for one that keeps crashing. A recurring run records the schedule slot it was queued
 for in `scheduled_for`, unique per task, so two schedulers cannot enqueue the
 same slot. At most one approval per step can be pending.
 
 Write-back nodes carry `owner_id = run.owner_id`.
+
+Path B adds (migrations 025–027): `agent_run_costs`, the per-run cost ledger,
+one row per model call (`purpose`, `adapter`, `fallback_from`, `model`, token
+counts, `usd`) and never any prompt or answer text, from which the run's
+`tokens_used` and `cost_usd` are summed; `agent_run_steps.detail` and `.error`,
+the runner's own record of a step (the chooser's decision, the nodes it read,
+adapter fallbacks); and a unique index that allows one run-level cloud
+approval (`step_id` NULL, capability `cloud_model`) per run.
+
+The scheduler enqueues a due task with `scheduled_for = next_run_at` and
+advances `next_run_at` in the same transaction. Missed slots are not replayed
+(after downtime a task runs once, then continues from the next slot after
+now), a paused or killed agent's slot passes without a run, and a schedule
+that no longer parses stops the task (`next_run_at` NULL).
 
 ## HTTP surface
 
@@ -331,11 +375,13 @@ so two writers can never both win.
 | `queued` | `running` | worker | Claimed with `FOR UPDATE SKIP LOCKED`; sets `lease_owner`, `lease_until`, `started_at`. |
 | `running` | `running` | worker | Lease renewed at each step boundary. An expired lease is reclaimed by any worker from the last checkpoint. |
 | `running` | `waiting_approval` | worker | `can()` returned `ask`: the worker inserts an `agent_approvals` row for the step, parks the step in `waiting_approval`, releases the lease. |
-| `waiting_approval` | `queued` | `/api/approvals/:id` (resolve) | The last pending approval of the run was approved or rejected. The worker resumes the parked step and reads the decision from `agent_approvals`; a rejection marks the step `rejected` and the planner continues without it. |
+| `waiting_approval` | `queued` | `/api/approvals/:id` (resolve) | The last pending approval of the run was approved or rejected. The worker resumes the parked step and reads the decision from `agent_approvals`; a rejection marks the step `rejected` and the planner continues without it. The run-level cloud approval (`step_id` NULL) never holds a run in `waiting_approval` (the run uses local meanwhile), so only step approvals count here. |
 | `queued` / `running` / `waiting_approval` | `paused` | `/api/agents/:id/pause` | The agent is paused. A running worker sees it at the next step boundary and stops without overwriting it. |
 | `paused` | `queued` | `/api/agents/:id/resume` | A run that was waiting for approval comes back `queued`; the worker finds the step's approval still pending and parks it again. |
 | any non-terminal | `killed` | `/api/agents/:id/kill`, `/api/agent-runs/:id/cancel` | The kill switch. Sets `finished_at` and marks the run's pending approvals `expired`. The worker checks the run's status before each stage and aborts the step's `signal` when it sees `killed`. |
 | `running` | `failed` | worker | A reclaimed run whose `attempts` exceeds 3. |
+| `running` | `paused` / `killed` | worker | At a step boundary the worker finds the agent paused or killed but the run not yet marked (a race with the agents API). A worker-made kill also expires the run's pending approvals. |
+| `running` | `queued` | worker | The worker is stopping (engine shutdown): it hands the run back at a step boundary and releases the lease. |
 | `running` | `succeeded` / `failed` / `budget_exceeded` | worker | Terminal. Sets `finished_at`. |
 
 The worker publishes the matching `run.*` event for transitions it makes;
@@ -368,7 +414,7 @@ and with `GET /api/agent-runs/:id` also `steps: [Step]`, where
 Step is `{ id, index, kind, capability, status, input, output, verification, adapter, tokens, costUsd, nodeIds, startedAt, finishedAt }`.
 
 - `GET /api/agent-runs[?agentId=&status=]` → `{ runs }`
-- `POST /api/agent-runs` `{ taskId }` or `{ agentId, instructions, project? }` → 201 `{ run }`
+- `POST /api/agent-runs` `{ taskId }` or `{ agentId, instructions, project? }`, either with an optional `budget` override → 201 `{ run }` (409 `agent_not_active` for a paused or killed agent)
 - `GET /api/agent-runs/:id` → `{ run }`; `POST /api/agent-runs/:id/cancel` → `{ run }`
 
 **Approval**
