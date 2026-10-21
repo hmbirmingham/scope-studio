@@ -197,6 +197,47 @@ available to every role that carries its tag without touching the role.
 `run`, `step`, `project`, `localPath`, `sandbox` (when the step runs in one),
 `model` (a ModelPort), `signal` (aborts on kill or budget), and `emit(event)`.
 
+### Sandbox
+
+`ctx.sandbox` is the run's private copy of the project
+(`server/src/workspace/sandbox/`), made by `createSandbox({ runId, repoPath,
+carryUncommitted })` and removed by `removeSandbox(sandbox)` (or
+`withSandbox(options, fn)`, which removes it however `fn` ends):
+
+```js
+{ id, root, gitDir, worktree, scratch, head, carried }
+```
+
+It lives in the app data directory (`SCOPE_DATA_DIR`, else
+`$XDG_DATA_HOME/scope-studio` or `~/.local/share/scope-studio` on Linux,
+`~/Library/Application Support/Scope Studio` on macOS) under
+`sandboxes/<runId>/`, never inside the user's checkout or under a `.claude`
+directory. It is an independent clone of HEAD (no hard links, no `origin`), not
+a `git worktree`, so nothing in it shares the user's `.git`. Its git directory
+sits beside `worktree/` and host-side git always names it explicitly, so code
+in the OS sandbox cannot change the config that decides what git runs.
+
+`runSandboxed({ command, args, cwd, timeoutMs, memoryMb, cpuSeconds, maxOutput,
+writable?, readOnly?, protect?, signal? })` runs one process in the OS sandbox
+and returns `{ ok, exitCode, signal, timedOut, limit, output, truncated,
+durationMs, mechanism }`. Linux uses bubblewrap (no network, read-only system,
+only `writable` writable, clear environment, prlimit limits); macOS uses
+`sandbox-exec`. With neither it throws `sandbox_unavailable` and runs nothing.
+
+The code plug-in (`server/src/plugins/code/`):
+
+| Capability | Permission | Tags | Works in |
+|---|---|---|---|
+| `code.search` | `read_graph` | `code` | sandbox copy, else the checkout |
+| `code.read` | `read_graph` | `code` | sandbox copy, else the checkout |
+| `code.edit` | `edit_files` | `code` | sandbox copy only (`sandbox_required`) |
+| `code.run_script` | `run_scripts` | `scripts` | declared scripts; in the OS sandbox when the run has a sandbox copy |
+| `code.run_generated` | `run_generated_code` | `sandbox` | OS sandbox only |
+
+Verifiers `code.typecheck`, `code.lint`, `code.build`, `code.tests` run the
+matching declared script and return `{ ok, detail }`, or `{ ok: true,
+unavailable: true, detail }` when the project declares none.
+
 ### ModelPort
 
 One interface, three adapters (`server/src/workspace/modelPort.js`):
