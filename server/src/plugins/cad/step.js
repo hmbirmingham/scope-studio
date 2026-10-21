@@ -12,7 +12,13 @@ const MAX_ENTITIES = 2_000_000;
 // A parameter list as values: strings, numbers, references ({ ref }),
 // enumerations ({ enum }), $ (null), * (derived), nested lists and typed
 // values ({ type, params }).
-function parseParams(text, start) {
+//
+// Real files nest a handful of levels; the cap turns a hostile or broken
+// file's thousands of open brackets into invalid_step instead of a stack
+// overflow.
+const MAX_PARAM_DEPTH = 64;
+function parseParams(text, start, depth = 0) {
+  if (depth > MAX_PARAM_DEPTH) throw new CadError('invalid_step', `parameter lists nested more than ${MAX_PARAM_DEPTH} deep`);
   const values = [];
   let i = start;
   const skip = () => {
@@ -46,7 +52,7 @@ function parseParams(text, start) {
       }
       values.push(value);
     } else if (ch === '(') {
-      const inner = parseParams(text, i + 1);
+      const inner = parseParams(text, i + 1, depth + 1);
       values.push(inner.values);
       i = inner.end;
     } else if (ch === '#') {
@@ -67,6 +73,7 @@ function parseParams(text, start) {
       i += 1;
     } else if (ch === '"') {
       const end = text.indexOf('"', i + 1);
+      if (end === -1) throw new CadError('invalid_step', 'unterminated binary value');
       values.push({ binary: text.slice(i + 1, end) });
       i = end + 1;
     } else {
@@ -81,7 +88,7 @@ function parseParams(text, start) {
       i += keyword[0].length;
       skip();
       if (text[i] !== '(') throw new CadError('invalid_step', `typed value ${keyword[0]} has no parameters`);
-      const inner = parseParams(text, i + 1);
+      const inner = parseParams(text, i + 1, depth + 1);
       values.push({ type: keyword[0].toUpperCase(), params: inner.values });
       i = inner.end;
     }

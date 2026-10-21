@@ -251,12 +251,16 @@ export function loopDistance(p, q) {
 }
 
 const MAX_SECTION_POINTS = 200_000;
+// Point-in-polygon and segment-pair tests the nesting and wall-thickness
+// passes may make. Both are quadratic in the loops' points, so a finely
+// tessellated section is refused rather than left to hold the event loop.
+const MAX_SECTION_WORK = 50_000_000;
 
 // The loops where the mesh crosses the plane `axis = at`. A vertex exactly
 // on the plane is treated as lying just above it (a consistent symbolic
 // perturbation), so every crossing is through an edge's interior and the
 // segments chain into closed loops on a watertight mesh.
-export function section(t, { axis = 'z', at } = {}) {
+export function section(t, { axis = 'z', at, maxWork = MAX_SECTION_WORK } = {}) {
   const k = AXES[axis];
   if (k === undefined) throw new CadError('invalid_input', 'section axis must be x, y or z');
   if (typeof at !== 'number' || !Number.isFinite(at)) throw new CadError('invalid_input', 'section position must be a number');
@@ -327,6 +331,13 @@ export function section(t, { axis = 'z', at } = {}) {
     if (closed && chain.length >= 3) loops.push(chain.map((key) => points.get(key)));
     else open += 1;
   }
+
+  // Nesting tests each loop's first point against every other loop's
+  // edges; wall thickness pairs every edge of a hole with every other
+  // loop's edges. Bound both before doing either.
+  const total = loops.reduce((sum, loop) => sum + loop.length, 0);
+  const work = loops.length * total + loops.reduce((sum, loop) => sum + loop.length * (total - loop.length), 0);
+  if (work > maxWork) throw new CadError('too_complex', `the section's ${loops.length} loops of ${total} points are too many to measure; simplify the mesh`);
 
   const described = loops.map((loop) => {
     const signed = polygonArea(loop);

@@ -10,8 +10,10 @@ import { fileURLToPath } from 'node:url';
 // files where the driver would have. Everything between (cadquery.js, the
 // plug-in, the verifiers) runs for real either way.
 //
-// Recordings are made by record.mjs with a real CadQuery. A request that was
-// never recorded fails loudly rather than inventing an answer.
+// Recordings are made by running the CAD integration tests with CAD_RECORD=1
+// against a real CadQuery (see README.md). A request that was never recorded
+// fails loudly rather than inventing an answer. Requests are keyed by their
+// input names, not contents, so re-record after changing a fixture's bytes.
 
 const here = dirname(fileURLToPath(import.meta.url));
 export const RECORDINGS = join(here, 'recorded.json');
@@ -77,7 +79,7 @@ export function replaySandbox({ recordings = loadRecordings(), status = { availa
       const key = requestKey(request, script);
       calls.push({ key, options });
       const recorded = recordings[key];
-      if (!recorded) throw new Error(`no recorded CadQuery answer for ${key}; run test/fixtures/cad/record.mjs with CadQuery installed`);
+      if (!recorded) throw new Error(`no recorded CadQuery answer for ${key}; re-run the CAD integration tests with CAD_RECORD=1 and CadQuery installed (see test/fixtures/cad/README.md)`);
       for (const [name, base64] of Object.entries(recorded.files ?? {})) {
         const path = join(options.cwd, name);
         mkdirSync(dirname(path), { recursive: true });

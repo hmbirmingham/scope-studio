@@ -150,6 +150,12 @@ describe('cross-sections and hole measures', () => {
     assert.throws(() => section(box(10), { axis: 'z', at: Number.NaN }), (err) => err.code === 'invalid_input');
   });
 
+  test('a section too detailed to measure is refused rather than computed for minutes', () => {
+    // The nesting and wall-thickness passes are quadratic in the loops' points.
+    assert.throws(() => section(bracket(), { axis: 'z', at: 2.5, maxWork: 100 }), (err) => err.code === 'too_complex');
+    assert.equal(section(bracket(), { axis: 'z', at: 2.5 }).holes.length, 2);
+  });
+
   test('declared checks pass and fail on what is measured', () => {
     const triangles = parseStl(fixture('bracket.stl')).triangles;
     const results = evaluateChecks(triangles, validateChecks([
@@ -327,6 +333,15 @@ describe('STEP product structure', () => {
     assert.throws(() => parseStep(Buffer.from("ISO-10303-21;\nHEADER;\nENDSEC;\nDATA;\n#1=PRODUCT('a','b',;\n")), (err) => err.code === 'invalid_step');
     assert.throws(() => parseStep(Buffer.from('ISO-10303-21;\nHEADER;\nENDSEC;\nDATA;\nENDSEC;\nEND-ISO-10303-21;\n')), /no DATA/);
     assert.throws(() => parseStep(Buffer.from("ISO-10303-21;\nDATA;\n#1=PRODUCT('a /* unterminated';\n")), (err) => err.code === 'invalid_step');
+  });
+
+  test('refuses an unterminated binary value or runaway nesting as invalid STEP, not a stack overflow', () => {
+    const data = (entity) => Buffer.from(`ISO-10303-21;\nHEADER;\nENDSEC;\nDATA;\n${entity};\nENDSEC;\nEND-ISO-10303-21;\n`);
+    for (const entity of ['#1=PRODUCT("0AB', `#1=PRODUCT(${'('.repeat(50_000)}`, `#1=PRODUCT(${'X('.repeat(50_000)}`]) {
+      assert.throws(() => readStep(data(entity)), (err) => err.code === 'invalid_step' && !(err instanceof RangeError), entity.slice(0, 20));
+    }
+    // Ordinary nesting still reads.
+    assert.doesNotThrow(() => parseStep(data(`#1=PRODUCT(${'('.repeat(10)}1${')'.repeat(10)})`)));
   });
 });
 
