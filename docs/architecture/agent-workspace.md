@@ -645,7 +645,10 @@ junction), pins at one point join, power ports, global labels and hidden
 power-input pins join by name across the design, local labels by name on one
 sheet, and sheet pins join the child's hierarchical labels. Buses are not
 followed. Net names follow KiCad (`/LED_A` for a root-sheet local label,
-`Net-(R1-Pad2)` when nothing names a net).
+`Net-(R1-Pad2)` when nothing names a net). Points are indexed by row and
+column before they are matched to wires, and a design with more than 500,000
+connection points, or whose wires would need more than 5,000,000
+point-on-wire tests, is refused with `design_too_large`.
 
 Ingest: `POST /api/plugins/kicad/ingest { project, privacy? }` reads the
 folder bound to the project (`project_settings.local_path`) as a background
@@ -657,7 +660,9 @@ a footprint `implements` its symbol (by the symbol path the footprint
 records, else by reference). External ids are
 `<project>|<kind>|<file>[|<name>]`; re-ingest updates in place, removes what
 is gone and rebuilds these links in one transaction, leaving links from other
-nodes (an agent's notes) alone. `GET /api/plugins/kicad/status` says whether
+nodes (an agent's notes) alone. A file that fails to load keeps the nodes of
+its last good ingest (it is listed in the summary's `errors`), and nothing is
+pruned when the folder scan was truncated. `GET /api/plugins/kicad/status` says whether
 kicad-cli can run ERC and DRC.
 
 | Capability | Permission | Tags | Does |
@@ -679,6 +684,8 @@ Verifiers `kicad.erc` and `kicad.drc` run `kicad-cli sch erc` / `pcb drc`
 directory inside the OS sandbox, never on the host, and pass when the report
 has no error-severity violation. Without kicad-cli 8+ they return `{ ok:
 true, unavailable: true }`; without an OS sandbox `{ ok: false, unverified:
-true }`. They are for capabilities that change a design; the four read-only
+true }`. They check at most 10 designs per step; when more exist, or the
+folder scan was truncated, a clean result is `{ ok: false, unverified: true }`
+with the number skipped, never a pass. They are for capabilities that change a design; the four read-only
 capabilities above carry none, since a design that fails ERC must not fail a
 read of it.
