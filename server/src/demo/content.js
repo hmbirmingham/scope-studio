@@ -3,7 +3,7 @@
 // report draft contains real mistakes (a row copied from the wrong length, a
 // misread slope, an uncertainty that ignores reaction time, a claim the data
 // cannot support), so "check my report against the data" has something true
-// to find. The data are consistent with g = 9.79 m/s².
+// to find. A least-squares fit of the data gives g = 9.78 ± 0.04 m/s².
 //
 // Every node's first line is its title: the map labels a node with it.
 
@@ -163,17 +163,22 @@ export const WEEKLY_TASK = 'Weekly study guide';
 export const DEMO_TASKS = [
   {
     title: CHECK_REPORT_TASK,
+    // Written the way a student would after a first try: a small local model
+    // follows a short, explicit recipe far more reliably than an open goal,
+    // and the data are in the map, not in a file the sandbox could open.
     instructions:
-      'Recompute g from pendulum-data.csv (period = time for 10 oscillations / 10; fit T² against L through all 15 trials; g = 4π²/slope; ' +
-      'uncertainty from the spread of the trials). Compare it with my lab report draft and the rubric in the handout, flag every number ' +
-      'or claim that is wrong or unsupported, and save a short list of fixes to the map.',
+      'Recompute g from pendulum-data.csv and check my lab report against it, in three steps. ' +
+      '1) One code step (node): write the 15 rows of the CSV into the code (there is no file to open), take T = time for 10 oscillations / 10, ' +
+      'fit T² against L through all 15 trials, and print the slope, g = 4π²/slope with its uncertainty, and the mean T at each length. ' +
+      '2) Compare that with my lab report draft and the handout’s rubric, and save one short list of every number or claim to fix with graph.write_artifact. ' +
+      '3) Finish.',
     schedule: null,
   },
   {
     title: STUDY_GUIDE_TASK,
     instructions:
       'Make a one-page study guide for the midterm from my lecture 7 and 8 notes and problem set 4: key formulas with units, ' +
-      'one worked example each, and the three mistakes students make most often. Save it to the map.',
+      'one worked example each, and the three mistakes students make most often. Save it with graph.write_artifact in one step, then finish.',
     schedule: null,
   },
   {

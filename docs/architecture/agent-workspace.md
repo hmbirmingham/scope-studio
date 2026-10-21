@@ -314,6 +314,15 @@ detail }`. They are attached to `code.edit`, so they run under that step's
 `edit_files` decision; the script runs in the OS sandbox, in the copy the
 step just edited.
 
+The graph plug-in (`server/src/plugins/graph/`) serves the `graph` tag that
+every built-in role carries:
+
+| Capability | Permission | Tags | Does |
+|---|---|---|---|
+| `graph.write_artifact` | `write_notes` | `graph` | `{ title, content }` → one `artifact` note (content at most 3,800 characters), written back like any other once the step is verified. |
+
+Reading needs no capability: every step already reads its packed slice.
+
 ### ModelPort
 
 One interface, three adapters (`server/src/workspace/modelPort.js`):

@@ -45,3 +45,8 @@ scope-studio/
 1. Copy `.env.example` to `.env` and fill in the required values.
 2. `npm install` in both `client/` and `server/`.
 3. See `dev-notes/` for the current sprint plan.
+
+## Demo
+
+`npm run demo` starts a seeded student project with a local agent, free and
+offline: see [docs/demo.md](docs/demo.md) for the Mac setup and a talk track.
