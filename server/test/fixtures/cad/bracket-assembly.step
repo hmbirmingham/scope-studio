@@ -1,0 +1,28 @@
+ISO-10303-21;
+HEADER;
+FILE_DESCRIPTION(('Scope Studio CAD fixture: bracket assembly'),'2;1');
+FILE_NAME('bracket-assembly.step','2026-01-01T00:00:00',('Scope Studio'),('Scope Studio'),'fixture generator','generate.mjs','');
+FILE_SCHEMA(('AUTOMOTIVE_DESIGN { 1 0 10303 214 1 1 1 1 }'));
+ENDSEC;
+DATA;
+/* the application context every product refers to */
+#1=APPLICATION_CONTEXT('automotive design');
+#2=PRODUCT_CONTEXT('',#1,'mechanical');
+#3=PRODUCT_DEFINITION_CONTEXT('part definition',#1,'design');
+#10=PRODUCT('ASM-1','Bracket assembly','A bracket bolted down; it''s the root',(#2));
+#11=PRODUCT_DEFINITION_FORMATION('','',#10);
+#12=PRODUCT_DEFINITION('design','',#11,#3);
+#20=PRODUCT('BRK-1','Bracket','Mounting bracket',(#2));
+#21=PRODUCT_DEFINITION_FORMATION_WITH_SPECIFIED_SOURCE('','',#20,.NOT_KNOWN.);
+#22=PRODUCT_DEFINITION('design','',#21,#3);
+#30=PRODUCT('BLT-M4','M4 bolt','ISO 4762 M4x12',(#2));
+#31=PRODUCT_DEFINITION_FORMATION('','',#30);
+#32=PRODUCT_DEFINITION('design','',#31,#3);
+#40=NEXT_ASSEMBLY_USAGE_OCCURRENCE('1','Bracket','',#12,#22,$);
+#41=NEXT_ASSEMBLY_USAGE_OCCURRENCE('2','Bolt 1','',#12,#32,$);
+#42=NEXT_ASSEMBLY_USAGE_OCCURRENCE('3','Bolt 2','',#12,#32,$);
+#50=(LENGTH_UNIT()NAMED_UNIT(*)SI_UNIT(.MILLI.,.METRE.));
+#51=(NAMED_UNIT(*)PLANE_ANGLE_UNIT()SI_UNIT($,.RADIAN.));
+#52=UNCERTAINTY_MEASURE_WITH_UNIT(LENGTH_MEASURE(1.E-07),#50,'distance_accuracy_value','confusion accuracy');
+ENDSEC;
+END-ISO-10303-21;

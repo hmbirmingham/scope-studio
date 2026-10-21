@@ -1,0 +1,10 @@
+Drift: Self-Training at Scale for Speech
+Rita Silva
+Drift labels 10,000 hours of audio with its own earlier model.
+
+5 Evaluation
+Table 2: Word error rate on the Harbor benchmark.
+Drift 7.9
+Drift without self-training 10.3
+
+

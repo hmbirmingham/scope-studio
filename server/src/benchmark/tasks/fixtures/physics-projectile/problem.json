@@ -1,0 +1,17 @@
+{
+  "id": "projectile-range",
+  "title": "Range of a baseball with quadratic drag",
+  "statement": "A baseball (mass 0.145 kg, radius 3.66 cm, drag coefficient 0.47) is launched from ground level at 40.0 m/s, 35 degrees above the horizontal, in air of density 1.225 kg/m^3 with g = 9.81 m/s^2. Find its range on level ground with quadratic drag, to three significant figures, in metres. The drag-free range v0^2 sin(2 theta)/g is the limit of vanishing drag.",
+  "given": {
+    "m": "0.145 kg",
+    "r": "3.66 cm",
+    "Cd": "0.47",
+    "rho": "1.225 kg/m^3",
+    "v0": "40 m/s",
+    "theta": "35 deg",
+    "g": "9.81 m/s^2"
+  },
+  "find": {
+    "range": "m"
+  }
+}

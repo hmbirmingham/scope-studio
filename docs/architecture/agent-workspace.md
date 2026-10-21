@@ -594,9 +594,30 @@ the tokens run (local, $0) more than from how many there are. The dry run
 measures the harness and the economics, not model quality; that is what
 `--live-local` and `--live` are for.
 
-KiCad, research, physics and CAD tasks are defined as pending acceptance gates
+A research task (`research-cited-summary`) runs too: its paper set is
+ingested into the graph for each arm, the Scope arms run as a Researcher and
+the baselines get the Researcher's tools, and the check reads the final
+answer against the task's key (it must name the method, cite the paper by
+citekey and name the table, and every citation in it must resolve to an
+ingested paper).
+
+KiCad tasks are defined as pending acceptance gates
 (why each is pending and which plug-in and verifier make it ready) and are
-listed in every report, never run and never counted as failures.
+listed in every report, never run and never counted as failures. A ready
+task of another vertical names the `role` both arms get (so the same
+capabilities), the external tools it `requires`, and its own check: the CAD
+task (`cad-bracket-hole-spacing`) is done by the CAD Designer, requires
+CadQuery, and is checked by measuring the `bracket.stl` the run leaves
+behind. Where a required tool is not installed the task is listed as
+unavailable, like a pending gate: not run and not a failure.
+
+The physics task (`physics-projectile-range`) is ready. A task may name its
+role (`role: 'physicist'`); its fixture holds only the problem statement,
+which the Scope arm ingests into the task's graph and the baseline gets in
+its first message. Its check is a quantity check (`check.kind:
+'quantity'`): the arm's last `physics.compute` result that passed its own
+verifiers (a computation node was written), in metres, within 0.5% of a
+reference kept in the catalog and never shown to an arm.
 
 ## Plug-in registration
 
@@ -635,6 +656,159 @@ capabilities, verifiers, fixtures and benchmark tasks, and one line in
 
 Reserved migration numbers: KiCad 040–049, research 050–059, physics 060–069,
 CAD 070–079.
+
+### Research (`server/src/plugins/research/`)
+
+**Ingest** (`POST /api/plugins/research/ingest { path, project?, privacy?,
+storageDir? }` → 202 job, polled at `GET /api/plugins/research/jobs/:id`;
+`GET /api/plugins/research/status` says whether pdftotext is installed).
+`path` is an absolute path to Zotero's `zotero.sqlite` (copied, then opened
+read-only with `node:sqlite`, so Zotero's lock never matters; attachments are
+read from the `storage/` folder beside it unless `storageDir` says otherwise)
+or a Better BibTeX JSON export. Items become `paper` nodes, notes `note`
+nodes (`part_of` their paper), PDF pages `excerpt` nodes `part_of` their
+paper (text from `pdftotext`, run with `execFile`, a fixed argument list, a
+time limit and an output cap; chunked within a page, never across one), and
+`dc:relation` / `cito:cites` relations `cites` edges. Source `zotero`,
+`project` default `zotero`, privacy default `local` (the user may choose
+`cloud`), external ids `<project>/item/<key>`, `<project>/note/<key>`,
+`<project>/item/<key>/pdf/<attachment>/p<page>c<chunk>`. Migration 050 adds
+`research_items` (one row per paper, note or excerpt node: citekey, DOI,
+title, authors, year, attachments; an excerpt's page and exact text), which
+citations and quotations are checked against. Ingesting again updates in
+place and removes what the library no longer holds; without pdftotext papers
+and notes still ingest and any page text from an earlier ingest is kept.
+
+| Capability | Permission | Tags | What it does |
+|---|---|---|---|
+| `research.sweep` | `read_graph` (source `zotero`) | `research` | Ranked papers for a question, each with the excerpts (page, text) that make it relevant. Lexical and deterministic. |
+| `research.extract` | `read_graph` (source `zotero`) | `research` | An extraction table: for given columns, one row per paper; a cell is kept only with the excerpt, page and a quote that is verbatim in that excerpt, otherwise it is empty and marked unsupported. The model only reads. |
+| `research.related_work` | `read_graph` (source `zotero`) | `research` | A related-work paragraph drafted through `ctx.model` from excerpts only, citing `[@citekey]` and quoting `"…" [@citekey, p. N]`. |
+| `research.web_search` | `web` | `research`, `web` | Web search through a provider-neutral interface (`{ name, search({ query, maxResults, signal }) }`); a SearXNG adapter is chosen by `SEARXNG_URL`. With no provider it refuses (`web_search_unavailable`); offline it refuses (`offline`). |
+
+The first three run the verifiers `research.citations_resolve` (every citekey
+and DOI in the output and its artifacts resolves to a paper the agent may
+read; a draft may cite only the papers whose excerpts it was given, and must
+cite something) and `research.quotes_match` (every quotation, structured or
+in the text, appears verbatim after whitespace and typographic folding in
+the excerpt or page it cites; elisions `...` match in order; a quotation
+without a citation must come from a paper the result cites). A paper with no
+stored page text is checked against its PDF with pdftotext; without the tool
+that quotation is reported `unavailable`, never passed.
+
+A capability that sends library text to `ctx.model` (extract, related work)
+refuses with `private_sources` when any of that text is `local` and the
+agent could reach the cloud (online, and `cloud_model` not denied for it),
+because the model router decides by the step's slice, not by what the
+capability read.
+
+### Physics
+
+The physics plug-in (`server/src/plugins/physics/`, tag `physics`) needs no
+migration of its own: it uses 039's `derivation` and `computation` types,
+source `physics`, and the existing `spec` type for ingested problems.
+
+| Capability | Permission | Verifiers | What it does |
+|---|---|---|---|
+| `physics.derive` | `write_notes` | `physics.units`, `physics.limits` | Asks `ctx.model` for a derivation as JSON (result expression and units, variables with representative values and units, explicit assumptions, steps, at least one limiting case), with one repair request if the reply does not validate. Written as a `derivation` node, `derived_from` the problem node when given `problemId`. |
+| `physics.compute` | `run_generated_code` | `physics.units`, `physics.rederive` | Runs model-written Python (or the `expression` template: the derivation's closed form) on Pint quantities, and a required `crossCheck` by a different method, each in its own OS-sandboxed process. Written as a `computation` node `derived_from` its derivation. |
+| `physics.check` | `run_generated_code` | — | Runs the checks again on a stored derivation or computation and reports them as a finding. |
+
+- **Verifiers.** `physics.units` evaluates the result with Pint quantities:
+  adding unlike dimensions, a dimensioned argument to `sin`/`exp`/…, or a
+  result whose dimensions differ from its declared units fails; for a
+  computation, every output must convert to its declared units.
+  `physics.limits` evaluates each declared limiting case (variables set near
+  the limit) against its expected expression or value within `rtol`/`atol`.
+  `physics.rederive` compares the computation with its independent
+  cross-check within `tolerance` (default 1e-3, at most 0.05).
+- **Expressions** are parsed with Python's `ast` and evaluated by a
+  whitelist (numbers, declared variables, `pi`, `e`, `+ - * / **`, a fixed
+  list of functions); anything else is refused before evaluation.
+- **Everything Python runs through `runSandboxed`** (`python3 -I -B` and a
+  fixed harness, `harness.py`, copied with the job into a fresh directory in
+  the run's scratch space, the only writable path; thread counts pinned to 1).
+  `PHYSICS_PYTHON` may name another interpreter (a virtual environment); its
+  prefix is mounted read-only. Availability is probed by running the harness
+  in the sandbox. Model-written code runs in a `run` job whose result says
+  only which plain values (number and unit string) the code reports: the code
+  shares that process and could print a result line of its own, so no check
+  outcome is taken from it. The units check (conversion to the declared
+  units, finiteness) and the conversion the cross-check comparison uses run
+  in a separate `convert` job that runs no model-written code. The job file
+  holding a run's nonce is deleted before the job starts. Without the sandbox, `python3`, NumPy, SciPy or Pint the
+  verifiers return `{ ok: true, unavailable: true, detail }`,
+  `physics.compute` refuses with `physics_unavailable`, and a derivation is
+  written marked "unverified".
+- **Write-back.** The runner's write-back makes only findings, decisions,
+  questions and artifacts, so these capabilities write their own node. To
+  keep "nothing is written before it is verified", the capability runs the
+  checks first and writes the node only when they pass (or are unavailable);
+  the verifiers report those results for that result object, or run the
+  checks themselves for a result they did not see made. The node is keyed by
+  step (`external_id` `derivation:<stepId>`), so a resumed step updates it.
+  Each capability also returns a finding naming the node, so the next step's
+  slice carries its id.
+- **Privacy.** `ctx` does not say whether the step's slice held a private
+  node, so physics nodes are written `local` unless `ctx.privateContext ===
+  false` and every node they were built on is `cloud`. For the same reason
+  `physics.derive` sends a `problemId` node's text to the model only when that
+  node is `cloud` or `ctx.privateContext === true`.
+- **Ingest.** `POST /api/plugins/physics/ingest { project, problems: [{ id,
+  title?, statement, given?, find? }], privacy? }` (a background job, like
+  GitHub ingest; privacy defaults to `local`) writes `spec` nodes with
+  `external_id` `problem:<id>`, never an answer. `GET /status` reports whether
+  the toolchain is usable, and `GET /jobs/:id` a physics job.
+
+### The CAD plug-in
+
+`server/src/plugins/cad/` (tag `cad`; migration 039's `part`, `assembly`,
+`contains` and source `cad`; no migration of its own). Open formats first:
+STL (ASCII and binary) and STEP's product structure are read in
+JavaScript; anything that needs a B-rep kernel goes to CadQuery.
+
+| Capability | Permission | What it does |
+|---|---|---|
+| `cad.inspect` | `read_graph` (source `cad`) | STL: bounding box, area, volume (signed tetrahedra), centroid, watertightness (every edge shared by exactly two faces, wound consistently), optional cross-section with holes, their spacing and wall. STEP: header, products, assemblies and what they contain, length unit; geometry from CadQuery when available, else `geometry.unavailable`. |
+| `cad.mass_properties` | `read_graph` (source `cad`) | Volume, mass, centre of mass and inertia about it, for a density `{ value, unit }` (or the project's); SI results. STL in JavaScript (refused if not watertight), STEP with CadQuery. |
+| `cad.interference` | `read_graph` (source `cad`) | STL pairs in JavaScript: bounding-box prefilter, a grid over the overlap, exact triangle-triangle test; touching is not interference, crossing or nesting is. STEP with CadQuery booleans (common volume), within one file or across files; a mix tessellates the STEP. |
+| `cad.parametric_edit` | `run_generated_code` | Runs a CadQuery script that assigns `result`, exports it (STEP or STL by extension) into the run's sandbox copy (or its scratch directory when there is no copy), never the user's checkout. Verifiers `cad.valid_geometry`, `cad.dimensions`, `cad.no_interference`. |
+
+The project declares in `cad.json` (all optional): `units` (what STL
+coordinates mean; default `mm`), a default `density`, an `assembly` (parts
+that must not interfere) and `dimensions` (checks `cad.dimensions`
+applies: `{ file, measure, value, tolerance }` or `{ file, measure, min,
+max }`, measures `size.x|y|z`, `volume`, `surfaceArea`, `holes.count`,
+`holes.spacing`, `holes.maxSpacing`, `holes.diameter`, `holes.maxDiameter`,
+`holes.minWall`).
+
+CadQuery runs only inside the OS sandbox (`runSandboxed`): each call copies
+its inputs, a driver (`driver.py`) and a request into a fresh scratch
+directory, runs `CADQUERY_PYTHON -I driver.py request.json` there (no
+network, only that directory writable) and removes it. `CADQUERY_PYTHON`
+names an interpreter that can import cadquery, best a venv made with
+`python3 -m venv --copies` so interpreter and packages share one prefix the
+sandbox mounts; it defaults to `python3`. On macOS, CadQuery's wheels
+(`pip install cadquery`, arm64 and x86_64) run under `sandbox-exec` the same
+way; FreeCAD is not needed. Without an OS sandbox or without CadQuery,
+`cadquery.status()` says why, a capability that needs it refuses with
+`tool_unavailable`, and a verifier that needs it returns `{ ok: true,
+unavailable: true, detail: 'unavailable: …' }` (the contract's convention:
+the step is not failed for a check that could not run, and the recorded
+detail says it was not made). Verifiers never trust the step's own report:
+they read the produced file again, measure STL in JavaScript, and run STEP
+checks in a fresh CadQuery process with no model-written code in it.
+
+Ingest: `POST /api/plugins/cad/ingest { project, privacy? }` (a background
+job, `GET /api/plugins/cad/jobs/:id`) walks the project's local folder
+(never following links, hidden folders or `node_modules`). Each STL is a
+`part`; each STEP product an `assembly` or `part`, with `contains` edges
+weighted by quantity. External ids are `<project>|<path>[#<product id>]`,
+so re-ingest updates in place; files that are gone lose their nodes, files
+that fail to read keep theirs. Nodes are `local` unless the request says
+`cloud`. `GET /api/plugins/cad/status` reports whether CadQuery can run.
+
+A SolidWorks companion is designed, not built: `solidworks-connector.md`.
 
 ### KiCad (`server/src/plugins/kicad/`)
 

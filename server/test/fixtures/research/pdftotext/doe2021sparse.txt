@@ -1,0 +1,16 @@
+Sparse Attention for Long Documents
+Jane Doe and Rex Roe
+Abstract. We study sparse attention patterns that let a transformer read
+documents of one hundred thousand tokens.
+1 Introduction
+Dense attention compares every token with every other token.
+Its cost grows quadratically with the length of the input.
+Attention cost grows linearly with length in our design.
+
+4 Results
+Our sparse model reaches a perplexity of 18.2 on the LongText benchmark.
+The dense baseline reaches a perplexity of 21.7 on the same benchmark.
+The model was trained on 8 GPUs for 3 days.
+Table 2 reports the error on the LongText benchmark for every method.
+
+
