@@ -3,7 +3,7 @@ import AgentDot from './AgentDot.jsx';
 import ApprovalActions from './ApprovalActions.jsx';
 import BudgetMeter from './BudgetMeter.jsx';
 import { useWorkspace, useWorkspaceEvents } from './workspaceContext.js';
-import { CAPABILITIES } from './permissions.js';
+import { approvalSummary, capabilityLabel } from './permissions.js';
 import { TERMINAL_STATUSES, applyRunEvent, replayOverRecord, runViewFromHttp } from './runState.js';
 
 const STATUS_WORDS = {
@@ -22,13 +22,62 @@ const LIMIT_WORDS = { maxTokens: 'token', maxUsd: 'cost', maxWallMs: 'time' };
 // Node types a run writes that the user may want to open on the map.
 const HIGHLIGHT_TYPES = new Set(['finding', 'artifact', 'decision', 'question']);
 const LONG_OUTPUT = 600;
+const RELOAD_AFTER_STEP_MS = 250;
 
-function capabilityLabel(name) {
-  if (!name) return 'Step';
-  return CAPABILITIES.find((capability) => capability.id === name)?.label ?? name;
+// A step with no capability is the plan, or the step that ends the run.
+function stepLabel(step) {
+  if (step.capability) return capabilityLabel(step.capability);
+  if (step.kind === 'plan') return 'Plan';
+  return step.status === 'done' || step.status === 'succeeded' ? 'Wrap-up' : 'Step';
 }
 
-function NodeLink({ entry }) {
+// An approval as the step stream shows it: what the agent wants to do and,
+// for model-written code, the code itself, so it is read before it runs.
+function StepApproval({ approval }) {
+  const code = typeof approval.detail?.input?.code === 'string' ? approval.detail.input.code : null;
+  const summary = approvalSummary(approval);
+  return (
+    <div className={`ws-approval is-${approval.status}`}>
+      <p>
+        <strong>{capabilityLabel(approval.capability)}</strong>
+        {summary ? `: ${summary}` : ''}
+      </p>
+      {code && (
+        <details className="ws-approval-detail">
+          <summary>Read the code before it runs</summary>
+          <pre>{code}</pre>
+        </details>
+      )}
+      <ApprovalActions approval={approval} label={summary || undefined} />
+    </div>
+  );
+}
+
+// What an agent wrote, readable where the run is, without leaving it.
+function NodeContent({ nodeId }) {
+  const { api } = useWorkspace();
+  const [state, setState] = useState({ open: false, content: null, problem: null });
+  async function toggle() {
+    if (state.open) return setState((current) => ({ ...current, open: false }));
+    if (state.content != null) return setState((current) => ({ ...current, open: true }));
+    try {
+      const node = await api.getNode(nodeId);
+      setState({ open: true, content: node.content ?? '', problem: null });
+    } catch (failure) {
+      setState({ open: true, content: null, problem: failure.message });
+    }
+  }
+  return (
+    <>
+      <button type="button" className="ws-link ws-node-read" onClick={toggle} aria-expanded={state.open}>
+        {state.open ? 'Hide' : 'Read'}
+      </button>
+      {state.open && (state.problem ? <p className="ws-error">{state.problem}</p> : <pre className="ws-node-content">{state.content}</pre>)}
+    </>
+  );
+}
+
+function NodeLink({ entry, readable = false }) {
   const { nodeLabel, focusNode } = useWorkspace();
   const known = nodeLabel(entry.nodeId);
   const type = entry.type ?? known?.type ?? 'node';
@@ -43,6 +92,7 @@ function NodeLink({ entry }) {
       ) : (
         <span>{label}</span>
       )}
+      {readable && <NodeContent nodeId={entry.nodeId} />}
     </li>
   );
 }
@@ -68,7 +118,7 @@ function Step({ step, approvals, written }) {
     <li className={`ws-step is-${step.status}`} data-step-id={step.id}>
       <div className="ws-step-head">
         <span className="ws-step-index">#{step.index + 1}</span>
-        <span className="ws-step-cap">{capabilityLabel(step.capability)}</span>
+        <span className="ws-step-cap">{stepLabel(step)}</span>
         <span className={`ws-status is-${step.status}`}>{STATUS_WORDS[step.status] ?? step.status}</span>
         {step.adapter && <span className="ws-hint">{step.adapter}</span>}
       </div>
@@ -84,13 +134,7 @@ function Step({ step, approvals, written }) {
         </ul>
       )}
       {approvals.map((approval) => (
-        <div key={approval.id} className={`ws-approval is-${approval.status}`}>
-          <p>
-            <strong>{capabilityLabel(approval.capability)}</strong>
-            {approval.summary ? `: ${approval.summary}` : ''}
-          </p>
-          <ApprovalActions approval={approval} />
-        </div>
+        <StepApproval key={approval.id} approval={approval} />
       ))}
       {written.length > 0 && (
         <ul className="ws-nodes" aria-label="Written to the map">
@@ -136,6 +180,17 @@ export default function RunView({ runId }) {
     load();
   }, [load]);
 
+  // Some of what a step produced is only in the durable record: the plan
+  // (planning publishes no step.output) and how the run ended. So when a
+  // step finishes with nothing shown for it, the record is read again, once
+  // for a burst of events.
+  const reloadTimer = useRef(null);
+  const latest = useRef(null);
+  useEffect(() => {
+    latest.current = view;
+  });
+  useEffect(() => () => clearTimeout(reloadTimer.current), []);
+
   useWorkspaceEvents(
     (event) => {
       if (event.runId !== runId) return;
@@ -144,9 +199,38 @@ export default function RunView({ runId }) {
         return;
       }
       setView((current) => (current ? applyRunEvent(current, event) : current));
+      const finished = event.type === 'step.finished' ? latest.current?.steps.find((step) => step.id === event.data?.stepId) : null;
+      if (event.type === 'step.finished' && !finished?.output) {
+        clearTimeout(reloadTimer.current);
+        reloadTimer.current = setTimeout(load, RELOAD_AFTER_STEP_MS);
+      }
     },
     { onResync: load }
   );
+
+  // An approval that arrived as an event carries no detail (the code a step
+  // wants to run, say); the record has it, so it is fetched once.
+  const missingDetail = view ? Object.values(view.approvals).filter((approval) => approval.status === 'pending' && approval.detail == null).map((approval) => approval.id).join(',') : '';
+  useEffect(() => {
+    if (!missingDetail) return;
+    let cancelled = false;
+    for (const approvalId of missingDetail.split(',')) {
+      api
+        .getApproval(approvalId)
+        .then((record) => {
+          if (cancelled || !record) return;
+          setView((current) => {
+            const known = current?.approvals[approvalId];
+            if (!known) return current;
+            return { ...current, approvals: { ...current.approvals, [approvalId]: { ...known, detail: record.detail ?? {} } } };
+          });
+        })
+        .catch(() => {});
+    }
+    return () => {
+      cancelled = true;
+    };
+  }, [api, missingDetail]);
 
   async function cancel() {
     setCancelling(true);
@@ -200,13 +284,7 @@ export default function RunView({ runId }) {
       <BudgetMeter run={run} exceeded={view.budgetExceeded} live={live} />
 
       {unplaced.map((approval) => (
-        <div key={approval.id} className={`ws-approval is-${approval.status}`}>
-          <p>
-            <strong>{capabilityLabel(approval.capability)}</strong>
-            {approval.summary ? `: ${approval.summary}` : ''}
-          </p>
-          <ApprovalActions approval={approval} />
-        </div>
+        <StepApproval key={approval.id} approval={approval} />
       ))}
 
       {view.steps.length === 0 ? (
@@ -229,7 +307,7 @@ export default function RunView({ runId }) {
           <h4>Findings and artifacts</h4>
           <ul className="ws-nodes">
             {highlights.map((entry) => (
-              <NodeLink key={`h-${entry.nodeId}`} entry={entry} />
+              <NodeLink key={`h-${entry.nodeId}`} entry={entry} readable />
             ))}
           </ul>
         </section>

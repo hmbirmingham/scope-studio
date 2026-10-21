@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useId, useRef, useState } from 'react';
 import AgentDot from './AgentDot.jsx';
 import RunView from './RunView.jsx';
+import { defaultProjectFor } from './permissions.js';
 import { runStatusForEvent } from './runState.js';
 import { useWorkspace, useWorkspaceEvents } from './workspaceContext.js';
 
@@ -10,12 +11,14 @@ function NewRunForm({ onStarted }) {
   const { api, agents, projects } = useWorkspace();
   const [agentId, setAgentId] = useState('');
   const [instructions, setInstructions] = useState('');
-  const [project, setProject] = useState('');
+  // `null` until the user picks one: then the agent's own project is offered.
+  const [project, setProject] = useState(null);
   const [problem, setProblem] = useState(null);
   const [busy, setBusy] = useState(false);
   const id = useId();
   const chosen = agentId || agents.find((agent) => agent.state === 'active')?.id || agents[0]?.id || '';
   const projectNames = projects.map((entry) => (typeof entry === 'string' ? entry : entry.project));
+  const chosenProject = project ?? defaultProjectFor(agents.find((agent) => agent.id === chosen), projectNames);
 
   async function submit(event) {
     event.preventDefault();
@@ -24,7 +27,7 @@ function NewRunForm({ onStarted }) {
     setBusy(true);
     setProblem(null);
     try {
-      const run = await api.startRun({ agentId: chosen, instructions: instructions.trim(), ...(project ? { project } : {}) });
+      const run = await api.startRun({ agentId: chosen, instructions: instructions.trim(), ...(chosenProject ? { project: chosenProject } : {}) });
       setInstructions('');
       onStarted(run);
     } catch (failure) {
@@ -51,7 +54,7 @@ function NewRunForm({ onStarted }) {
         </label>
         <label className="ws-field">
           Project
-          <select value={project} onChange={(event) => setProject(event.target.value)}>
+          <select value={chosenProject} onChange={(event) => setProject(event.target.value)}>
             <option value="">None</option>
             {projectNames.map((name) => (
               <option key={name} value={name}>

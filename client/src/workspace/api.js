@@ -90,9 +90,13 @@ export function createWorkspaceApi(fetchImpl = (...args) => globalThis.fetch(...
     cancelRun: async (runId) => (await post(`/api/agent-runs/${id(runId)}/cancel`)).run,
 
     // Approvals
+    getApproval: async (approvalId) => (await get(`/api/approvals/${id(approvalId)}`)).approval,
     listApprovals: async (status) => (await get(`/api/approvals${query({ status })}`)).approvals,
     resolveApproval: async (approvalId, decision) =>
       (await post(`/api/approvals/${id(approvalId)}`, { decision })).approval,
+
+    // One node of the map, with its content (what an agent wrote, say).
+    getNode: (nodeId) => get(`/api/nodes/${id(nodeId)}`),
 
     // The plan, read the way the rest of the client reads it: `chooseCloud`
     // from /api/usage is true only on Key Pro, the one plan with its own key.

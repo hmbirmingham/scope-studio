@@ -2,8 +2,10 @@ import { useCallback, useEffect, useId, useState } from 'react';
 import CronField from './CronField.jsx';
 import { useWorkspace } from './workspaceContext.js';
 import { describeCron } from './cron.js';
+import { defaultProjectFor } from './permissions.js';
 
-const EMPTY = { agentId: '', title: '', instructions: '', project: '', recurring: false, schedule: '0 9 * * *' };
+// `project: null` means not chosen yet: the agent's own project is offered.
+const EMPTY = { agentId: '', title: '', instructions: '', project: null, recurring: false, schedule: '0 9 * * *' };
 
 function TaskForm({ agents, projects, onCreated }) {
   const { api } = useWorkspace();
@@ -14,6 +16,7 @@ function TaskForm({ agents, projects, onCreated }) {
 
   const set = (patch) => setForm((current) => ({ ...current, ...patch }));
   const agentId = form.agentId || agents[0]?.id || '';
+  const project = form.project ?? defaultProjectFor(agents.find((agent) => agent.id === agentId), projects);
 
   async function submit(event, runAfter) {
     event.preventDefault();
@@ -29,7 +32,7 @@ function TaskForm({ agents, projects, onCreated }) {
         agentId,
         title: form.title.trim(),
         instructions: form.instructions,
-        project: form.project || null,
+        project: project || null,
         schedule: form.recurring ? form.schedule.trim() : null,
       });
       setForm({ ...EMPTY, agentId });
@@ -58,11 +61,11 @@ function TaskForm({ agents, projects, onCreated }) {
         </label>
         <label className="ws-field">
           Project
-          <select value={form.project} onChange={(event) => set({ project: event.target.value })}>
+          <select value={project} onChange={(event) => set({ project: event.target.value })}>
             <option value="">None</option>
-            {projects.map((project) => (
-              <option key={project} value={project}>
-                {project}
+            {projects.map((name) => (
+              <option key={name} value={name}>
+                {name}
               </option>
             ))}
           </select>

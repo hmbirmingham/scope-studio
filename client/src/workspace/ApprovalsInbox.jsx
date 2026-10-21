@@ -2,9 +2,7 @@ import { useCallback, useEffect, useState } from 'react';
 import AgentDot from './AgentDot.jsx';
 import ApprovalActions from './ApprovalActions.jsx';
 import { useWorkspace } from './workspaceContext.js';
-import { CAPABILITIES } from './permissions.js';
-
-const capabilityLabel = (name) => CAPABILITIES.find((capability) => capability.id === name)?.label ?? name;
+import { approvalSummary, capabilityLabel } from './permissions.js';
 
 // Every approval waiting on the user, across all agents and runs, with the
 // decision buttons; "All" shows decided ones too.
@@ -64,7 +62,7 @@ export default function ApprovalsInbox() {
                   <span className="ws-hint">wants to</span>
                   <strong>{capabilityLabel(approval.capability)}</strong>
                 </div>
-                {approval.summary && <p>{approval.summary}</p>}
+                {approvalSummary(approval) && <p>{approvalSummary(approval)}</p>}
                 {approval.detail && (
                   <details className="ws-approval-detail">
                     <summary>Details</summary>

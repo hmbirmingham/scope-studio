@@ -34,10 +34,28 @@ export function outputText(output) {
   if (typeof output === 'string') return output;
   if (typeof output.text === 'string') return output.text;
   if (typeof output.summary === 'string') return output.summary;
+  // A plan step's plan, and what a program printed (code.run_generated, a
+  // script): the part a person reads, rather than the record around it.
+  if (typeof output.plan === 'string') return output.plan;
+  if (typeof output.output === 'string') return output.output;
   try {
     return JSON.stringify(output, null, 2);
   } catch {
     return String(output);
+  }
+}
+
+// A step.output event carries the capability's output as the runner stored
+// it: a structured result arrives as its JSON text. That text is read back
+// and shown the way the HTTP record's output is, so the live view and a
+// reload agree. Plain text, and JSON cut short by the event's size limit,
+// are shown as they came.
+export function eventOutputText(text) {
+  if (typeof text !== 'string' || !text.startsWith('{')) return text ?? '';
+  try {
+    return outputText(JSON.parse(text));
+  } catch {
+    return text;
   }
 }
 
@@ -159,7 +177,7 @@ export function applyRunEvent(view, event) {
       return { ...view, steps, run: { ...view.run, status: 'running', stepIndex: data.index ?? view.run.stepIndex } };
     }
     case 'step.output':
-      return updateStep(view, data.stepId, (step) => ({ output: (step.output ?? '') + (data.text ?? '') }));
+      return updateStep(view, data.stepId, (step) => ({ output: (step.output ?? '') + eventOutputText(data.text) }));
     case 'step.verified':
       return updateStep(view, data.stepId, (step) => ({
         verifications: [...(step.verifications ?? []), ...verificationList({ verifier: data.verifier, ok: data.ok, detail: data.detail })],

@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { applyRunEvent, budgetUsage, outputText, replayOverRecord, runStatusForEvent, runViewFromHttp } from './runState.js';
+import { applyRunEvent, budgetUsage, eventOutputText, outputText, replayOverRecord, runStatusForEvent, runViewFromHttp } from './runState.js';
 import { workspaceEvent } from '../test/fakeEventSource.js';
 
 const RUN = {
@@ -208,6 +208,22 @@ describe('outputText', () => {
     expect(outputText({ text: 't' })).toBe('t');
     expect(outputText({ done: true, summary: 's' })).toBe('s');
     expect(outputText({ a: 1 })).toBe('{\n  "a": 1\n}');
+  });
+
+  it('shows a plan, and what a program printed, rather than the record around them', () => {
+    expect(outputText({ plan: '1. Fit T² against L' })).toBe('1. Fit T² against L');
+    expect(outputText({ language: 'node', ok: true, exitCode: 0, output: 'g = 9.78 m/s²\n' })).toBe('g = 9.78 m/s²\n');
+    expect(outputText({ output: 42 })).toBe('{\n  "output": 42\n}');
+  });
+});
+
+describe('eventOutputText', () => {
+  it('shows a structured output from an event the way the record shows it', () => {
+    expect(eventOutputText('{"language":"node","ok":true,"output":"g = 9.78"}')).toBe('g = 9.78');
+    expect(eventOutputText('{"text":"Saved “Guide” to the map."}')).toBe('Saved “Guide” to the map.');
+    expect(eventOutputText('Reading 12 notes')).toBe('Reading 12 notes');
+    expect(eventOutputText('{"output":"cut sho')).toBe('{"output":"cut sho');
+    expect(eventOutputText(undefined)).toBe('');
   });
 });
 

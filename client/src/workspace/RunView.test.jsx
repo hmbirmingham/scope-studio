@@ -73,6 +73,68 @@ describe('RunView', () => {
     expect(screen.getByRole('region', { name: 'Findings and artifacts' })).toBeInTheDocument();
   });
 
+  it('names plug-in steps, shows the code a step wants to run, and reads a saved artifact in place', async () => {
+    const user = userEvent.setup();
+    const code = 'console.log(4 * Math.PI ** 2 / 4.035);';
+    const { api } = renderRun({
+      getApproval: vi.fn(async (id) => ({ id, runId: 'run-1', stepId: 's2', capability: 'code.run_generated', summary: 'code.run_generated: Recompute g', detail: { input: { language: 'node', code } }, status: 'pending' })),
+      getNode: vi.fn(async (id) => ({ id, type: 'artifact', content: 'Lab report check\n\n1. Put the 0.80 m row back.' })),
+    });
+    await screen.findByText('Summarise the sensor notes');
+    emit('step.started', { stepId: 's2', index: 1, capability: 'code.run_generated' });
+    emit('approval.requested', { approvalId: 'p2', capability: 'code.run_generated', summary: 'code.run_generated: Recompute g' });
+    emit('run.paused', { reason: 'waiting_approval', approvalId: 'p2' });
+
+    const steps = screen.getByRole('list', { name: 'Steps' });
+    expect(within(steps).getAllByText('Run code in the sandbox').length).toBeGreaterThan(0);
+    expect(screen.queryByText(/code\.run_generated:/)).not.toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Approve: Recompute g' })).toBeInTheDocument();
+    // The code arrives with the approval's record, fetched once.
+    expect(await screen.findByText('Read the code before it runs')).toBeInTheDocument();
+    expect(screen.getByText(code)).toBeInTheDocument();
+    expect(api.getApproval).toHaveBeenCalledTimes(1);
+    expect(api.getApproval).toHaveBeenCalledWith('p2');
+
+    emit('step.started', { stepId: 's3', index: 2, capability: 'graph.write_artifact' });
+    emit('node.written', { nodeId: 'n9', type: 'artifact' });
+    emit('step.finished', { stepId: 's3', status: 'done' });
+    expect(within(steps).getByText('Save to the map')).toBeInTheDocument();
+    const highlights = screen.getByRole('region', { name: 'Findings and artifacts' });
+    await user.click(within(highlights).getByRole('button', { name: 'Read' }));
+    expect(api.getNode).toHaveBeenCalledWith('n9');
+    expect(await within(highlights).findByText(/Put the 0\.80 m row back/)).toBeInTheDocument();
+    await user.click(within(highlights).getByRole('button', { name: 'Hide' }));
+    expect(within(highlights).queryByText(/Put the 0\.80 m row back/)).not.toBeInTheDocument();
+  });
+
+  it('reads the record again when a step finishes, so the plan shows without a reload', async () => {
+    const getRun = vi.fn(async () => RUN);
+    renderRun({ getRun });
+    await screen.findByText('Summarise the sensor notes');
+    expect(getRun).toHaveBeenCalledTimes(1);
+    getRun.mockImplementation(async () => ({ ...RUN, steps: [{ id: 'p', index: 0, kind: 'plan', capability: null, status: 'done', output: { plan: '1. Read the notes' }, nodeIds: [] }] }));
+    emit('step.started', { stepId: 'p', index: 0, capability: null });
+    emit('step.finished', { stepId: 'p', status: 'done' });
+    expect(await screen.findByText('1. Read the notes')).toBeInTheDocument();
+    expect(getRun).toHaveBeenCalledTimes(2);
+  });
+
+  it('labels the plan and the closing step of a run', async () => {
+    renderRun({
+      getRun: vi.fn(async () => ({
+        ...RUN,
+        status: 'succeeded',
+        steps: [
+          { id: 'a', index: 0, kind: 'plan', capability: null, status: 'done', output: { plan: '1. Do it' }, nodeIds: [] },
+          { id: 'b', index: 1, kind: 'act', capability: null, status: 'done', output: { done: true, summary: 'All done' }, nodeIds: [] },
+        ],
+      })),
+    });
+    const steps = await screen.findByRole('list', { name: 'Steps' });
+    expect(within(steps).getByText('Plan')).toBeInTheDocument();
+    expect(within(steps).getByText('Wrap-up')).toBeInTheDocument();
+  });
+
   it('shows an approval inline and approves it', async () => {
     const user = userEvent.setup();
     const { api } = renderRun();
