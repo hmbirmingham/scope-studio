@@ -1,0 +1,12 @@
+Recurrent Memory for Streaming Text
+Min Lee
+Abstract. A recurrent memory lets a model read an unbounded stream of text
+with constant memory.
+1 Method
+The memory holds 512 slots that are updated after every segment.
+
+3 Results
+On the LongText benchmark the recurrent memory reaches a perplexity of 19.5.
+Training took 2 days on 4 GPUs.
+
+

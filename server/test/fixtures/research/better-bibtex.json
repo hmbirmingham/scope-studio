@@ -1,0 +1,66 @@
+{
+  "config": { "id": "36a3b0b5-bad0-4a04-b79b-441c7cef77db", "label": "BetterBibTeX JSON", "preferences": {}, "options": { "exportNotes": true } },
+  "version": { "zotero": "7.0.11", "bbt": "7.0.20" },
+  "collections": {},
+  "items": [
+    {
+      "itemType": "conferencePaper",
+      "itemID": 1,
+      "itemKey": "AAAA1111",
+      "citationKey": "doe2021sparse",
+      "title": "Sparse Attention for Long Documents",
+      "abstractNote": "We study sparse attention patterns that let a transformer read documents of one hundred thousand tokens.",
+      "date": "2021-06-14",
+      "DOI": "10.5555/fixture.0001",
+      "creators": [
+        { "firstName": "Jane", "lastName": "Doe", "creatorType": "author" },
+        { "firstName": "Rex", "lastName": "Roe", "creatorType": "author" }
+      ],
+      "notes": [{ "key": "NOTE1111", "note": "<div><p>Key result: <b>18.2</b> perplexity on LongText &amp; linear cost.</p></div>" }],
+      "attachments": [{ "itemKey": "PDFA1111", "title": "Full Text PDF", "path": "pdfs/doe2021sparse.pdf", "contentType": "application/pdf" }],
+      "relations": {}
+    },
+    {
+      "itemType": "journalArticle",
+      "itemID": 2,
+      "itemKey": "BBBB2222",
+      "citationKey": "lee2019recurrent",
+      "title": "Recurrent Memory for Streaming Text",
+      "abstractNote": "A recurrent memory lets a model read an unbounded stream of text with constant memory.",
+      "date": "2019",
+      "DOI": "https://doi.org/10.5555/FIXTURE.0002",
+      "publicationTitle": "Journal of Fixture Studies",
+      "creators": [{ "firstName": "Min", "lastName": "Lee", "creatorType": "author" }],
+      "notes": [],
+      "attachments": [{ "itemKey": "PDFB2222", "title": "Full Text PDF", "path": "pdfs/lee2019recurrent.pdf", "contentType": "application/pdf" }],
+      "relations": {}
+    },
+    {
+      "itemType": "journalArticle",
+      "itemID": 3,
+      "itemKey": "CCCC3333",
+      "citationKey": "kim2022survey",
+      "title": "A Survey of Efficient Transformers",
+      "abstractNote": "We survey methods that make attention cheaper for long inputs, including sparse attention and recurrent memory.",
+      "date": "2022-01",
+      "creators": [
+        { "firstName": "Ana", "lastName": "Kim", "creatorType": "author" },
+        { "name": "Fixture Editors", "creatorType": "editor" }
+      ],
+      "notes": [],
+      "attachments": [{ "itemKey": "GONE3333", "title": "Full Text PDF", "path": "pdfs/missing.pdf", "contentType": "application/pdf" }],
+      "relations": {
+        "dc:relation": [
+          "http://zotero.org/users/local/abcdEFGH/items/AAAA1111",
+          "http://zotero.org/users/local/abcdEFGH/items/BBBB2222"
+        ]
+      }
+    },
+    {
+      "itemType": "note",
+      "itemID": 9,
+      "itemKey": "NOTE9999",
+      "note": "<p>Standalone note: compare memory and sparsity on LongText.</p>"
+    }
+  ]
+}
