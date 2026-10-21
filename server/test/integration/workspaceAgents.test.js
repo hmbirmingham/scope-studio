@@ -306,6 +306,16 @@ describe('agents API', () => {
       assert.equal((await api('POST', `/api/agents/${agent.id}/resume`)).status, 409);
     });
 
+    test('resume clears the lease a run was paused with, so any worker can claim it', async () => {
+      const agent = await makeAgent();
+      const run = await insertRun(agent.id, 'running');
+      await server.pool.query("UPDATE agent_runs SET lease_owner = 'old-worker', lease_until = now() + interval '1 hour' WHERE id = $1", [run]);
+      await api('POST', `/api/agents/${agent.id}/pause`);
+      await api('POST', `/api/agents/${agent.id}/resume`);
+      const { rows: [row] } = await server.pool.query('SELECT status, lease_owner, lease_until FROM agent_runs WHERE id = $1', [run]);
+      assert.deepEqual(row, { status: 'queued', lease_owner: null, lease_until: null });
+    });
+
     test('kill stops every non-terminal run, expires their approvals and publishes run.finished', async () => {
       const agent = await makeAgent();
       const runs = {

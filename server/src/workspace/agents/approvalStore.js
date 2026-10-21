@@ -20,8 +20,11 @@ export async function getApproval(ownerId, id) {
 }
 
 // Resolves one approval in a single transaction. If it was the last pending
-// approval of a run that is waiting on approvals, the run goes back to
-// `queued` so a worker picks it up. The run row is locked first: two
+// step approval of a run that is waiting on approvals, the run goes back to
+// `queued` so a worker picks it up. Only step approvals count: the run-level
+// cloud approval (step_id NULL) never parks a run (the run uses the local
+// model meanwhile), so leaving it pending must not hold the run in
+// waiting_approval. The run row is locked first: two
 // approvals of one run resolved at the same moment would otherwise each see
 // the other as still pending and neither would re-queue the run.
 export async function resolveApproval(ownerId, id, decision) {
@@ -53,7 +56,7 @@ export async function resolveApproval(ownerId, id, decision) {
       const { rowCount } = await client.query(
         `UPDATE agent_runs SET status = 'queued'
          WHERE id = $1 AND owner_id = $2 AND status = 'waiting_approval'
-           AND NOT EXISTS (SELECT 1 FROM agent_approvals WHERE run_id = $1 AND status = 'pending')`,
+           AND NOT EXISTS (SELECT 1 FROM agent_approvals WHERE run_id = $1 AND step_id IS NOT NULL AND status = 'pending')`,
         [approval.run_id, ownerId]
       );
       requeued = rowCount > 0;

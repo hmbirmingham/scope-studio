@@ -115,6 +115,24 @@ describe('approvals API', () => {
     assert.deepEqual(events.map((e) => e.type), ['approval.resolved', 'approval.resolved', 'run.queued']);
   });
 
+  test('a pending run-level cloud approval does not hold the run once its step approval resolves', async () => {
+    const run = await waitingRun();
+    const stepApproval = await approval({ runId: run, stepId: await step(run) });
+    // The run-level cloud request has no step: the run used local meanwhile.
+    const cloud = await approval({ runId: run, capability: 'cloud_model', summary: 'Use the cloud for this run' });
+    await api('POST', `/api/approvals/${stepApproval}`, { decision: 'approve' });
+    assert.equal(await runStatus(run), 'queued');
+    assert.equal((await query('SELECT status FROM agent_approvals WHERE id = $1', [cloud])).rows[0].status, 'pending');
+  });
+
+  test('resolving the run-level cloud approval alone does not re-queue a run still waiting on a step', async () => {
+    const run = await waitingRun();
+    await approval({ runId: run, stepId: await step(run) });
+    const cloud = await approval({ runId: run, capability: 'cloud_model', summary: 'Use the cloud for this run' });
+    assert.equal((await api('POST', `/api/approvals/${cloud}`, { decision: 'approve' })).status, 200);
+    assert.equal(await runStatus(run), 'waiting_approval');
+  });
+
   test('two approvals of one run resolved at the same moment still re-queue it exactly once', async () => {
     for (let round = 0; round < 5; round += 1) {
       const run = await waitingRun();
