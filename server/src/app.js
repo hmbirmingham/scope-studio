@@ -12,6 +12,7 @@ import billingRouter from './routes/billing.js';
 import controlRouter from './control/routes.js';
 import nodesRouter from './routes/nodes.js';
 import githubPluginRouter from './routes/plugins/github.js';
+import kicadPluginRouter from './routes/plugins/kicad.js';
 import graphRouter from './routes/graph.js';
 import queryRouter from './routes/query.js';
 import usageRouter from './routes/usage.js';
@@ -58,6 +59,7 @@ function createApp(env) {
   app.use('/api/graph', graphRouter);
   app.use('/api/nodes', nodesRouter);
   app.use('/api/plugins/github', githubPluginRouter);
+  app.use('/api/plugins/kicad', kicadPluginRouter);
   app.use('/api/query', queryRouter);
   app.use('/api/usage', usageRouter);
   // The agent workspace (docs/architecture/agent-workspace.md).
