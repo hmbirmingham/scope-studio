@@ -12,7 +12,8 @@
     "embed": "node src/db/embed-missing.js",
     "centroids": "node src/db/build-centroids.js",
     "benchmark": "node src/benchmark/run.js",
-    "endurance": "node src/benchmark/session.js"
+    "endurance": "node src/benchmark/session.js",
+    "benchmark:tasks": "node src/benchmark/tasks/run.js"
   },
   "keywords": [],
   "author": "Hynes Birmingham",

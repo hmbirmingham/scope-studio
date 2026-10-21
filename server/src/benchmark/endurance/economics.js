@@ -188,3 +188,44 @@ export function mean(values) {
   const numbers = values.filter((value) => typeof value === 'number' && Number.isFinite(value));
   return numbers.length ? numbers.reduce((sum, value) => sum + value, 0) / numbers.length : null;
 }
+
+// The task benchmark's measures (server/src/benchmark/tasks). A session is
+// judged by turns on a budget; a task is judged by whether it got done, so
+// the money that matters is what one completed task costs.
+
+// Total spend over completed tasks. Null when nothing was completed: spend
+// that bought no completed task has no per-task price, and reading it as
+// zero or infinite would flatter or damn an arm for the wrong reason.
+export function costPerCompleted(totalUsd, completed) {
+  if (!(completed > 0)) return null;
+  return totalUsd / completed;
+}
+
+// How fast a step's context grows, in tokens per step: the least-squares
+// slope of prompt size against step number. A graph-backed run reads a slice
+// of fixed budget, so its slope settles near zero; a transcript re-sends
+// every earlier step, so its slope is roughly what each step adds.
+export function contextGrowth(promptTokensPerStep) {
+  const points = promptTokensPerStep.filter((value) => typeof value === 'number' && Number.isFinite(value));
+  const n = points.length;
+  if (n < 2) return null;
+  const meanX = (n - 1) / 2;
+  const meanY = points.reduce((sum, value) => sum + value, 0) / n;
+  let num = 0;
+  let den = 0;
+  points.forEach((y, x) => {
+    num += (x - meanX) * (y - meanY);
+    den += (x - meanX) ** 2;
+  });
+  return num / den;
+}
+
+// The mean curve over several runs: element i is the mean of every run's
+// i-th value, over the runs that got that far.
+export function meanCurve(series) {
+  const length = Math.max(0, ...series.map((values) => values.length));
+  return Array.from({ length }, (_, i) => {
+    const column = series.map((values) => values[i]).filter((value) => typeof value === 'number');
+    return { step: i + 1, meanPromptTokens: Math.round(mean(column)), runs: column.length };
+  });
+}

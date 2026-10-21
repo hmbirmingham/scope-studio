@@ -78,6 +78,16 @@ jobs:
           SESSION_SECRET: ${{ secrets.SESSION_SECRET }}
           BASE_URL: http://localhost:3001
 
+      # The dry task benchmark: scripted models, $0, no key. It exercises the
+      # runner, the sandbox, the pricing and the objective checks end to end.
+      - name: Task benchmark (dry)
+        run: npm run benchmark:tasks
+        working-directory: server
+        timeout-minutes: 3
+        env:
+          NODE_ENV: test
+          DATABASE_URL: postgresql://scope@localhost:5432/scope_studio_test
+
   control:
     runs-on: ubuntu-latest
     services:
