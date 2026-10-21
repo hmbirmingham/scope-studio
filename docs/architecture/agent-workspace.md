@@ -31,7 +31,7 @@ An agent is a user-owned, fully editable record:
 | `overrides` | Per-capability `allow` / `ask` / `deny` that replace the level's default for that capability. |
 | `scopes` | `{ read: { projects, sources }, write: { projects } }`. `projects` is a list of project names or `['*']`; `sources` is a list of plug-in sources (`github`, `kicad`, …) or `['*']`. |
 | `modelPolicy` | `local_only`, `local_cloud` (cloud for planning and hard steps where the plan allows it) or `own_key` (Key Pro: the user's own Anthropic key for planning and hard steps). |
-| `budget` | Per-run limits `{ maxTokens, maxUsd, maxWallMs, maxSteps }`. A run may override any of them. A run stops with `budget_exceeded` at the first limit it crosses; `maxSteps` defaults to 50 so every run has a step limit. |
+| `budget` | Per-run limits `{ maxTokens, maxUsd, maxWallMs, maxSteps }`. A run may tighten any of them but never loosen one: each limit is the smaller of the agent's and the run's (a limit only one of them sets is that one). A run stops with `budget_exceeded` at the first limit it crosses; `maxSteps` defaults to 50 so every run has a step limit. |
 | `state` | `active`, `paused` (no new steps start) or `killed` (the kill switch: every run is stopped and nothing new starts until the user re-activates the agent). |
 | `color` | The colour the agent's cursor uses on the map. |
 
@@ -174,16 +174,25 @@ The runner (`server/src/workspace/runner/`) implements this as follows.
   strict JSON `{ capability, input, hard?, done?, summary? }`. The reply is
   validated (the capability is one the role may use, the input matches its
   schema's required fields and types) before `can()` is asked. `done: true`
-  with no capability ends the run as `succeeded`. `hard` marks the step hard
-  for the model calls its capability makes through `ctx.model`.
+  with no capability ends the run as `succeeded`, and its `summary` is written
+  as a `finding` produced by that final step, so later runs read the
+  conclusion. `hard` marks the step hard for the model calls its capability
+  makes through `ctx.model`.
 - The slice has a fixed budget (1,500 tokens, 8 nodes). The run's plan and its
   most recent notes compete for it with boosted scores, so the next step reads
   what the last one learned. They are the run's own memory, so they are
   readable to it whatever its read sources say (they carry source `agent`);
   the project scope still applies.
 - A step that cannot proceed (invalid chooser reply, `deny`, a capability
-  error, failed verification) is failed, and its step node records why, so the
-  next step sees it. Five failed steps in a row fail the run.
+  error, a sandbox that cannot be made, failed verification) is failed, and
+  its step node records why, so the next step sees it. Five failed steps in a
+  row fail the run. Error text is cut to 500 characters wherever it is stored
+  (the step's and the run's `error`, the step node's reason).
+- A parked step that comes back approved is decided again before it runs: a
+  hard denial since it parked, an override that now denies, or a role that no
+  longer carries the capability fails the step (`denied: <reason>`,
+  `capability_not_in_role`) instead of running it. An `ask` stands, since that
+  is what the user approved.
 - A kill aborts the step in flight. A pause lets the step in flight finish and
   checkpoint, and stops at the next step boundary.
 
@@ -265,6 +274,37 @@ The code plug-in (`server/src/plugins/code/`):
 | `code.edit` | `edit_files` | `code` | sandbox copy only (`sandbox_required`) |
 | `code.run_script` | `run_scripts` | `scripts` | declared scripts; in a sandbox copy only inside the OS sandbox (else `sandbox_unavailable`), in the user's checkout as `/api/runs` does |
 | `code.run_generated` | `run_generated_code` | `sandbox` | OS sandbox only |
+
+#### The run's sandbox
+
+The runner (`server/src/workspace/runner/sandbox.js`) gives a run one sandbox
+and reuses it for every step:
+
+- A capability whose permission is `edit_files`, `run_scripts` or
+  `run_generated_code` runs in the run's sandbox. The first such step that is
+  allowed makes it: `createSandbox({ runId, repoPath: localPath })` (from the
+  checkout's HEAD; uncommitted changes are not carried) when the project's
+  `localPath` is a git checkout with a commit, otherwise
+  `createScratchSandbox({ runId })` (a scratch directory only).
+- `can()` is told `inSandbox: true` only when the capability really runs in
+  one: always for `run_generated_code`, and for `edit_files` and
+  `run_scripts` only when the project has a checkout to copy. An edit in a
+  project with no git checkout is therefore `ask` at sandboxed autonomous.
+- Once the run has a sandbox every capability gets it as `ctx.sandbox`
+  (reads included), so a read after an edit sees the edited copy.
+- A capability's verifiers run with the same `ctx`, under the capability's
+  decision; no separate `can(run_scripts)` is asked for them.
+- As soon as it is made, `checkpoint.sandbox = { root, kind, head }` is stored
+  on the run (conditional on the worker's lease), so a resumed run finds it.
+  The paths are always derived from the run id, never trusted from the row. A
+  recorded sandbox that is gone (or half there) is removed and made again the
+  next time a step needs it; the new copy starts from HEAD again.
+- When the run reaches a terminal state the worker that ended it removes the
+  sandbox and the record. A run that ended while no worker held it (killed
+  while waiting for approval or paused) is swept by an idle worker
+  (`sweepSandboxes`, at most once a minute). Parked, paused and handed-back
+  runs keep theirs.
+- A sandbox that cannot be made fails the step with `sandbox_error: …`.
 
 Verifiers `code.typecheck`, `code.lint`, `code.build`, `code.tests` run the
 matching declared script and return `{ ok, detail }`, or `{ ok: true,
@@ -367,7 +407,10 @@ counts, `usd`) and never any prompt or answer text, from which the run's
 `tokens_used` and `cost_usd` are summed; `agent_run_steps.detail` and `.error`,
 the runner's own record of a step (the chooser's decision, the nodes it read,
 adapter fallbacks); and a unique index that allows one run-level cloud
-approval (`step_id` NULL, capability `cloud_model`) per run.
+approval (`step_id` NULL, capability `cloud_model`) per run. The run's
+`checkpoint` (JSONB) holds its position: the run's recent node ids, the
+previous step node, the consecutive failure count, the last summary and,
+while it has one, its sandbox record `sandbox: { root, kind, head }`.
 
 The scheduler enqueues a due task with `scheduled_for = next_run_at` and
 advances `next_run_at` in the same transaction. Missed slots are not replayed
@@ -426,11 +469,11 @@ so two writers can never both win.
 | `running` | `waiting_approval` | worker | `can()` returned `ask`: the worker inserts an `agent_approvals` row for the step, parks the step in `waiting_approval`, releases the lease. |
 | `waiting_approval` | `queued` | `/api/approvals/:id` (resolve) | The last pending approval of the run was approved or rejected. The worker resumes the parked step and reads the decision from `agent_approvals`; a rejection marks the step `rejected` and the planner continues without it. The run-level cloud approval (`step_id` NULL) never holds a run in `waiting_approval` (the run uses local meanwhile), so only step approvals count here. |
 | `queued` / `running` / `waiting_approval` | `paused` | `/api/agents/:id/pause` | The agent is paused. A running worker sees it at the next step boundary and stops without overwriting it. |
-| `paused` | `queued` | `/api/agents/:id/resume` | A run that was waiting for approval comes back `queued`; the worker finds the step's approval still pending and parks it again. |
+| `paused` | `queued` | `/api/agents/:id/resume` | Clears `lease_owner` and `lease_until`. A run that was waiting for approval comes back `queued`; the worker finds the step's approval still pending and parks it again. |
 | any non-terminal | `killed` | `/api/agents/:id/kill`, `/api/agent-runs/:id/cancel` | The kill switch. Sets `finished_at` and marks the run's pending approvals `expired`. The worker checks the run's status before each stage and aborts the step's `signal` when it sees `killed`. |
 | `running` | `failed` | worker | A reclaimed run whose `attempts` exceeds 3. |
 | `running` | `paused` / `killed` | worker | At a step boundary the worker finds the agent paused or killed but the run not yet marked (a race with the agents API). A worker-made kill also expires the run's pending approvals. |
-| `running` | `queued` | worker | The worker is stopping (engine shutdown): it hands the run back at a step boundary and releases the lease. |
+| `running` | `queued` | worker | The worker is stopping (engine shutdown): it hands the run back at a step boundary and releases the lease. Shutdown waits at most 10 s for that boundary (`stopWithin`); after that the engine exits, the run stays `running` and its lease expires, and any worker reclaims it from its last checkpoint as after a crash. |
 | `running` | `succeeded` / `failed` / `budget_exceeded` | worker | Terminal. Sets `finished_at`. |
 
 The worker publishes the matching `run.*` event for transitions it makes;
@@ -464,7 +507,7 @@ and with `GET /api/agent-runs/:id` also `steps: [Step]`, where
 Step is `{ id, index, kind, capability, status, input, output, verification, adapter, tokens, costUsd, nodeIds, startedAt, finishedAt }`.
 
 - `GET /api/agent-runs[?agentId=&status=]` → `{ runs }`
-- `POST /api/agent-runs` `{ taskId }` or `{ agentId, instructions, project? }`, either with an optional `budget` override → 201 `{ run }` (409 `agent_not_active` for a paused or killed agent)
+- `POST /api/agent-runs` `{ taskId }` or `{ agentId, instructions, project? }`, either with an optional `budget` → 201 `{ run }` (409 `agent_not_active` for a paused or killed agent). The run's `budget` is stored as given, but it can only tighten the agent's: the runner applies, per limit, the smaller of the two.
 - `GET /api/agent-runs/:id` → `{ run }`; `POST /api/agent-runs/:id/cancel` → `{ run }`
 
 **Approval**
@@ -476,6 +519,6 @@ Step is `{ id, index, kind, capability, status, input, output, verification, ada
 ## Plug-in registration
 
 `server/src/plugins/registry.js` lists the built-in plug-ins;
-`registerBuiltInPlugins()` registers them once and is safe to call again. A
-vertical adds itself there. Schedules use `server/src/workspace/cron.js`
+`registerBuiltInPlugins()` registers them once and is safe to call again; the
+runner's worker calls it when it is created. A vertical adds itself there. Schedules use `server/src/workspace/cron.js`
 (`validateCron`, `nextRunAt`).
