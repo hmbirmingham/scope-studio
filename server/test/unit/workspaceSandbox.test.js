@@ -81,6 +81,7 @@ describe('bubblewrap arguments', () => {
     assert.deepEqual(pairs(argv, '--ro-bind').map(([from]) => from), ['/usr', '/opt/node']);
     assert.ok(!argv.some((arg) => arg.startsWith('/home')), 'no home directory is mounted');
     assert.deepEqual(pairs(argv, '--chdir')[0][0], '/data/sandboxes/r1/scratch');
+    assert.equal(argv[argv.indexOf('--remount-ro') + 1], '/');
   });
 
   test('applies every resource limit through prlimit right before the command', () => {

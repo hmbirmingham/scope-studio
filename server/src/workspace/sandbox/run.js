@@ -188,6 +188,9 @@ export function buildBwrapArgs({
     mounted.push(path);
   }
 
+  // bubblewrap builds the new root on a tmpfs that the sandbox could
+  // otherwise write to; only the mounts above (and /tmp) stay writable.
+  argv.push('--remount-ro', '/');
   argv.push('--chdir', cwd, '--clearenv');
   for (const [key, value] of Object.entries(env)) argv.push('--setenv', key, value);
 
