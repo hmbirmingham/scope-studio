@@ -53,6 +53,15 @@ jobs:
           done
           ollama pull nomic-embed-text
 
+      # Model-written code runs in a bubblewrap sandbox, and the escape tests
+      # run it for real. Ubuntu 24.04 blocks unprivileged user namespaces
+      # through AppArmor by default, which bubblewrap needs.
+      - name: Install bubblewrap and allow user namespaces
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y bubblewrap
+          sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
+
       - run: npm ci
         working-directory: server
 
