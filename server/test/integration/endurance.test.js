@@ -14,6 +14,7 @@ import { createScopeArm } from '../../src/benchmark/endurance/arms.js';
 import { DRY, SpendCap } from '../../src/benchmark/endurance/economics.js';
 import { EXIT_UPSTREAM_ERROR, emitReport, runEndurance, withDryServices } from '../../src/benchmark/session.js';
 import { FAKE_ANTHROPIC_KEY, startFakeAnthropic } from '../fakeAnthropic.js';
+import { controlAccount, linkUser, startControlPlane } from '../fakeControl.js';
 import { startFakeOllama } from '../fakeOllama.js';
 import { ensureCentroids, registeredSession, startServer } from '../helpers.js';
 
@@ -42,6 +43,7 @@ describe('endurance benchmark', () => {
   let server;
   let ollama;
   let anthropic;
+  let control;
   let api;
   let ownerId;
   let email;
@@ -67,7 +69,12 @@ describe('endurance benchmark', () => {
     await ensureCentroids(server.pool);
     api = await registeredSession(server.base);
     ownerId = (await api('GET', '/api/auth/session')).data.userId;
-    await server.pool.query("UPDATE users SET plan = 'engineer' WHERE id = $1", [ownerId]);
+    // Engineer on the real control plane, which answers the route's platform
+    // turns through the same Anthropic stand-in the arm calls directly.
+    control = await startControlPlane();
+    process.env.CONTROL_URL = control.url;
+    const account = await controlAccount(control, { email: 'endurance@scope.test', plan: 'engineer' });
+    await linkUser(server.pool, ownerId, 'engineer', { token: account.token, fetchedAt: new Date(0) });
     email = (await server.pool.query('SELECT email FROM users WHERE id = $1', [ownerId])).rows[0].email;
 
     // Embedded when the real Ollama is up; otherwise retrieval is lexical-only,
@@ -105,6 +112,8 @@ describe('endurance benchmark', () => {
   after(async () => {
     process.env.OLLAMA_URL = realOllama;
     delete process.env.ANTHROPIC_BASE_URL;
+    delete process.env.CONTROL_URL;
+    await control.close();
     delete process.env.PLATFORM_ANTHROPIC_API_KEY;
     await server.close();
     await ollama.close();

@@ -2,10 +2,9 @@ import { randomUUID } from 'node:crypto';
 import { Router } from 'express';
 import requireAuth from '../middleware/requireAuth.js';
 import { costUsd, describeError, streamChat as streamCloud } from '../lib/anthropic.js';
-import { CLOUD_MODELS, ECONOMY_MAX_TOKENS, canAutoCloud, canChooseCloud } from '../billing/plans.js';
+import { CLOUD_MODELS, ECONOMY_MAX_TOKENS, canAutoCloud } from '../billing/plans.js';
 import { resolveCloudCredential } from '../billing/credential.js';
 import { questionDifficulty } from '../routing/difficulty.js';
-import { monthlyPlatformAnswers, weeklyPlatformSpend } from '../models/usageStore.js';
 import { localChatModel, localModelStatus, streamChat as streamLocal } from '../lib/ollama.js';
 import {
   gatherCandidates,
@@ -34,7 +33,9 @@ import { autoOpens, openNow, parseActions, presentAction, recordActions } from '
 import { displayControlAllowed } from './actions.js';
 import { getProjectSettings } from '../models/projectSettings.js';
 import { beginGeneration, endGeneration, warmCache } from '../routing/warm.js';
-import { getUserPlan } from '../models/userStore.js';
+import { expireMe } from '../control/linkStore.js';
+import { controlState, deviceToken } from '../control/plan.js';
+import { PlatformUnavailable, platformCall, sourcesOf } from '../control/platform.js';
 
 // The cloud tier runs on the user's own key, sent per request in this header
 // and never stored — not in the session, not in the database, not in a log.
@@ -80,22 +81,23 @@ const ANSWERS_USED =
 const ALLOWANCE_USED =
   "This week's cloud allowance is used, and the local model is not available to answer instead.";
 
-// The credential for this request, from the plan: the user's own key on Key
-// Pro, the platform's key for an Auto answer on Student or Engineer while the
-// allowance lasts, or none. The week's platform spend is only read when the
-// plan could spend it.
-async function cloudCredentialFor(ownerId, userPlan, body, headerKey) {
-  const explicit = body.tier === CLOUD_TIER || body.webSearch === true;
-  const meters = !canChooseCloud(userPlan) && !explicit && canAutoCloud(userPlan);
+// The credential for this request, from the plan the control plane reports
+// (control/plan.js): the user's own key on Key Pro, the control plane's
+// platform cloud for an Auto answer on Student or Engineer while the
+// allowance lasts, or none. Signed out or offline, the plan is Free.
+function cloudCredentialFor(control, body, headerKey) {
   return resolveCloudCredential({
-    plan: userPlan,
+    plan: control.plan,
     headerKey,
-    explicit,
+    explicit: body.tier === CLOUD_TIER || body.webSearch === true,
     modelChoice: body.cloudModel,
-    weeklySpentUsd: meters ? await weeklyPlatformSpend(ownerId) : 0,
-    monthlyAnswersUsed: meters ? await monthlyPlatformAnswers(ownerId) : 0,
+    me: control.me,
   });
 }
+
+// Platform refusals that have their own message and code when the local model
+// cannot answer instead; any other refusal reads as the cloud being unavailable.
+const LIMIT_REFUSALS = new Set(['allowance_exhausted', 'answer_limit_reached']);
 
 function blockedMessage({ route, credential, webSearch, status, model }) {
   if (route.blocked === 'cloud_unavailable') {
@@ -129,12 +131,29 @@ function invalid({ query, tier, webSearch, displayControl, cloudModel }) {
 // across a conversation, so that is where the cache breakpoint goes.
 const CACHE_MARKERS = { strict_xml: '<question>', markdown: '## Question' };
 
-async function* generate({ decision, model, effort, messages, apiKey, cacheMarker, signal, webSearch, economy = false }) {
+async function* generate({ decision, model, effort, messages, apiKey, cacheMarker, signal, webSearch, economy = false, platform = null }) {
   if (decision === 'local') {
     for await (const chunk of streamLocal({ model, messages, options: LOCAL_OPTIONS, signal })) {
       if (chunk.message?.content) yield { text: chunk.message.content };
       if (chunk.done) {
         yield { done: true, outputTokens: chunk.eval_count ?? null, promptTokens: chunk.prompt_eval_count ?? null };
+      }
+    }
+    return;
+  }
+  // A platform answer: the control plane already accepted it (see the route),
+  // and its events are the ModelPort shape.
+  if (platform) {
+    for await (const event of platform.stream()) {
+      if (event.text) yield { text: event.text };
+      if (event.done) {
+        yield {
+          done: true,
+          outputTokens: event.usage?.output_tokens ?? null,
+          promptTokens: event.usage?.input_tokens ?? null,
+          costUsd: event.costUsd ?? null,
+          model: event.model ?? null,
+        };
       }
     }
     return;
@@ -272,10 +291,10 @@ router.post('/prepare', async (req, res) => {
   const problem = invalid(req.body);
   if (problem) return res.status(400).json({ error: problem });
 
-  const userPlan = await getUserPlan(req.session.userId);
-  const credential = await cloudCredentialFor(req.session.userId, userPlan, req.body, req.get(API_KEY_HEADER));
+  const control = await controlState(req.session.userId);
+  const credential = cloudCredentialFor(control, req.body, req.get(API_KEY_HEADER));
   const plan = await planTurn(req.session.userId, req.sessionID, req.body, {
-    cloudAvailable: Boolean(credential.apiKey),
+    cloudAvailable: Boolean(credential.apiKey) || credential.platform,
   });
   if (plan.contextBlock) {
     saveDraft(draftKey(req.session.userId, req.sessionID), {
@@ -316,8 +335,9 @@ router.post('/', async (req, res) => {
   });
 
   const ownerId = req.session.userId;
-  const userPlan = await getUserPlan(ownerId);
-  const credential = await cloudCredentialFor(ownerId, userPlan, req.body, req.get(API_KEY_HEADER));
+  const control = await controlState(ownerId);
+  const userPlan = control.plan;
+  let credential = cloudCredentialFor(control, req.body, req.get(API_KEY_HEADER));
   // A plan that may not choose the cloud is refused before anything is
   // retrieved or sent: the hard block.
   if (credential.blocked === 'cloud_requires_key_pro') {
@@ -332,7 +352,34 @@ router.post('/', async (req, res) => {
   // else is used, and the answer says how many private nodes it skipped.
   const webSearch = req.body.webSearch === true;
   const turn = webSearch ? { ...req.body, tier: CLOUD_TIER, cloudOnly: true } : req.body;
-  const plan = await planTurn(ownerId, req.sessionID, turn, { cloudAvailable: Boolean(apiKey) });
+  let plan = await planTurn(ownerId, req.sessionID, turn, { cloudAvailable: Boolean(apiKey) || credential.platform });
+
+  // A platform answer is opened before anything is streamed back, so a
+  // refusal (signed out elsewhere, offline, the allowance spent since the plan
+  // was cached) is handled here: the turn is planned again without the cloud
+  // and answered locally when the local model can, or refused as before.
+  let platform = null;
+  if (plan.route.decision === 'cloud' && credential.platform) {
+    platform = platformCall({
+      token: await deviceToken(ownerId),
+      messages: plan.messages,
+      cacheMarker: CACHE_MARKERS[plan.config.prompt_structure],
+      hard: Boolean(plan.difficulty),
+      sources: sourcesOf(plan.sources.map(({ node }) => node)),
+      signal: upstream.signal,
+    });
+    try {
+      await platform.open();
+    } catch (err) {
+      if (!(err instanceof PlatformUnavailable)) throw err;
+      platform = null;
+      // The cached plan or limits were wrong; the next request asks again.
+      await expireMe(ownerId);
+      credential = { ...credential, platform: false, billedTo: null, blocked: LIMIT_REFUSALS.has(err.reason) ? err.reason : null };
+      plan = await planTurn(ownerId, req.sessionID, turn, { cloudAvailable: false });
+    }
+  }
+
   const { route, sources, metrics } = plan;
   const model = route.decision === 'local' ? plan.model : credential.modelFor(Boolean(plan.difficulty));
   const conversationId = req.body.conversationId ?? randomUUID();
@@ -381,7 +428,7 @@ router.post('/', async (req, res) => {
     });
   }
 
-  const modelUsed = route.decision === 'local' ? `ollama/${model}` : `anthropic/${model}`;
+  let modelUsed = route.decision === 'local' ? `ollama/${model}` : `anthropic/${model}`;
   res.status(200).set({
     'Content-Type': 'application/x-ndjson; charset=utf-8',
     'Cache-Control': 'no-cache',
@@ -426,6 +473,7 @@ router.post('/', async (req, res) => {
       signal: upstream.signal,
       webSearch,
       economy: credential.economy,
+      platform,
     })) {
       if (event.searching) {
         searches.push(event.searching);
@@ -449,6 +497,9 @@ router.post('/', async (req, res) => {
         outputTokens = event.outputTokens;
         promptTokens = event.promptTokens;
         cost = event.costUsd ?? null;
+        // The control plane names the model it used, which can differ from
+        // the one it predicted when the cache was read (economy began since).
+        if (platform && event.model) modelUsed = `anthropic/${event.model}`;
         if (webSearch) webSearches = event.webSearches ?? searches.length;
       }
     }

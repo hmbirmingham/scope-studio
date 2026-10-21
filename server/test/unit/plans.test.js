@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict';
 import { describe, test } from 'node:test';
+import { simulatePlatformCredential } from '../../src/benchmark/endurance/platformRules.js';
 import { resolveCloudCredential } from '../../src/billing/credential.js';
 import {
   MARGIN_TARGET, PLANS, canAutoCloud, canChooseCloud, cloudEffortFor, measuredAnswerUsd, monthlyAnswerLimit,
@@ -63,11 +64,19 @@ describe('plans', () => {
 });
 
 describe('resolveCloudCredential', () => {
-  const allowance = weeklyAllowanceUsd('student');
+  const me = (plan, limits = {}, nextModel) => {
+    const allowance = weeklyAllowanceUsd(plan);
+    return {
+      account: { plan },
+      limits: { monthlyAnswers: 200, answersUsed: 0, weeklyAllowanceUsd: allowance, weeklySpentUsd: 0, ...limits },
+      nextModel: nextModel ?? { default: 'claude-sonnet-5', hard: platformModel(plan, { hard: true }) },
+    };
+  };
 
   test("Key Pro uses the user's own key for anything, including an explicit Cloud or web request", () => {
-    const credential = resolveCloudCredential({ plan: 'key_pro', headerKey: 'user-key', explicit: true, platformKey: 'platform' });
+    const credential = resolveCloudCredential({ plan: 'key_pro', headerKey: 'user-key', explicit: true });
     assert.equal(credential.apiKey, 'user-key');
+    assert.equal(credential.platform, false);
     assert.equal(credential.billedTo, 'user_key');
     assert.equal(credential.blocked, null);
     assert.equal(credential.modelFor(true), 'claude-sonnet-5', 'Sonnet unless they choose otherwise');
@@ -77,30 +86,78 @@ describe('resolveCloudCredential', () => {
 
   test('off Key Pro an explicit Cloud or web request is blocked, and the user key is never used', () => {
     for (const plan of ['free', 'student', 'engineer']) {
-      const credential = resolveCloudCredential({ plan, headerKey: 'user-key', explicit: true, platformKey: 'platform' });
+      const credential = resolveCloudCredential({ plan, headerKey: 'user-key', explicit: true, me: me(plan) });
+      assert.equal(credential.blocked, 'cloud_requires_key_pro', plan);
+      assert.equal(credential.apiKey, null, plan);
+      assert.equal(credential.platform, false, plan);
+    }
+  });
+
+  test('an Auto answer on Student or Engineer goes through the control plane, on the model it named', () => {
+    const student = resolveCloudCredential({ plan: 'student', headerKey: 'user-key', explicit: false, modelChoice: 'claude-opus-5', me: me('student') });
+    assert.deepEqual([student.apiKey, student.platform, student.billedTo, student.modelFor(true)], [null, true, 'platform', 'claude-sonnet-5'], 'a Student cannot choose Opus, and no key is held');
+    const engineer = resolveCloudCredential({ plan: 'engineer', explicit: false, me: me('engineer') });
+    assert.deepEqual([engineer.modelFor(true), engineer.modelFor(false)], ['claude-opus-5', 'claude-sonnet-5']);
+    const stepped = resolveCloudCredential({ plan: 'engineer', explicit: false, me: me('engineer', {}, { default: 'claude-sonnet-5', hard: 'claude-sonnet-5' }) });
+    assert.equal(stepped.modelFor(true), 'claude-sonnet-5', 'past half the week the control plane steps Opus down');
+    const half = resolveCloudCredential({ plan: 'student', explicit: false, me: me('student', { weeklySpentUsd: weeklyAllowanceUsd('student') / 2 }) });
+    assert.equal(half.economy, true);
+    const unknown = resolveCloudCredential({ plan: 'engineer', explicit: false, me: null });
+    assert.deepEqual([unknown.platform, unknown.modelFor(true)], [true, 'claude-opus-5'], "without the control plane's figures the plan's own models stand in");
+  });
+
+  test('a spent allowance or a used-up month, as last reported, means no cloud; Free never has one', () => {
+    const allowance = weeklyAllowanceUsd('student');
+    const spent = resolveCloudCredential({ plan: 'student', explicit: false, me: me('student', { weeklySpentUsd: allowance }) });
+    assert.deepEqual([spent.platform, spent.blocked], [false, 'allowance_exhausted']);
+    const limit = resolveCloudCredential({ plan: 'student', explicit: false, me: me('student', { answersUsed: 200 }) });
+    assert.deepEqual([limit.platform, limit.blocked], [false, 'answer_limit_reached']);
+    const free = resolveCloudCredential({ plan: 'free', headerKey: 'user-key', explicit: false, me: me('free') });
+    assert.deepEqual([free.apiKey, free.platform, free.blocked], [null, false, null]);
+  });
+});
+
+// The benchmark's stand-in for the control plane's rules, which the engine
+// itself no longer applies to platform answers.
+describe('simulatePlatformCredential (endurance benchmark)', () => {
+  const allowance = weeklyAllowanceUsd('student');
+
+  test("Key Pro uses the user's own key for anything, including an explicit Cloud or web request", () => {
+    const credential = simulatePlatformCredential({ plan: 'key_pro', headerKey: 'user-key', explicit: true, platformKey: 'platform' });
+    assert.equal(credential.apiKey, 'user-key');
+    assert.equal(credential.billedTo, 'user_key');
+    assert.equal(credential.blocked, null);
+    assert.equal(credential.modelFor(true), 'claude-sonnet-5', 'Sonnet unless they choose otherwise');
+    const opus = simulatePlatformCredential({ plan: 'key_pro', headerKey: 'user-key', explicit: false, modelChoice: 'claude-opus-5' });
+    assert.equal(opus.modelFor(false), 'claude-opus-5');
+  });
+
+  test('off Key Pro an explicit Cloud or web request is blocked, and the user key is never used', () => {
+    for (const plan of ['free', 'student', 'engineer']) {
+      const credential = simulatePlatformCredential({ plan, headerKey: 'user-key', explicit: true, platformKey: 'platform' });
       assert.equal(credential.blocked, 'cloud_requires_key_pro', plan);
       assert.equal(credential.apiKey, null, plan);
     }
   });
 
   test('an Auto answer on Student uses the platform key, billed to the platform, on the right model', () => {
-    const fresh = resolveCloudCredential({ plan: 'student', headerKey: 'user-key', explicit: false, platformKey: 'platform', weeklySpentUsd: 0, modelChoice: 'claude-opus-5' });
+    const fresh = simulatePlatformCredential({ plan: 'student', headerKey: 'user-key', explicit: false, platformKey: 'platform', weeklySpentUsd: 0, modelChoice: 'claude-opus-5' });
     assert.deepEqual([fresh.apiKey, fresh.billedTo, fresh.modelFor(true)], ['platform', 'platform', 'claude-sonnet-5'], 'a Student cannot choose Opus');
     assert.equal(fresh.economy, false);
-    const half = resolveCloudCredential({ plan: 'student', explicit: false, platformKey: 'platform', weeklySpentUsd: allowance / 2 });
+    const half = simulatePlatformCredential({ plan: 'student', explicit: false, platformKey: 'platform', weeklySpentUsd: allowance / 2 });
     assert.deepEqual([half.modelFor(false), half.economy], ['claude-sonnet-5', true], 'past half: still Sonnet, shorter answers');
-    const engineer = resolveCloudCredential({ plan: 'engineer', explicit: false, platformKey: 'platform', weeklySpentUsd: 0 });
+    const engineer = simulatePlatformCredential({ plan: 'engineer', explicit: false, platformKey: 'platform', weeklySpentUsd: 0 });
     assert.deepEqual([engineer.modelFor(true), engineer.modelFor(false)], ['claude-opus-5', 'claude-sonnet-5']);
   });
 
   test('a spent allowance, a missing platform key, or Free all mean no cloud credential', () => {
-    const spent = resolveCloudCredential({ plan: 'student', explicit: false, platformKey: 'platform', weeklySpentUsd: allowance });
+    const spent = simulatePlatformCredential({ plan: 'student', explicit: false, platformKey: 'platform', weeklySpentUsd: allowance });
     assert.deepEqual([spent.apiKey, spent.blocked], [null, 'allowance_exhausted']);
-    const limit = resolveCloudCredential({ plan: 'student', explicit: false, platformKey: 'platform', monthlyAnswersUsed: 200 });
+    const limit = simulatePlatformCredential({ plan: 'student', explicit: false, platformKey: 'platform', monthlyAnswersUsed: 200 });
     assert.deepEqual([limit.apiKey, limit.blocked], [null, 'answer_limit_reached']);
-    const unset = resolveCloudCredential({ plan: 'engineer', explicit: false, platformKey: undefined });
+    const unset = simulatePlatformCredential({ plan: 'engineer', explicit: false, platformKey: undefined });
     assert.deepEqual([unset.apiKey, unset.blocked], [null, null]);
-    const free = resolveCloudCredential({ plan: 'free', headerKey: 'user-key', explicit: false, platformKey: 'platform' });
+    const free = simulatePlatformCredential({ plan: 'free', headerKey: 'user-key', explicit: false, platformKey: 'platform' });
     assert.deepEqual([free.apiKey, free.blocked], [null, null]);
   });
 });

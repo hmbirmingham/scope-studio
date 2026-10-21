@@ -1,120 +1,112 @@
 import { Router } from 'express';
 import requireAuth from '../middleware/requireAuth.js';
 import { PLANS } from '../billing/plans.js';
-import { billingConfig, createCheckout, createCustomer, currentSubscription, customerPortalUrl, invoiceSubscriptionId, subscriptionRecord, verifyEvent } from '../billing/stripe.js';
-import { applySubscription, getUserBilling, setBillingCustomer } from '../models/userStore.js';
+import { ControlError, controlUrl, getBilling, openPortal, startCheckout } from '../control/client.js';
+import { deleteLink, expireMe } from '../control/linkStore.js';
+import { controlState, deviceToken } from '../control/plan.js';
 
-const NOT_CONFIGURED = { error: 'Billing is not configured on this server.', code: 'billing_not_configured' };
-const SUBSCRIPTION_EVENTS = new Set([
-  'customer.subscription.created',
-  'customer.subscription.updated',
-  'customer.subscription.deleted',
-  'customer.subscription.paused',
-  'customer.subscription.resumed',
-]);
-// Renewals and failed payments arrive as invoice events; each one is a prompt
-// to re-read the subscription it belongs to, like the subscription events.
-const INVOICE_EVENTS = new Set(['invoice.paid', 'invoice.payment_failed']);
+// Billing lives on the control plane (control/API.md, "Billing"): Stripe,
+// its webhook and the subscription record are all there, and this engine has
+// no Stripe client, key or price of its own. These routes keep the plan
+// overlay's shape and forward to /v1/billing* with the signed-in user's device
+// token. Signed out or offline, the overlay still shows the plans and says
+// what is needed; nothing here is an error page.
 
-// Called by Stripe, not a signed-in user, so it is not behind requireAuth; the
-// signature is its authentication. Mounted with a raw body parser ahead of
-// express.json, because the signature covers the exact bytes sent.
-export async function billingWebhook(req, res) {
-  const config = billingConfig();
-  if (!config) return res.status(503).json(NOT_CONFIGURED);
-
-  let event;
-  try {
-    event = verifyEvent(config, req.body, req.get('stripe-signature'));
-  } catch {
-    return res.status(401).json({ error: 'invalid signature' });
-  }
-  // Acknowledged so Stripe stops retrying; nothing to do for it.
-  if (!SUBSCRIPTION_EVENTS.has(event.type) && !INVOICE_EVENTS.has(event.type)) {
-    return res.status(200).json({ ignored: event.type });
-  }
-  // This handler reads snapshot events. A thin-payload endpoint sends no
-  // object; refusing loudly beats silently granting nothing.
-  const object = event.data?.object;
-  if (!object) {
-    console.error('billing webhook received a thin event; configure the endpoint with the Snapshot payload');
-    return res.status(400).json({ error: 'snapshot events required' });
-  }
-  const subscriptionId = INVOICE_EVENTS.has(event.type) ? invoiceSubscriptionId(object) : object.id;
-  // An invoice that is not for a subscription (a one-off) changes no plan.
-  if (!subscriptionId && INVOICE_EVENTS.has(event.type)) return res.status(200).json({ ignored: 'invoice without a subscription' });
-  if (!subscriptionId) {
-    console.error('billing webhook received a thin event; configure the endpoint with the Snapshot payload');
-    return res.status(400).json({ error: 'snapshot events required' });
-  }
-
-  let subscription;
-  try {
-    subscription = await currentSubscription(config, subscriptionId);
-  } catch (err) {
-    // A 5xx makes Stripe retry later, which is what a transient failure needs.
-    console.error(`billing webhook could not read ${subscriptionId}: ${err.message}`);
-    return res.status(502).json({ error: 'could not read the subscription from Stripe' });
-  }
-  const record = subscriptionRecord(config, subscription);
-  const plan = await applySubscription(record);
-  // No match is acknowledged too: an unknown subscription must not trigger
-  // endless retries. It is logged for the owner to look into.
-  if (plan === null) console.warn(`billing webhook ${event.type} for ${subscriptionId} matched no user`);
-  res.status(200).json({ applied: plan !== null, plan });
-}
+const PAID_PLANS = ['key_pro', 'student', 'engineer'];
+const listPrices = () => Object.fromEntries(Object.entries(PLANS).map(([name, plan]) => [name, plan.priceUsd]));
 
 const router = Router();
 router.use(requireAuth);
 
-const returnUrl = () => `${process.env.BASE_URL}/`;
+const SIGNED_OUT = { error: 'Sign in to your Scope Studio account to choose or manage a plan.', code: 'signed_out' };
+const NOT_CONFIGURED = { error: 'Accounts are not set up on this engine: CONTROL_URL is not configured.', code: 'control_not_configured' };
+
+// A control-plane refusal passed on with its own status, code and sentence; an
+// unreachable control plane is a 503 the overlay can show. A revoked token
+// signs this engine out, like a 401 from /v1/me does.
+async function forward(res, ownerId, err) {
+  if (!(err instanceof ControlError)) throw err;
+  if (err.status === 401) {
+    await deleteLink(ownerId);
+    return res.status(401).json(SIGNED_OUT);
+  }
+  if (err.status === 0) {
+    return res.status(503).json({ error: 'The Scope Studio account service could not be reached. Try again shortly.', code: 'control_unreachable' });
+  }
+  return res.status(err.status).json({ error: err.message, code: err.code });
+}
 
 router.get('/', async (req, res) => {
-  const user = await getUserBilling(req.session.userId);
-  res.json({
-    configured: Boolean(billingConfig()),
-    plan: user.plan,
-    status: user.billing_status,
-    renewsAt: user.billing_renews_at,
-    cancelAt: user.billing_cancel_at,
-    hasSubscription: Boolean(user.billing_subscription_id) && user.plan !== 'free',
-    prices: Object.fromEntries(Object.entries(PLANS).map(([name, plan]) => [name, plan.priceUsd])),
-  });
+  const ownerId = req.session.userId;
+  // Re-read on every visit: this is where a person looks right after paying.
+  const state = await controlState(ownerId, { refresh: true });
+  const base = {
+    accountsConfigured: Boolean(controlUrl()),
+    signedIn: state.signedIn,
+    online: state.online,
+    email: state.account?.email ?? null,
+    plan: state.signedIn ? state.account.plan : 'free',
+    status: null,
+    renewsAt: null,
+    cancelAt: null,
+    hasSubscription: false,
+    prices: listPrices(),
+    billingError: null,
+  };
+  const token = state.signedIn ? await deviceToken(ownerId) : null;
+  if (!token || !state.online) return res.json({ ...base, configured: false });
+  // The control plane just failed to answer /v1/me (a plan still within its
+  // TTL keeps `online`): asking it for billing now would only wait out the
+  // same timeout.
+  if (state.refreshFailed) return res.json({ ...base, configured: false, online: false });
+
+  try {
+    const billing = await getBilling(token);
+    res.json({
+      ...base,
+      configured: true,
+      plan: billing.plan ?? base.plan,
+      status: billing.status ?? null,
+      renewsAt: billing.renewsAt ?? null,
+      cancelAt: billing.cancelAt ?? null,
+      hasSubscription: billing.hasSubscription === true,
+      prices: billing.prices ?? base.prices,
+    });
+  } catch (err) {
+    if (!(err instanceof ControlError) || err.status === 401) return forward(res, ownerId, err);
+    if (err.code === 'billing_not_configured') return res.json({ ...base, configured: false });
+    if (err.status === 0) return res.json({ ...base, configured: false, online: false });
+    // /v1/me answered a moment ago, so the account service is up; it is
+    // billing that failed. Say that, rather than that the service is offline,
+    // and offer no checkout until it answers.
+    return res.json({ ...base, configured: false, billingError: { error: err.message, code: err.code } });
+  }
 });
 
-router.post('/checkout', async (req, res) => {
-  const config = billingConfig();
-  if (!config) return res.status(503).json(NOT_CONFIGURED);
-  const { plan } = req.body ?? {};
-  if (!['key_pro', 'student', 'engineer'].includes(plan)) {
-    return res.status(400).json({ error: 'plan must be key_pro, student or engineer' });
-  }
-  const user = await getUserBilling(req.session.userId);
-  // A second subscription would bill twice; plan changes go through the portal.
-  if (user.billing_subscription_id && user.plan !== 'free') {
-    return res.status(409).json({ error: 'You already have a subscription. Change or cancel it from Manage billing.', code: 'already_subscribed' });
-  }
+async function withToken(req, res, fn) {
+  if (!controlUrl()) return res.status(503).json(NOT_CONFIGURED);
+  const ownerId = req.session.userId;
+  const token = await deviceToken(ownerId);
+  if (!token) return res.status(401).json(SIGNED_OUT);
   try {
-    // The account's Stripe Customer, created once: events are matched by it.
-    const customerId =
-      user.billing_customer_id ?? (await setBillingCustomer(user.id, await createCustomer(config, { userId: user.id, email: user.email })));
-    const url = await createCheckout(config, { plan, userId: user.id, customerId, returnUrl: returnUrl() });
+    const { url } = await fn(token);
+    // The plan may change once the person pays or cancels; the next read of
+    // the plan asks the control plane rather than trusting the cache.
+    await expireMe(ownerId);
     res.json({ url });
   } catch (err) {
-    res.status(502).json({ error: `Stripe: ${err.message}` });
+    return forward(res, ownerId, err);
   }
+}
+
+router.post('/checkout', async (req, res) => {
+  const { plan } = req.body ?? {};
+  if (!PAID_PLANS.includes(plan)) {
+    return res.status(400).json({ error: 'plan must be key_pro, student or engineer', code: 'invalid_plan' });
+  }
+  return withToken(req, res, (token) => startCheckout(token, plan));
 });
 
-router.post('/portal', async (req, res) => {
-  const config = billingConfig();
-  if (!config) return res.status(503).json(NOT_CONFIGURED);
-  const user = await getUserBilling(req.session.userId);
-  if (!user.billing_customer_id) return res.status(404).json({ error: 'no billing account on this user' });
-  try {
-    res.json({ url: await customerPortalUrl(config, { customerId: user.billing_customer_id, returnUrl: returnUrl() }) });
-  } catch (err) {
-    res.status(502).json({ error: `Stripe: ${err.message}` });
-  }
-});
+router.post('/portal', (req, res) => withToken(req, res, (token) => openPortal(token)));
 
 export default router;
