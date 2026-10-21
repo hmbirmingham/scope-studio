@@ -64,9 +64,14 @@ export const doneEvent = (overrides = {}) => ({
 // request: `{ status, body }` for a refusal, `{ events }` for a stream, or
 // 'network' to drop the connection; when it is empty the answer is
 // `state.answer`. `state.billing` likewise for /v1/billing*.
+// `state.meFailure` and `state.billingFailure`, when set, are what GET /v1/me
+// and GET /v1/billing answer instead, for every token: `{ status, body }` or
+// 'network'.
 export async function startFakeControl() {
   const state = {
     me: new Map(),
+    meFailure: null,
+    billingFailure: null,
     cloud: [],
     answer: { events: [{ text: 'Platform ' }, { text: 'answer.' }, doneEvent()] },
     exchange: null,
@@ -100,7 +105,8 @@ export async function startFakeControl() {
     }
     if (!token || !state.me.has(token)) return unauthenticated();
 
-    if (req.method === 'GET' && url.pathname === '/v1/me') return json(200, state.me.get(token));
+    const fail = (failure) => (failure === 'network' ? req.socket.destroy() : json(failure.status, failure.body));
+    if (req.method === 'GET' && url.pathname === '/v1/me') return state.meFailure ? fail(state.meFailure) : json(200, state.me.get(token));
     if (req.method === 'GET' && url.pathname === '/v1/devices') return json(200, { devices: state.devices });
     if (req.method === 'DELETE' && url.pathname.startsWith('/v1/devices/')) {
       const id = decodeURIComponent(url.pathname.slice('/v1/devices/'.length));
@@ -112,6 +118,7 @@ export async function startFakeControl() {
       return undefined;
     }
     if (req.method === 'GET' && url.pathname === '/v1/billing') {
+      if (state.billingFailure) return fail(state.billingFailure);
       return state.billing.status === 503
         ? json(503, { error: 'Billing is not configured on this server.', code: 'billing_not_configured' })
         : json(200, state.billing);

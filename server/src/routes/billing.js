@@ -51,9 +51,14 @@ router.get('/', async (req, res) => {
     cancelAt: null,
     hasSubscription: false,
     prices: listPrices(),
+    billingError: null,
   };
   const token = state.signedIn ? await deviceToken(ownerId) : null;
   if (!token || !state.online) return res.json({ ...base, configured: false });
+  // The control plane just failed to answer /v1/me (a plan still within its
+  // TTL keeps `online`): asking it for billing now would only wait out the
+  // same timeout.
+  if (state.refreshFailed) return res.json({ ...base, configured: false, online: false });
 
   try {
     const billing = await getBilling(token);
@@ -68,9 +73,13 @@ router.get('/', async (req, res) => {
       prices: billing.prices ?? base.prices,
     });
   } catch (err) {
-    if (err instanceof ControlError && err.code === 'billing_not_configured') return res.json({ ...base, configured: false });
-    if (err instanceof ControlError && err.status !== 401) return res.json({ ...base, configured: false, online: false });
-    return forward(res, ownerId, err);
+    if (!(err instanceof ControlError) || err.status === 401) return forward(res, ownerId, err);
+    if (err.code === 'billing_not_configured') return res.json({ ...base, configured: false });
+    if (err.status === 0) return res.json({ ...base, configured: false, online: false });
+    // /v1/me answered a moment ago, so the account service is up; it is
+    // billing that failed. Say that, rather than that the service is offline,
+    // and offer no checkout until it answers.
+    return res.json({ ...base, configured: false, billingError: { error: err.message, code: err.code } });
   }
 });
 
