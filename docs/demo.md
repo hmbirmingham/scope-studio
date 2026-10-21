@@ -198,14 +198,14 @@ keeps going, click **Stop run**; the list of fixes is already saved.
   network, and model-written code only ever runs in an OS sandbox.
 - **Small context per step, from the graph.** The task benchmark
   (`npm run benchmark:tasks`, a dry run with scripted models, re-run for this
-  document; six code tasks, every arm completes 6/6):
+  document; six code tasks and one research task, every arm completes 7/7):
 
   | Arm | Cost per completed task |
   |---|---|
   | Scope, local model | $0 |
-  | Scope, local + cloud planner | $0.0021 |
-  | Standard full-transcript agent, Claude Sonnet | $0.0124 |
-  | Standard full-transcript agent, Claude Opus | $0.0309 |
+  | Scope, local + cloud planner | $0.0025 |
+  | Standard full-transcript agent, Claude Sonnet | $0.0118 |
+  | Standard full-transcript agent, Claude Opus | $0.0295 |
 
   On the longest task Scope's per-step context levels off at about 1.8k
   tokens, while the full-transcript agent's grows every turn to 4.3k. The dry
