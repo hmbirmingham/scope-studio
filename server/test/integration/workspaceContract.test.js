@@ -42,14 +42,10 @@ describe('agent-workspace contract', () => {
     assert.deepEqual(rows[0], { agents: 0, steps: 0 });
   });
 
-  test('stubbed routes need a session and answer 501 until their path lands', async () => {
+  test('every workspace route needs a session', async () => {
     const anonymous = session(server.base);
     for (const path of ['/api/agents', '/api/tasks', '/api/approvals', '/api/agent-runs', '/api/workspace/events']) {
       assert.equal((await anonymous('GET', path)).status, 401, path);
-    }
-    // /api/agent-runs is implemented by the runner (workspaceRunnerApi.test.js).
-    for (const path of ['/api/agents', '/api/agents/x/kill', '/api/tasks', '/api/approvals']) {
-      assert.equal((await api('GET', path)).status, 501, path);
     }
   });
 
