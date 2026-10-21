@@ -1,5 +1,6 @@
 import { useEffect, useImperativeHandle, useRef, useState } from 'react';
 import { GraphEngine } from '../graph/GraphEngine';
+import { useAgentCursor } from '../workspace/useAgentCursor.js';
 
 function NodeTooltip({ hover }) {
   return (
@@ -28,6 +29,9 @@ export default function KnowledgeGraphCanvas({
   const selectHandler = useRef(onSelectNode);
 
   const [hover, setHover] = useState(null);
+
+  // Agents' touches and writes go straight to the engine, not through state.
+  useAgentCursor(engineRef);
 
   // Keeps the engine's callback current without making it an effect dependency,
   // so a new handler identity never tears down the render loop.

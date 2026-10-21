@@ -468,9 +468,21 @@ that no longer parses stops the task (`next_run_at` NULL).
 ## Client
 
 `client/src/workspace/tabs.js` is the tab registry: a module registers
-`{ id, label, order, Component }` and the workspace strip beside the
-conversation renders it. With nothing registered the strip does not render,
-so Wave 0 changes nothing the user sees.
+`{ id, label, order, Component, Badge? }` and the workspace strip beside the
+conversation renders it (`Badge`, if given, is drawn inside the tab button,
+as the approvals count is). `selectTab(id)` lets one tab open another. With
+nothing registered the strip does not render, so Wave 0 changes nothing the
+user sees.
+
+The workspace UI (`client/src/workspace/`) registers three tabs: Agents
+(builder, kill switch, tasks), Activity (a live step stream per run) and
+Approvals. It holds one `EventSource` on `/api/workspace/events` for the
+whole page; the browser's own retries resume with `Last-Event-ID`, the
+client drops any replayed event it already delivered, and after every
+reconnect it reloads the open run and the pending approvals over HTTP. When
+the browser gives up (the source is closed) the client opens a new
+`EventSource`, which cannot send `Last-Event-ID`, so that reload over HTTP is
+what catches it up.
 
 Visual language for agents on the map: obsidian circles with no hue at rest;
 the agent's colour appears only on the nodes it is touching or just wrote.
@@ -535,6 +547,55 @@ Step is `{ id, index, kind, capability, status, input, output, verification, ada
 
 - `GET /api/approvals[?status=pending]` → `{ approvals }`
 - `POST /api/approvals/:id` `{ decision: 'approve' | 'reject' }` → `{ approval }` (409 if already resolved)
+
+## Measuring the edge
+
+The task benchmark (`npm run benchmark:tasks`, `server/src/benchmark/tasks/`)
+measures the claim at the top of this document on whole tasks rather than
+chat turns. A task is a fixture, instructions, and an objective check; a code
+task's check is the fixture's own `npm test`, run in the OS sandbox on the
+arm's result with the fixture's `test/` and `package.json` put back first, so
+a task counts as completed only when the tests pass and never because a model
+said so (a run that claims success and fails the check is reported as such).
+
+Arms:
+
+| Arm | What runs |
+|---|---|
+| `scope_local` | `executeRun` with the code plug-in, the run sandbox and the OS sandbox; a Debugger agent at `sandboxed`, `modelPolicy: 'local_only'`; the graph is its only memory. |
+| `scope_local_cloud` | The same with `local_cloud` on the Engineer plan's rules (`cloud_model` overridden to `allow`): planning goes to the platform model, steps stay local. |
+| `baseline_sonnet`, `baseline_opus` | The standard full-transcript tool loop: the same tools (the code plug-in's capabilities, in an OS-sandboxed copy), one call per turn, every turn re-sending the whole conversation, with cache breakpoints on the previous and the new turn. |
+
+Per task and arm the report records completion, cost, wall clock, steps,
+model calls and tokens (uncached input, cache writes, cache reads and output
+separately), and every call's prompt size, from which it derives each arm's
+context curve and its growth in tokens per step. Totals give the cost per
+completed task and how many times more it costs on each baseline.
+
+`--dry` (the default, run in CI after the server tests) plays one scripted
+sequence of capability calls through every arm with deterministic fake
+ModelPorts, so the runner, the sandboxes, the pricing and the checks run for
+real at $0 with no model or key. `--live-local` runs `scope_local` against
+the real local model. `--live` needs `PLATFORM_ANTHROPIC_API_KEY` and an
+explicit `--max-usd` of at most 5, and refuses otherwise. The Scope arms claim
+only the run the harness created, so the benchmark is safe to point at a
+database with other runs queued; it uses a throwaway account and deletes it.
+
+What the dry run shows (six code tasks, scripted so every arm does the same
+work): every arm completes 6/6; a completed task is priced at $0 on
+`scope_local`, about $0.002 on `scope_local_cloud` (one Opus planning call),
+$0.012 on the Sonnet baseline and $0.030 on the Opus baseline, with caching
+on. On the longest task (14 actions) Scope's step prompt rises while the
+slice fills and then holds at 1.5–1.8k tokens, while the baseline's grows
+every turn to 4.3k. On the short tasks the slice is still filling when the
+task ends, so there the two curves differ little: the saving comes from where
+the tokens run (local, $0) more than from how many there are. The dry run
+measures the harness and the economics, not model quality; that is what
+`--live-local` and `--live` are for.
+
+KiCad, research, physics and CAD tasks are defined as pending acceptance gates
+(why each is pending and which plug-in and verifier make it ready) and are
+listed in every report, never run and never counted as failures.
 
 ## Plug-in registration
 
