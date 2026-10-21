@@ -1,7 +1,7 @@
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 
 // What each plan sells, in the words a buyer reads. Limits mirror
-// server/src/billing/plans.js; the server enforces them, this only describes.
+// control/src/billing/plans.js; the control plane enforces them, this only describes.
 const PLAN_CARDS = [
   { plan: 'free', name: 'Free', blurb: 'Unlimited local answers. Nothing leaves your machine.' },
   { plan: 'key_pro', name: 'Key Pro', blurb: 'Unlimited local, plus cloud on your own Anthropic key — choose Sonnet, Opus or Haiku, and web search.' },
@@ -9,70 +9,127 @@ const PLAN_CARDS = [
   { plan: 'engineer', name: 'Engineer', blurb: 'Unlimited local, plus 340 cloud answers a month, with Opus for the hard ones.' },
 ];
 
+// How often, and for how long, the overlay re-reads the account while the
+// person finishes something in another tab (signing in, or paying).
+const POLL_MS = 2000;
+const POLL_TRIES = 90;
+
 const formatDate = (iso) => (iso ? new Date(iso).toLocaleDateString(undefined, { month: 'short', day: 'numeric', year: 'numeric' }) : null);
 
+async function readJson(path, init) {
+  const response = await fetch(path, init);
+  const body = await response.json().catch(() => ({}));
+  return { ok: response.ok, body };
+}
+
+const post = (path, body) =>
+  readJson(path, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body ?? {}) });
+
+// Plans and billing live on the Scope Studio account (the control plane). The
+// engine signs in to it through the browser and forwards billing to it, so
+// this overlay shows the account first: signed out, it still lists the plans
+// and offers sign-in; signed in, it offers checkout or the billing portal.
 export default function PlanOverlay({ open, onClose, onPlanChanged }) {
   const [billing, setBilling] = useState(null);
   const [busy, setBusy] = useState(null);
   const [problem, setProblem] = useState(null);
+  const [waiting, setWaiting] = useState(null);
+  const timer = useRef(null);
+
+  const stopWaiting = useCallback(() => {
+    clearInterval(timer.current);
+    timer.current = null;
+    setWaiting(null);
+  }, []);
 
   const load = useCallback(async () => {
-    const response = await fetch('/api/billing');
-    if (response.ok) setBilling(await response.json());
+    const { ok, body } = await readJson('/api/billing');
+    if (ok) setBilling(body);
+    return ok ? body : null;
   }, []);
 
   useEffect(() => {
-    if (open) load();
-  }, [open, load]);
+    if (!open) return undefined;
+    let cancelled = false;
+    readJson('/api/billing').then(({ ok, body }) => {
+      if (!cancelled && ok) setBilling(body);
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [open]);
 
-  // Back from checkout: the webhook may land a moment after the redirect, so
-  // the plan is re-read a few times rather than trusted from the URL.
-  useEffect(() => {
-    const params = new URLSearchParams(window.location.search);
-    if (params.get('billing') !== 'done') return undefined;
-    window.history.replaceState(null, '', window.location.pathname);
-    let tries = 0;
-    const timer = setInterval(async () => {
-      tries += 1;
-      const response = await fetch('/api/billing');
-      if (response.ok) {
-        const body = await response.json();
-        setBilling(body);
-        if (body.plan !== 'free' || tries >= 10) {
-          clearInterval(timer);
+  useEffect(() => () => clearInterval(timer.current), []);
+
+  // Re-reads the account until `done(body)` says the other tab has finished.
+  const waitFor = useCallback(
+    (label, done) => {
+      clearInterval(timer.current);
+      setWaiting(label);
+      let tries = 0;
+      timer.current = setInterval(async () => {
+        tries += 1;
+        const body = await load();
+        if ((body && done(body)) || tries >= POLL_TRIES) {
+          stopWaiting();
           onPlanChanged?.();
         }
-      }
-    }, 2000);
-    return () => clearInterval(timer);
-  }, [onPlanChanged]);
+      }, POLL_MS);
+    },
+    [load, onPlanChanged, stopWaiting]
+  );
 
   if (!open) return null;
 
+  // Closing the overlay stops any waiting.
+  function close() {
+    stopWaiting();
+    onClose();
+  }
+
+  async function signIn() {
+    setBusy('signin');
+    setProblem(null);
+    const { ok, body } = await post('/api/control/signin');
+    setBusy(null);
+    if (!ok || !body.url) return setProblem(body.error ?? 'Could not start signing in.');
+    window.open(body.url, '_blank', 'noopener');
+    waitFor('signin', (next) => next.signedIn);
+  }
+
+  async function signOut() {
+    setBusy('signout');
+    setProblem(null);
+    await post('/api/control/signout');
+    setBusy(null);
+    await load();
+    onPlanChanged?.();
+  }
+
+  // Checkout and the portal are Stripe pages the control plane opens; they
+  // finish on its own "return to the app" page, so they open beside this one
+  // and the overlay watches for the plan to change.
   async function go(path, body, label) {
     setBusy(label);
     setProblem(null);
-    const response = await fetch(path, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(body ?? {}),
-    });
-    const payload = await response.json().catch(() => ({}));
+    const before = billing?.plan;
+    const { ok, body: payload } = await post(path, body);
     setBusy(null);
-    if (!response.ok || !payload.url) return setProblem(payload.error ?? 'Could not reach billing.');
-    // Checkout replaces the page and returns here; the portal opens beside it.
-    if (path.endsWith('/portal')) window.open(payload.url, '_blank', 'noopener');
-    else window.location.assign(payload.url);
+    if (!ok || !payload.url) return setProblem(payload.error ?? 'Could not reach billing.');
+    window.open(payload.url, '_blank', 'noopener');
+    waitFor(label, (next) => next.plan !== before || (label === 'portal' && next.cancelAt !== billing?.cancelAt));
   }
 
+  const signedIn = billing?.signedIn === true;
   const current = billing?.plan ?? 'free';
   const renews = formatDate(billing?.renewsAt);
   const cancels = formatDate(billing?.cancelAt);
+  const canBuy = signedIn && billing?.configured && !busy;
 
   return (
-    <div className="inspector-backdrop" onClick={onClose}>
+    <div className="inspector-backdrop" onClick={close}>
       <section className="inspector plans" onClick={(event) => event.stopPropagation()}>
-        <button type="button" className="inspector-close" onClick={onClose} aria-label="Close">
+        <button type="button" className="inspector-close" onClick={close} aria-label="Close">
           ✕
         </button>
         <div className="inspector-head">
@@ -87,9 +144,30 @@ export default function PlanOverlay({ open, onClose, onPlanChanged }) {
           </div>
         </div>
 
-        {billing && !billing.configured && (
-          <div className="row-note is-warn">Billing isn't set up on this server yet.</div>
+        {billing && !billing.accountsConfigured && (
+          <div className="row-note is-warn">Accounts aren't set up on this engine (CONTROL_URL). Local answers work as normal.</div>
         )}
+        {billing?.accountsConfigured && !signedIn && (
+          <div className="row-note">
+            Sign in to your Scope Studio account to choose a plan. Until then this engine answers locally.{' '}
+            <button type="button" className="row-approve" disabled={Boolean(busy) || waiting === 'signin'} onClick={signIn}>
+              {waiting === 'signin' ? 'Waiting for the browser…' : busy === 'signin' ? 'Opening…' : 'Sign in'}
+            </button>
+          </div>
+        )}
+        {signedIn && (
+          <div className="row-note">
+            Signed in as {billing.email}.{' '}
+            {!billing.online && 'The account service is unreachable, so this engine answers locally for now. '}
+            <button type="button" className="sources-action" disabled={Boolean(busy)} onClick={signOut}>
+              {busy === 'signout' ? 'Signing out…' : 'Sign out'}
+            </button>
+          </div>
+        )}
+        {signedIn && billing.online && !billing.configured && (
+          <div className="row-note is-warn">Billing isn't set up on the account service yet.</div>
+        )}
+        {waiting && waiting !== 'signin' && <div className="row-note">Finish in the tab that opened; this updates when it's done.</div>}
         {problem && <div className="row-note is-warn">{problem}</div>}
 
         <div className="plan-cards">
@@ -109,7 +187,7 @@ export default function PlanOverlay({ open, onClose, onPlanChanged }) {
                   <button
                     type="button"
                     className="row-approve"
-                    disabled={!billing?.configured || Boolean(busy)}
+                    disabled={!canBuy}
                     onClick={() => go('/api/billing/checkout', { plan: card.plan }, card.plan)}
                   >
                     {busy === card.plan ? 'Opening checkout…' : `Choose ${card.name}`}
