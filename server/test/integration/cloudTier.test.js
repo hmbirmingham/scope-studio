@@ -565,6 +565,28 @@ describe('cloud tier', () => {
       assert.equal(cloudCalls().length, 0);
     });
 
+    test('a Student or Engineer whose context holds a private node, with the local model down, never asks the platform', async () => {
+      for (const plan of ['student', 'engineer']) {
+        const { session, chat: ask } = await userOn(plan);
+        await session('POST', '/api/nodes', {
+          type: 'file',
+          content: 'firmware/secret_motor.c\n\nstepper calibration constants for the unreleased stage',
+          project: 'hmb/stage-firmware',
+          privacy: 'local',
+        });
+        // An easy question and a hard one: the hard one is what Engineer would
+        // otherwise send to the platform even with the local model up.
+        for (const query of ['stepper calibration constants for the unreleased stage', 'compare the stepper calibration constants for the unreleased stage against the alternatives']) {
+          const response = await withLocalDown(() => ask({ query }));
+          assert.equal(response.status, 503, `${plan}: ${query}`);
+          const payload = await response.json();
+          assert.match(payload.error, /private context, which is only ever sent to the local model/, plan);
+        }
+      }
+      assert.equal(cloudCalls().length, 0, 'the stand-in control plane saw no /v1/cloud/messages call');
+      assert.equal(anthropic.state.requests.length, 0);
+    });
+
     test('a Student or Engineer whose sign-in is gone runs as Free: local only', async () => {
       const { chat: ask, id } = await userOn('engineer');
       await server.pool.query('DELETE FROM control_links WHERE owner_id = $1', [id]);
