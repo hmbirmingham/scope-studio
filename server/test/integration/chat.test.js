@@ -6,6 +6,7 @@ import { resetConversations } from '../../src/routing/conversation.js';
 import { SYSTEM_PROMPTS } from '../../src/routing/prompt.js';
 import { resetWarmState } from '../../src/routing/warm.js';
 import { deadUrl, startFakeOllama } from '../fakeOllama.js';
+import { linkUser } from '../fakeControl.js';
 import { ensureCentroids, registeredSession, session, startServer } from '../helpers.js';
 
 const realOllama = process.env.OLLAMA_URL || 'http://localhost:11434';
@@ -54,8 +55,8 @@ describe('chat routing and streaming', () => {
     api = await registeredSession(server.base);
     privateApi = await registeredSession(server.base);
     // These tests exercise cloud requests, which only Key Pro may make.
-    await server.pool.query("UPDATE users SET plan = 'key_pro' WHERE id = $1", [(await api('GET', '/api/auth/session')).data.userId]);
-    await server.pool.query("UPDATE users SET plan = 'key_pro' WHERE id = $1", [(await privateApi('GET', '/api/auth/session')).data.userId]);
+    await linkUser(server.pool, (await api('GET', '/api/auth/session')).data.userId, 'key_pro');
+    await linkUser(server.pool, (await privateApi('GET', '/api/auth/session')).data.userId, 'key_pro');
 
     const quantifyNode = {
       type: 'file',

@@ -1,6 +1,6 @@
 import { Router } from 'express';
 import requireAuth from '../middleware/requireAuth.js';
-import { getUserPlan } from '../models/userStore.js';
+import { controlState } from '../control/plan.js';
 import { usageSummary } from '../models/usageStore.js';
 
 const MAX_DAYS = 365;
@@ -13,8 +13,9 @@ router.get('/', async (req, res) => {
   if (!/^\d+$/.test(days) || Number(days) < 1 || Number(days) > MAX_DAYS) {
     return res.status(400).json({ error: `days must be a whole number between 1 and ${MAX_DAYS}` });
   }
-  const plan = await getUserPlan(req.session.userId);
-  res.json(await usageSummary(req.session.userId, { days: Number(days), plan }));
+  // The plan is the control plane's; signed out or offline it is Free.
+  const { plan, me } = await controlState(req.session.userId);
+  res.json(await usageSummary(req.session.userId, { days: Number(days), plan, limits: plan === me?.account?.plan ? me?.limits : null }));
 });
 
 export default router;

@@ -211,7 +211,19 @@ port.stream({ messages, maxTokens, signal, purpose })
 - **local**: Ollama on this machine. Always available offline. Cost 0.
 - **own_key**: Anthropic directly with the user's Key Pro key.
 - **platform**: the control plane's `POST /v1/cloud/messages` with the device
-  token (Wave 2, path F). A fresh `requestId` on every retry.
+  token (Wave 2, path F). A fresh `requestId` on every attempt, retries
+  included. `platformAdapter({ ownerId, sources })` reads the owner's token
+  itself; `stream` also takes `hard`, and a `purpose: 'plan'` call asks for the
+  plan's hard-question model. `maxTokens` is not sent: the control plane sets
+  the ceiling. Without a token, or when the control plane refuses, it throws
+  `code: 'platform_unavailable'` (with `reason`: `signed_out`, `offline`,
+  `allowance_exhausted`, …) before yielding anything.
+
+The `plan` passed to `selectAdapter` is the control plane's, from
+`currentPlan(ownerId)` / `controlState(ownerId)` in
+`server/src/control/plan.js`: `GET /v1/me`, cached per local user for five
+minutes. Signed out, offline or unconfigured (`CONTROL_URL` unset), it is
+`free`. The engine keeps no billing tables of its own.
 
 `selectAdapter({ policy, purpose, hard, online, plan, hasOwnKey, privateContext })`
 returns which adapter a step uses and why. The runner calls `selectAdapter`

@@ -7,7 +7,7 @@ import {
   costUsd,
 } from '../../lib/anthropic.js';
 import { ECONOMY_MAX_TOKENS, canAutoCloud, canChooseCloud, cloudEffortFor } from '../../billing/plans.js';
-import { resolveCloudCredential } from '../../billing/credential.js';
+import { simulatePlatformCredential } from './platformRules.js';
 import { localChatModel, localModelStatus, streamChat as streamLocal } from '../../lib/ollama.js';
 import { gatherCandidates, packForTier } from '../../retrieval/retrieve.js';
 import { resolveConfig } from '../../retrieval/score.js';
@@ -194,7 +194,7 @@ export function createScopeArm({ scenario, ownerId, mode, cap, platformKey }) {
     async turn(turn, index) {
       const plan = scenario.plan;
       const meters = !canChooseCloud(plan) && canAutoCloud(plan);
-      const credential = resolveCloudCredential({
+      const credential = simulatePlatformCredential({
         plan,
         headerKey: null,
         explicit: false,
