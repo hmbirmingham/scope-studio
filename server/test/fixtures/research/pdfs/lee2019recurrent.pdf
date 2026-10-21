@@ -1,0 +1,60 @@
+%PDF-1.4
+1 0 obj
+<< /Type /Catalog /Pages 2 0 R >>
+endobj
+2 0 obj
+<< /Type /Pages /Kids [5 0 R 7 0 R] /Count 2 >>
+endobj
+3 0 obj
+<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica /Encoding /WinAnsiEncoding >>
+endobj
+4 0 obj
+<< /Length 294 >>
+stream
+BT
+/F1 11 Tf
+14 TL
+72 740 Td
+(Recurrent Memory for Streaming Text) Tj T*
+(Min Lee) Tj T*
+(Abstract. A recurrent memory lets a model read an unbounded stream of text) Tj T*
+(with constant memory.) Tj T*
+(1 Method) Tj T*
+(The memory holds 512 slots that are updated after every segment.) Tj T*
+ET
+endstream
+endobj
+5 0 obj
+<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Resources << /Font << /F1 3 0 R >> >> /Contents 4 0 R >>
+endobj
+6 0 obj
+<< /Length 174 >>
+stream
+BT
+/F1 11 Tf
+14 TL
+72 740 Td
+(3 Results) Tj T*
+(On the LongText benchmark the recurrent memory reaches a perplexity of 19.5.) Tj T*
+(Training took 2 days on 4 GPUs.) Tj T*
+ET
+endstream
+endobj
+7 0 obj
+<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Resources << /Font << /F1 3 0 R >> >> /Contents 6 0 R >>
+endobj
+xref
+0 8
+0000000000 65535 f 
+0000000009 00000 n 
+0000000058 00000 n 
+0000000121 00000 n 
+0000000218 00000 n 
+0000000563 00000 n 
+0000000689 00000 n 
+0000000914 00000 n 
+trailer
+<< /Size 8 /Root 1 0 R >>
+startxref
+1040
+%%EOF

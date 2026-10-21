@@ -1,0 +1,10 @@
+Tidal: Convolutional Acoustic Models for Noisy Speech
+Eva Novak
+Tidal uses dilated convolutions over log-mel features.
+
+5 Results
+Table 3: Word error rate on the Harbor benchmark.
+Recurrent baseline 11.6
+Tidal 9.8
+
+

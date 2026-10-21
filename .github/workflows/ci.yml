@@ -62,6 +62,17 @@ jobs:
           sudo apt-get install -y bubblewrap
           sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
 
+      # The research plug-in reads PDF text with pdftotext; its tests run the
+      # real tool when it is installed and recorded output otherwise.
+      - name: Install poppler-utils (pdftotext)
+        run: sudo apt-get install -y --no-install-recommends poppler-utils
+
+      # The physics plug-in runs NumPy, SciPy and Pint in the same sandbox,
+      # which sees the system site-packages but not a user's (~/.local), so
+      # they are installed system-wide.
+      - name: Install the physics toolchain
+        run: sudo python3 -m pip install --break-system-packages --quiet scipy pint
+
       # CadQuery, for the CAD plug-in's STEP geometry, solid interference and
       # parametric edits (always run in the bubblewrap sandbox). A copied
       # venv keeps the interpreter and its packages under one prefix the

@@ -1,0 +1,84 @@
+{
+  "id": "rc-charging",
+  "title": "Voltage on a charging RC circuit",
+  "statement": "A 100 uF capacitor, initially uncharged, charges through a 10 kOhm resistor from an ideal 5.0 V source. Find the capacitor voltage V after t = 1.0 s.",
+  "given": {
+    "R": "10 kohm",
+    "C": "100 uF",
+    "V0": "5 V",
+    "t": "1 s"
+  },
+  "find": {
+    "V": "V"
+  },
+  "answer": {
+    "symbol": "V",
+    "value": 3.1606027941427883,
+    "units": "V",
+    "rtol": 1e-06
+  },
+  "derivation": {
+    "title": "RC charging curve",
+    "result": {
+      "symbol": "V",
+      "expression": "V0*(1 - exp(-t/(R*C)))",
+      "units": "V"
+    },
+    "variables": {
+      "R": {
+        "value": "10 kohm",
+        "description": "series resistance"
+      },
+      "C": {
+        "value": "100 uF",
+        "description": "capacitance"
+      },
+      "V0": {
+        "value": "5 V",
+        "description": "source voltage"
+      },
+      "t": {
+        "value": "1 s",
+        "description": "time since the switch closed"
+      }
+    },
+    "assumptions": [
+      "ideal source and components",
+      "capacitor uncharged at t = 0"
+    ],
+    "steps": [
+      "Kirchhoff's voltage law: V0 = R C dV/dt + V.",
+      "Separating variables with V(0) = 0 gives V = V0 (1 - exp(-t/(R C)))."
+    ],
+    "limits": [
+      {
+        "name": "early times (linear charging)",
+        "set": {
+          "t": "1e-6 s"
+        },
+        "expect": "V0*t/(R*C)",
+        "rtol": 1e-05
+      },
+      {
+        "name": "long times (fully charged)",
+        "set": {
+          "t": "100 s"
+        },
+        "expect": "V0",
+        "rtol": 1e-09
+      }
+    ]
+  },
+  "computation": {
+    "title": "Capacitor voltage after 1 s",
+    "method": "the closed form evaluated with NumPy",
+    "code": "tau = (R * C).to('s')\nresult = {'V': V0 * (1 - np.exp(-(t / tau).to('dimensionless').magnitude))}\n",
+    "outputs": {
+      "V": "V"
+    },
+    "crossCheck": {
+      "method": "integrate dV/dt = (V0 - V)/(R C) numerically from V(0) = 0",
+      "code": "from scipy.integrate import solve_ivp\ntau = (R * C).to('s').magnitude\nv0 = V0.to('V').magnitude\nend = t.to('s').magnitude\nsol = solve_ivp(lambda s, v: [(v0 - v[0]) / tau], [0, end], [0.0], rtol=1e-10, atol=1e-12)\nresult = {'V': Q_(sol.y[0][-1], 'V')}\n"
+    }
+  }
+}

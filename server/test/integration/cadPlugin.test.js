@@ -90,7 +90,11 @@ describe('registration', () => {
     resetRegistry();
     registerBuiltInPlugins();
     registerBuiltInPlugins();
-    assert.deepEqual(listPlugins(), ['code', 'cad']);
+    // Other verticals register beside them; registering twice adds none again.
+    const plugins = listPlugins();
+    assert.equal(plugins[0], 'code');
+    assert.equal(plugins.filter((name) => name === 'cad').length, 1);
+    assert.equal(new Set(plugins).size, plugins.length, 'no plug-in is registered twice');
     assert.equal(getCapability('cad.inspect').permission, 'read_graph');
     assert.equal(getCapability('cad.inspect').source, 'cad');
     assert.equal(getCapability('cad.mass_properties').source, 'cad');
