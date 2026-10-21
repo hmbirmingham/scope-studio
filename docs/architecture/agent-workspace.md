@@ -593,9 +593,15 @@ the tokens run (local, $0) more than from how many there are. The dry run
 measures the harness and the economics, not model quality; that is what
 `--live-local` and `--live` are for.
 
-KiCad, research, physics and CAD tasks are defined as pending acceptance gates
+KiCad, research and physics tasks are defined as pending acceptance gates
 (why each is pending and which plug-in and verifier make it ready) and are
-listed in every report, never run and never counted as failures.
+listed in every report, never run and never counted as failures. A ready
+task of another vertical names the `role` both arms get (so the same
+capabilities), the external tools it `requires`, and its own check: the CAD
+task (`cad-bracket-hole-spacing`) is done by the CAD Designer, requires
+CadQuery, and is checked by measuring the `bracket.stl` the run leaves
+behind. Where a required tool is not installed the task is listed as
+unavailable, like a pending gate: not run and not a failure.
 
 ## Plug-in registration
 
@@ -634,3 +640,53 @@ capabilities, verifiers, fixtures and benchmark tasks, and one line in
 
 Reserved migration numbers: KiCad 040–049, research 050–059, physics 060–069,
 CAD 070–079.
+
+### The CAD plug-in
+
+`server/src/plugins/cad/` (tag `cad`; migration 039's `part`, `assembly`,
+`contains` and source `cad`; no migration of its own). Open formats first:
+STL (ASCII and binary) and STEP's product structure are read in
+JavaScript; anything that needs a B-rep kernel goes to CadQuery.
+
+| Capability | Permission | What it does |
+|---|---|---|
+| `cad.inspect` | `read_graph` (source `cad`) | STL: bounding box, area, volume (signed tetrahedra), centroid, watertightness (every edge shared by exactly two faces, wound consistently), optional cross-section with holes, their spacing and wall. STEP: header, products, assemblies and what they contain, length unit; geometry from CadQuery when available, else `geometry.unavailable`. |
+| `cad.mass_properties` | `read_graph` (source `cad`) | Volume, mass, centre of mass and inertia about it, for a density `{ value, unit }` (or the project's); SI results. STL in JavaScript (refused if not watertight), STEP with CadQuery. |
+| `cad.interference` | `read_graph` (source `cad`) | STL pairs in JavaScript: bounding-box prefilter, a grid over the overlap, exact triangle-triangle test; touching is not interference, crossing or nesting is. STEP with CadQuery booleans (common volume), within one file or across files; a mix tessellates the STEP. |
+| `cad.parametric_edit` | `run_generated_code` | Runs a CadQuery script that assigns `result`, exports it (STEP or STL by extension) into the run's sandbox copy (or its scratch directory when there is no copy), never the user's checkout. Verifiers `cad.valid_geometry`, `cad.dimensions`, `cad.no_interference`. |
+
+The project declares in `cad.json` (all optional): `units` (what STL
+coordinates mean; default `mm`), a default `density`, an `assembly` (parts
+that must not interfere) and `dimensions` (checks `cad.dimensions`
+applies: `{ file, measure, value, tolerance }` or `{ file, measure, min,
+max }`, measures `size.x|y|z`, `volume`, `surfaceArea`, `holes.count`,
+`holes.spacing`, `holes.maxSpacing`, `holes.diameter`, `holes.maxDiameter`,
+`holes.minWall`).
+
+CadQuery runs only inside the OS sandbox (`runSandboxed`): each call copies
+its inputs, a driver (`driver.py`) and a request into a fresh scratch
+directory, runs `CADQUERY_PYTHON -I driver.py request.json` there (no
+network, only that directory writable) and removes it. `CADQUERY_PYTHON`
+names an interpreter that can import cadquery, best a venv made with
+`python3 -m venv --copies` so interpreter and packages share one prefix the
+sandbox mounts; it defaults to `python3`. On macOS, CadQuery's wheels
+(`pip install cadquery`, arm64 and x86_64) run under `sandbox-exec` the same
+way; FreeCAD is not needed. Without an OS sandbox or without CadQuery,
+`cadquery.status()` says why, a capability that needs it refuses with
+`tool_unavailable`, and a verifier that needs it returns `{ ok: true,
+unavailable: true, detail: 'unavailable: …' }` (the contract's convention:
+the step is not failed for a check that could not run, and the recorded
+detail says it was not made). Verifiers never trust the step's own report:
+they read the produced file again, measure STL in JavaScript, and run STEP
+checks in a fresh CadQuery process with no model-written code in it.
+
+Ingest: `POST /api/plugins/cad/ingest { project, privacy? }` (a background
+job, `GET /api/plugins/cad/jobs/:id`) walks the project's local folder
+(never following links, hidden folders or `node_modules`). Each STL is a
+`part`; each STEP product an `assembly` or `part`, with `contains` edges
+weighted by quantity. External ids are `<project>|<path>[#<product id>]`,
+so re-ingest updates in place; files that are gone lose their nodes, files
+that fail to read keep theirs. Nodes are `local` unless the request says
+`cloud`. `GET /api/plugins/cad/status` reports whether CadQuery can run.
+
+A SolidWorks companion is designed, not built: `solidworks-connector.md`.
