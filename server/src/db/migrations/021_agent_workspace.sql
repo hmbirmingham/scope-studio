@@ -1,6 +1,8 @@
 -- The shared agent-workspace tables (docs/architecture/agent-workspace.md).
--- Every table hangs off the owning user with ON DELETE CASCADE, so deleting a
--- user removes their agents and runs and nothing is left orphaned.
+-- Every table hangs off the owning user with ON DELETE CASCADE (run steps
+-- through their run), so deleting a user removes their agents and runs and
+-- nothing is left orphaned. References to an agent carry the owner too, so a
+-- task, run or approval can never point at another user's agent.
 
 -- A user's own reusable roles. The built-in templates live in code
 -- (src/workspace/roles.js) so they can improve without a migration.
@@ -32,14 +34,15 @@ CREATE TABLE agents (
   state TEXT NOT NULL DEFAULT 'active' CHECK (state IN ('active', 'paused', 'killed')),
   color TEXT,
   created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
-  updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
+  updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+  UNIQUE (id, owner_id)
 );
 CREATE INDEX agents_owner_idx ON agents (owner_id);
 
 CREATE TABLE tasks (
   id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
   owner_id UUID NOT NULL REFERENCES users (id) ON DELETE CASCADE,
-  agent_id UUID NOT NULL REFERENCES agents (id) ON DELETE CASCADE,
+  agent_id UUID NOT NULL,
   title TEXT NOT NULL,
   instructions TEXT NOT NULL,
   project TEXT,
@@ -48,19 +51,26 @@ CREATE TABLE tasks (
   next_run_at TIMESTAMPTZ,
   enabled BOOLEAN NOT NULL DEFAULT true,
   created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
-  updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
+  updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+  FOREIGN KEY (agent_id, owner_id) REFERENCES agents (id, owner_id) ON DELETE CASCADE
 );
 CREATE INDEX tasks_owner_idx ON tasks (owner_id);
+CREATE INDEX tasks_agent_idx ON tasks (agent_id);
 CREATE INDEX tasks_due_idx ON tasks (next_run_at) WHERE enabled AND schedule IS NOT NULL;
 
 -- The durable queue. A worker claims the oldest queued run with
 -- FOR UPDATE SKIP LOCKED and holds a lease; an expired lease means the worker
--- died and the run is reclaimed from its last checkpoint.
+-- died and the run is reclaimed from its last checkpoint. `attempts` counts
+-- claims, so a run that keeps killing its worker is failed instead of being
+-- reclaimed forever.
 CREATE TABLE agent_runs (
   id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
   owner_id UUID NOT NULL REFERENCES users (id) ON DELETE CASCADE,
-  agent_id UUID NOT NULL REFERENCES agents (id) ON DELETE CASCADE,
+  agent_id UUID NOT NULL,
   task_id UUID REFERENCES tasks (id) ON DELETE SET NULL,
+  -- The schedule slot a recurring run was queued for; unique per task, so two
+  -- schedulers racing on the same due task cannot both enqueue it.
+  scheduled_for TIMESTAMPTZ,
   instructions TEXT NOT NULL,
   project TEXT,
   status TEXT NOT NULL DEFAULT 'queued' CHECK (status IN (
@@ -76,12 +86,17 @@ CREATE TABLE agent_runs (
   wall_ms BIGINT NOT NULL DEFAULT 0,
   lease_owner TEXT,
   lease_until TIMESTAMPTZ,
+  attempts INTEGER NOT NULL DEFAULT 0,
   error TEXT,
   queued_at TIMESTAMPTZ NOT NULL DEFAULT now(),
   started_at TIMESTAMPTZ,
-  finished_at TIMESTAMPTZ
+  finished_at TIMESTAMPTZ,
+  UNIQUE (task_id, scheduled_for),
+  FOREIGN KEY (agent_id, owner_id) REFERENCES agents (id, owner_id) ON DELETE CASCADE
 );
 CREATE INDEX agent_runs_owner_idx ON agent_runs (owner_id, queued_at DESC);
+CREATE INDEX agent_runs_agent_idx ON agent_runs (agent_id);
+CREATE INDEX agent_runs_task_idx ON agent_runs (task_id);
 CREATE INDEX agent_runs_queue_idx ON agent_runs (queued_at) WHERE status = 'queued';
 CREATE INDEX agent_runs_lease_idx ON agent_runs (lease_until) WHERE status = 'running';
 
@@ -109,7 +124,7 @@ CREATE TABLE agent_run_steps (
 CREATE TABLE agent_approvals (
   id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
   owner_id UUID NOT NULL REFERENCES users (id) ON DELETE CASCADE,
-  agent_id UUID NOT NULL REFERENCES agents (id) ON DELETE CASCADE,
+  agent_id UUID NOT NULL,
   run_id UUID REFERENCES agent_runs (id) ON DELETE CASCADE,
   step_id UUID REFERENCES agent_run_steps (id) ON DELETE CASCADE,
   capability TEXT NOT NULL,
@@ -118,6 +133,11 @@ CREATE TABLE agent_approvals (
   status TEXT NOT NULL DEFAULT 'pending'
     CHECK (status IN ('pending', 'approved', 'rejected', 'expired')),
   created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
-  resolved_at TIMESTAMPTZ
+  resolved_at TIMESTAMPTZ,
+  FOREIGN KEY (agent_id, owner_id) REFERENCES agents (id, owner_id) ON DELETE CASCADE
 );
+CREATE INDEX agent_approvals_run_idx ON agent_approvals (run_id);
+-- A step reclaimed after a crash asks again; it must find its first request
+-- rather than open a second one.
+CREATE UNIQUE INDEX agent_approvals_one_pending_per_step ON agent_approvals (step_id) WHERE status = 'pending';
 CREATE INDEX agent_approvals_pending_idx ON agent_approvals (owner_id, created_at) WHERE status = 'pending';

@@ -83,19 +83,29 @@ Default decision by level:
 (`server/src/workspace/permissions.js`) is the only place that decides. It
 applies, in order:
 
-1. **Hard denials** that no level or override can lift:
-   - the agent is `killed` or `paused`;
+1. **Hard denials** that no level or override can lift. They fail closed: a
+   context field the caller leaves out never widens access.
+   - the agent is not `active` (`killed`, `paused`, or anything unexpected);
    - the capability is unknown;
    - `run_generated_code` outside the sandbox (`context.inSandbox !== true`);
-   - `read_graph` on a project or source outside the read scope;
-   - `write_notes`, `edit_files`, `open_pr`, `apply_merge` on a project outside the write scope;
-   - `web` or `cloud_model` while offline (`context.online === false`);
-   - `cloud_model` with `modelPolicy: 'local_only'`, or when the step's context
-     holds a private node (`context.privateContext === true`).
+   - `read_graph` outside the read scope (`inReadScope`): the project must be
+     in scope, and a read that names no `source` is allowed only for an agent
+     whose read sources are `['*']`;
+   - `write_notes`, `edit_files`, `run_scripts`, `open_pr`, `apply_merge` on a
+     project outside the write scope (scripts run in the project's checkout or
+     its sandbox copy, so running one counts as writing to it);
+   - `web` or `cloud_model` unless the caller says it is online (`context.online === true`);
+   - `cloud_model` with `modelPolicy: 'local_only'`, or unless the caller says
+     the step's context holds no private node (`context.privateContext === false`).
 2. **The agent's override** for that capability, if any.
 3. **The level default** from the table above.
 
 `ask` creates an approval; the step waits until the user approves or rejects it.
+
+Retrieval does not call `can()` per node: the read stage filters its
+candidates with `inReadScope(agent, node)`, so a packed slice never holds a
+node outside the read scope. A capability that reads one plug-in's data asks
+`can(agent, 'read_graph', { project, source })` itself.
 
 ### Task and Run
 
@@ -205,20 +215,42 @@ port.stream({ messages, maxTokens, signal, purpose })
 
 `selectAdapter({ policy, purpose, hard, online, plan, hasOwnKey, privateContext })`
 returns which adapter a step uses and why. The runner calls `selectAdapter`
-then `port.stream`; it never branches on which adapter it got.
+then `port.stream`; it never branches on which adapter it got, with one
+exception below.
+
+`selectAdapter` decides what the plan and policy make possible; `can()` decides
+what this agent is permitted. Order for every model call:
+
+1. `selectAdapter(…)`. If it returns `local`, use local; `can()` is not asked.
+2. Otherwise ask `can(agent, 'cloud_model', { project, online, privateContext })`.
+   - `allow`: use the cloud adapter.
+   - `ask`: the runner opens **one** approval per run ("use the cloud for this
+     run's planning and hard steps") and uses local until it is approved; an
+     approved request covers the rest of the run, a rejected one keeps it local.
+   - `deny`: use local.
+3. If the cloud adapter refuses with `platform_unavailable` (signed out, offline,
+   allowance exhausted), the runner uses local for that call and records the
+   adapter actually used on the step. This is the one place the runner looks at
+   an adapter's outcome.
 
 ### Activity event stream
 
-`GET /api/workspace/events?runId=…` is Server-Sent Events. Each event:
+`GET /api/workspace/events[?runId=…]` is Server-Sent Events, for one run or
+for all of the user's runs. Each event:
 
 ```
-id: <seq>
+id: <boot>-<seq>
 event: <type>
-data: {"v":1,"seq":<seq>,"runId":"…","agentId":"…","at":"<ISO time>","type":"<type>","data":{…}}
+data: {"v":1,"id":"<boot>-<seq>","seq":<seq>,"runId":"…","agentId":"…","at":"<ISO time>","type":"<type>","data":{…}}
 ```
 
-`seq` increases per run, so a client reconnecting with `Last-Event-ID` gets
-what it missed. Types: `run.queued`, `run.started`, `run.paused`,
+`seq` is one counter for the whole engine and `boot` names the engine process,
+so a client reconnecting with `Last-Event-ID` gets what it missed from a
+bounded replay buffer, for one run or all of them; an id from an earlier boot
+replays everything still buffered. A subscriber whose connection fails is
+dropped without affecting the run. After a restart the activity tab reloads
+the run (and its steps) over HTTP, which is the durable record; events are
+the live view. Types: `run.queued`, `run.started`, `run.paused`,
 `run.resumed`, `run.finished` (`{ status }`), `step.started`
 (`{ stepId, index, capability }`), `step.output` (`{ stepId, text }`),
 `step.verified` (`{ stepId, verifier, ok, detail }`), `step.finished`
@@ -235,12 +267,20 @@ plane's ledger.
 Migrations `020_workspace_node_types.sql` and `021_agent_workspace.sql` (Wave 0)
 create the shared tables: `agent_roles`, `agents`, `tasks`, `agent_runs`,
 `agent_run_steps`, `agent_approvals`. Every table carries `owner_id` with
-`ON DELETE CASCADE`, so deleting a user removes their agents and runs, and
-the test helper's truncate of `users` clears them.
+`ON DELETE CASCADE` (steps through their run), so deleting a user removes
+their agents and runs, and the test helper's truncate of `users` clears them.
+Tasks, runs and approvals reference their agent together with its owner, so
+none can point at another user's agent.
 
-`agent_runs` is the durable queue: a worker claims the oldest `queued` run
-with `FOR UPDATE SKIP LOCKED` and holds a lease (`lease_owner`,
-`lease_until`); a run whose lease expired is reclaimed after a crash.
+`agent_runs` is the durable queue: a worker claims the oldest `queued` run with
+`FOR UPDATE SKIP LOCKED`, increments `attempts` and holds a lease
+(`lease_owner`, `lease_until`); a run whose lease expired is reclaimed after a
+crash, and a run claimed more than three times is failed rather than
+reclaimed forever. A recurring run records the schedule slot it was queued
+for in `scheduled_for`, unique per task, so two schedulers cannot enqueue the
+same slot. At most one approval per step can be pending.
+
+Write-back nodes carry `owner_id = run.owner_id`.
 
 ## HTTP surface
 
@@ -278,3 +318,68 @@ so Wave 0 changes nothing the user sees.
 
 Visual language for agents on the map: obsidian circles with no hue at rest;
 the agent's colour appears only on the nodes it is touching or just wrote.
+
+## Run lifecycle across paths
+
+Several modules change a run's status, so the transitions are fixed here.
+Every update is conditional on the status it expects (`UPDATE … WHERE status = …`),
+so two writers can never both win.
+
+| From | To | Who | When |
+|---|---|---|---|
+| — | `queued` | `/api/agent-runs` (start) or the scheduler | A run is requested, or a recurring task is due. |
+| `queued` | `running` | worker | Claimed with `FOR UPDATE SKIP LOCKED`; sets `lease_owner`, `lease_until`, `started_at`. |
+| `running` | `running` | worker | Lease renewed at each step boundary. An expired lease is reclaimed by any worker from the last checkpoint. |
+| `running` | `waiting_approval` | worker | `can()` returned `ask`: the worker inserts an `agent_approvals` row for the step, parks the step in `waiting_approval`, releases the lease. |
+| `waiting_approval` | `queued` | `/api/approvals/:id` (resolve) | The last pending approval of the run was approved or rejected. The worker resumes the parked step and reads the decision from `agent_approvals`; a rejection marks the step `rejected` and the planner continues without it. |
+| `queued` / `running` / `waiting_approval` | `paused` | `/api/agents/:id/pause` | The agent is paused. A running worker sees it at the next step boundary and stops without overwriting it. |
+| `paused` | `queued` | `/api/agents/:id/resume` | A run that was waiting for approval comes back `queued`; the worker finds the step's approval still pending and parks it again. |
+| any non-terminal | `killed` | `/api/agents/:id/kill`, `/api/agent-runs/:id/cancel` | The kill switch. Sets `finished_at` and marks the run's pending approvals `expired`. The worker checks the run's status before each stage and aborts the step's `signal` when it sees `killed`. |
+| `running` | `failed` | worker | A reclaimed run whose `attempts` exceeds 3. |
+| `running` | `succeeded` / `failed` / `budget_exceeded` | worker | Terminal. Sets `finished_at`. |
+
+The worker publishes the matching `run.*` event for transitions it makes;
+the routes publish the events for transitions they make.
+
+## HTTP shapes
+
+All bodies are JSON with camelCase keys; ids are UUIDs; errors are
+`{ error: '<code>', message? }` with 400 (validation), 404 (not this owner's,
+or missing), 409 (wrong state).
+
+**Agent**
+`{ id, name, role: { template, title, description, embodiment, tags }, level, overrides, scopes, modelPolicy, budget: { maxTokens, maxUsd, maxWallMs }, state, color, createdAt, updatedAt }`
+
+- `GET /api/agents` → `{ agents: [Agent] }`
+- `GET /api/agents/templates` → `{ templates: [Role] }` (built-in) and `GET /api/agents/roles` → `{ roles: [Role & { id }] }` (the user's own); `POST/PATCH/DELETE /api/agents/roles[/:id]`
+- `POST /api/agents` `{ name, template? | role?, level?, overrides?, scopes?, modelPolicy?, budget?, color? }` → 201 `{ agent }`
+- `GET /api/agents/:id`, `PATCH /api/agents/:id` (any field above except `state`), `DELETE /api/agents/:id`
+- `POST /api/agents/:id/pause | /resume | /kill | /reactivate` → `{ agent }`
+- `GET /api/agents/:id/can?capability=&project=&source=&inSandbox=&online=&privateContext=` → `{ decision, reason }` (for the UI's capability grid; an omitted flag takes the cautious value, exactly as an omitted field in the runner's context does)
+
+**Task**
+`{ id, agentId, title, instructions, project, schedule, nextRunAt, enabled, createdAt, updatedAt }`
+
+- `GET /api/tasks[?agentId=]` → `{ tasks }`; `POST /api/tasks` → 201 `{ task }` (a bad `schedule` is 400 with the cron error); `GET/PATCH/DELETE /api/tasks/:id`
+
+**Run** (Path B)
+`{ id, agentId, taskId, instructions, project, status, stepIndex, tokensUsed, costUsd, wallMs, budget, error, queuedAt, startedAt, finishedAt, planNodeId }`
+and with `GET /api/agent-runs/:id` also `steps: [Step]`, where
+Step is `{ id, index, kind, capability, status, input, output, verification, adapter, tokens, costUsd, nodeIds, startedAt, finishedAt }`.
+
+- `GET /api/agent-runs[?agentId=&status=]` → `{ runs }`
+- `POST /api/agent-runs` `{ taskId }` or `{ agentId, instructions, project? }` → 201 `{ run }`
+- `GET /api/agent-runs/:id` → `{ run }`; `POST /api/agent-runs/:id/cancel` → `{ run }`
+
+**Approval**
+`{ id, agentId, runId, stepId, capability, summary, detail, status, createdAt, resolvedAt }`
+
+- `GET /api/approvals[?status=pending]` → `{ approvals }`
+- `POST /api/approvals/:id` `{ decision: 'approve' | 'reject' }` → `{ approval }` (409 if already resolved)
+
+## Plug-in registration
+
+`server/src/plugins/registry.js` lists the built-in plug-ins;
+`registerBuiltInPlugins()` registers them once and is safe to call again. A
+vertical adds itself there. Schedules use `server/src/workspace/cron.js`
+(`validateCron`, `nextRunAt`).

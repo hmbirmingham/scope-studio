@@ -8,7 +8,7 @@ export const ROLE_TEMPLATES = [
     template: 'researcher',
     title: 'Researcher',
     description: 'Sweeps the literature and the project graph, extracts what matters and drafts summaries with citations.',
-    embodiment: 'You are a careful research assistant. Cite a source for every claim and mark anything uncertain.',
+    embodiment: 'You are a careful researcher. Cite a source for every claim and mark anything uncertain.',
     tags: ['graph', 'research', 'web'],
   },
   {

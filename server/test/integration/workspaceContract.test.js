@@ -34,6 +34,9 @@ describe('agent-workspace contract', () => {
     const { rows: [run] } = await server.pool.query("INSERT INTO agent_runs (owner_id, agent_id, instructions) VALUES ($1, $2, 'go') RETURNING id, status", [user.id, agent.id]);
     assert.equal(run.status, 'queued');
     await server.pool.query("INSERT INTO agent_run_steps (run_id, index, kind) VALUES ($1, 0, 'plan')", [run.id]);
+    // A run can never point at another user's agent.
+    const { rows: [stranger] } = await server.pool.query("INSERT INTO users (email, password_hash) VALUES ('stranger@example.com', 'x') RETURNING id");
+    await assert.rejects(server.pool.query("INSERT INTO agent_runs (owner_id, agent_id, instructions) VALUES ($1, $2, 'go')", [stranger.id, agent.id]));
     await server.pool.query('DELETE FROM users WHERE id = $1', [user.id]);
     const { rows } = await server.pool.query('SELECT (SELECT count(*) FROM agents WHERE id = $1)::int AS agents, (SELECT count(*) FROM agent_run_steps WHERE run_id = $2)::int AS steps', [agent.id, run.id]);
     assert.deepEqual(rows[0], { agents: 0, steps: 0 });
