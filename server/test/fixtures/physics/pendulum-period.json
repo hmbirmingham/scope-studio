@@ -1,0 +1,70 @@
+{
+  "id": "pendulum-period",
+  "title": "Period of a simple pendulum at finite amplitude",
+  "statement": "A simple pendulum of length L = 1.00 m swings in a uniform gravitational field g = 9.81 m/s^2, released from rest at an amplitude of 0.200 rad. Find its period T, and show that it reduces to the small-angle result 2*pi*sqrt(L/g).",
+  "given": {
+    "L": "1 m",
+    "g": "9.81 m/s^2",
+    "theta0": "0.2 rad"
+  },
+  "find": {
+    "T": "s"
+  },
+  "answer": {
+    "symbol": "T",
+    "value": 2.0110933707180285,
+    "units": "s",
+    "rtol": 1e-06
+  },
+  "derivation": {
+    "title": "Pendulum period at finite amplitude",
+    "result": {
+      "symbol": "T",
+      "expression": "4*sqrt(L/g)*ellipk(sin(theta0/2)^2)",
+      "units": "s"
+    },
+    "variables": {
+      "L": {
+        "value": "1 m",
+        "description": "pendulum length"
+      },
+      "g": {
+        "value": "9.81 m/s^2",
+        "description": "gravitational acceleration"
+      },
+      "theta0": {
+        "value": "0.2 rad",
+        "description": "release amplitude"
+      }
+    },
+    "assumptions": [
+      "point mass on a massless, inextensible rod",
+      "no friction or air resistance",
+      "released from rest at theta0"
+    ],
+    "steps": [
+      "Energy conservation: (1/2) L^2 (dtheta/dt)^2 = g L (cos(theta) - cos(theta0)).",
+      "A quarter period is the time from theta0 to 0: T/4 = sqrt(L/(2g)) * integral_0^theta0 dtheta / sqrt(cos(theta) - cos(theta0)).",
+      "Substituting sin(theta/2) = k sin(phi) with k = sin(theta0/2) gives T = 4 sqrt(L/g) K(k^2)."
+    ],
+    "limits": [
+      {
+        "name": "small amplitude",
+        "set": {
+          "theta0": "1e-3 rad"
+        },
+        "expect": "2*pi*sqrt(L/g)",
+        "rtol": 1e-06
+      }
+    ]
+  },
+  "computation": {
+    "title": "Pendulum period at 0.2 rad",
+    "template": "expression",
+    "method": "the closed form with the complete elliptic integral",
+    "crossCheck": {
+      "method": "integrate the equation of motion numerically to the first zero crossing (a quarter period)",
+      "code": "from scipy.integrate import solve_ivp\nw2 = (g / L).to('1/s**2').magnitude\nth0 = theta0.to('rad').magnitude\n\ndef rhs(t, y):\n    return [y[1], -w2 * np.sin(y[0])]\n\ndef crossing(t, y):\n    return y[0]\ncrossing.terminal = True\ncrossing.direction = -1\nsol = solve_ivp(rhs, [0, 100], [th0, 0.0], events=crossing, rtol=1e-10, atol=1e-12)\nresult = {'T': Q_(4 * sol.t_events[0][0], 's')}\n"
+    }
+  }
+}
