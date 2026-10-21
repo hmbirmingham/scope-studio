@@ -6,12 +6,20 @@ import { round } from './units.js';
 // prefilter, a uniform grid over the region where the boxes overlap, then an
 // exact triangle-triangle test. Parts that only touch (a face resting flush
 // on another, an edge on a face) do not interfere; surfaces that cross do,
-// and so does one closed part sitting entirely inside another.
+// and so does one closed part sitting entirely inside another, and so do
+// closed parts whose volumes overlap while every face lies in a shared plane
+// (parts aligned on datum planes, or two copies of the same part).
 
 // Candidate triangle pairs one check may test before it gives up rather
 // than hold a step for minutes.
 const MAX_PAIR_TESTS = 50_000_000;
 const CONTAINMENT_SAMPLES = 32;
+// Point-in-mesh work (triangles visited) the overlapping-volume check may
+// spend: each sample point costs a few passes over both meshes, so large
+// meshes get fewer samples rather than a stalled step.
+const MAX_POINT_WORK = 40_000_000;
+const OVERLAP_SAMPLES = 256;
+const REGION_SAMPLES_PER_AXIS = 3;
 
 const sub = (a, b) => [a[0] - b[0], a[1] - b[1], a[2] - b[2]];
 const dot = (a, b) => a[0] * b[0] + a[1] * b[1] + a[2] * b[2];
@@ -114,41 +122,59 @@ export function pointTriangleDistance(p, a, b, c) {
   return norm(sub(p, [a[0] + ab[0] * v + ac[0] * w, a[1] + ab[1] * v + ac[1] * w, a[2] + ab[2] * v + ac[2] * w]));
 }
 
-// Möller–Trumbore: does the ray from `origin` along `dir` hit the triangle
-// at a positive distance?
+// Möller–Trumbore: where the ray from `origin` along `dir` meets the
+// triangle at a positive distance. Returns 0 for a miss, 1 for a clean hit
+// and -1 when the ray passes within a hair of the triangle's edge or corner:
+// there the neighbouring triangle may or may not count the same crossing, so
+// the ray's parity cannot be trusted.
+const EDGE = 1e-9;
 function rayHits(origin, dir, a, b, c) {
   const e1 = sub(b, a), e2 = sub(c, a);
   const p = cross(dir, e2);
   const det = dot(e1, p);
-  if (Math.abs(det) < 1e-18) return false;
+  if (Math.abs(det) < 1e-18) return 0;
   const inv = 1 / det;
   const s = sub(origin, a);
   const u = dot(s, p) * inv;
-  if (u < 0 || u > 1) return false;
+  if (u < -EDGE || u > 1 + EDGE) return 0;
   const q = cross(s, e1);
   const v = dot(dir, q) * inv;
-  if (v < 0 || u + v > 1) return false;
-  return dot(e2, q) * inv > 0;
+  if (v < -EDGE || u + v > 1 + EDGE) return 0;
+  if (dot(e2, q) * inv <= 0) return 0;
+  return u < EDGE || v < EDGE || u + v > 1 - EDGE ? -1 : 1;
 }
 
-// Directions chosen not to line up with axis-aligned faces or edges, so a
-// ray rarely grazes an edge; three of them vote.
+// Directions with no small-integer ratios between their components, so a
+// ray from a point on a grid rarely runs exactly through a grid-aligned
+// edge. A ray that grazes an edge anyway is discarded and the next one
+// tried; three clean rays vote.
 const RAYS = [
-  [0.5773502691896258, 0.5773502691896257, 0.5773502691896259].map((x, i) => x + [0.0137, -0.0071, 0.0029][i]),
-  [-0.3713906763541037, 0.7427813527082074, 0.5570860145311556],
-  [0.8017837257372732, -0.2672612419124244, -0.5345224838248488],
+  [0.5910502691896258, 0.5702502691896257, 0.5802502691896259],
+  [-0.3517935279, 0.7613408257, 0.5446128349],
+  [0.7934102756, -0.2817370561, -0.5395837162],
+  [0.1218469721, -0.6830213954, 0.7201846385],
+  [-0.6602711498, -0.4113906763, -0.6283510737],
+  [0.4472659141, 0.1931270318, -0.8733312079],
+  [-0.8231504067, 0.3197201383, -0.4693385129],
 ];
 
 export function pointInsideMesh(point, t) {
   let votes = 0;
+  let clean = 0;
   for (const dir of RAYS) {
     let hits = 0;
-    for (let i = 0; i < t.length; i += 9) {
-      if (rayHits(point, dir, vertex(t, i, 0), vertex(t, i, 1), vertex(t, i, 2))) hits += 1;
+    let grazed = false;
+    for (let i = 0; i < t.length && !grazed; i += 9) {
+      const hit = rayHits(point, dir, vertex(t, i, 0), vertex(t, i, 1), vertex(t, i, 2));
+      if (hit === -1) grazed = true;
+      else hits += hit;
     }
+    if (grazed) continue;
+    clean += 1;
     if (hits % 2 === 1) votes += 1;
+    if (clean === 3) break;
   }
-  return votes >= 2;
+  return clean > 0 && votes * 2 > clean;
 }
 
 function surfaceDistance(point, t) {
@@ -169,6 +195,78 @@ function contained(inner, outer, eps) {
   for (let v = 0; v < count; v += step) {
     const point = [inner[v * 3], inner[v * 3 + 1], inner[v * 3 + 2]];
     if (surfaceDistance(point, outer) > eps && pointInsideMesh(point, outer)) return true;
+  }
+  return false;
+}
+
+// The sign of the mesh's signed volume: positive when the triangles wind
+// counter-clockwise seen from outside, so their right-hand normals point out.
+function orientation(t) {
+  let six = 0;
+  for (let i = 0; i < t.length; i += 9) {
+    six += dot(vertex(t, i, 0), cross(vertex(t, i, 1), vertex(t, i, 2)));
+  }
+  return six < 0 ? -1 : 1;
+}
+
+// Points just under the surface of the closed mesh `t`, `depth` in along the
+// inward normal: each sampled triangle's centroid and the points halfway from
+// it to each corner. Only triangles in `entries` (those near the overlap
+// region) are sampled, evenly spread up to `limit` of them.
+function pointsJustInside(t, entries, depth, limit) {
+  const sign = -orientation(t);
+  const points = [];
+  const step = Math.max(1, Math.ceil(entries.length / Math.max(1, limit)));
+  for (let e = 0; e < entries.length; e += step) {
+    const i = entries[e].i;
+    const p = [vertex(t, i, 0), vertex(t, i, 1), vertex(t, i, 2)];
+    const n = cross(sub(p[1], p[0]), sub(p[2], p[0]));
+    const length = norm(n);
+    if (length === 0) continue;
+    const move = (sign * depth) / length;
+    const c = [0, 1, 2].map((k) => (p[0][k] + p[1][k] + p[2][k]) / 3);
+    for (const q of [c, ...p.map((v) => [0, 1, 2].map((k) => (c[k] + v[k]) / 2))]) {
+      points.push([q[0] + n[0] * move, q[1] + n[1] * move, q[2] + n[2] * move]);
+    }
+  }
+  return points;
+}
+
+// Whether `point` is inside the closed mesh `t` and further than `eps` from
+// its surface, so a point on a shared face never counts.
+const strictlyInside = (point, t, eps) => pointInsideMesh(point, t) && surfaceDistance(point, t) > eps;
+
+// Closed parts whose surfaces never cross can still share volume when their
+// faces lie in the same planes: two copies of one part, a box inside a taller
+// box sharing its sides, boxes overlapping along one axis only. Then no
+// vertex is strictly inside the other part either, so sample points that are
+// strictly inside one part (just under its faces, and a grid over the
+// bounding-box overlap) and look for one strictly inside both.
+function volumesOverlap(a, b, candA, candB, region, eps) {
+  const extent = region.max.map((max, k) => max - region.min[k] - 2 * eps);
+  if (extent.some((e) => e <= eps)) return false;
+  const triangles = (a.triangles.length + b.triangles.length) / 9;
+  // Each point costs up to three ray casts and a distance pass per mesh.
+  const budget = Math.max(16, Math.floor(MAX_POINT_WORK / (7 * triangles)));
+  const both = (point) => strictlyInside(point, b.triangles, eps) && strictlyInside(point, a.triangles, eps);
+
+  const n = REGION_SAMPLES_PER_AXIS;
+  for (let x = 0; x < n; x += 1) {
+    for (let y = 0; y < n; y += 1) {
+      for (let z = 0; z < n; z += 1) {
+        const point = [x, y, z].map((s, k) => region.min[k] + eps + ((s + 0.5) / n) * extent[k]);
+        if (both(point)) return true;
+      }
+    }
+  }
+  // Deep enough to clear the tolerance, shallow enough to stay inside any
+  // feature thicker than a ten-thousandth of the overlap.
+  const depth = Math.max(eps * 10, Math.min(...extent) * 1e-4);
+  const perMesh = Math.min(OVERLAP_SAMPLES, Math.floor(budget / 8));
+  for (const [own, other, entries] of [[a, b, candA], [b, a, candB]]) {
+    for (const point of pointsJustInside(own.triangles, entries, depth, perMesh)) {
+      if (strictlyInside(point, other.triangles, eps) && pointInsideMesh(point, own.triangles)) return true;
+    }
   }
   return false;
 }
@@ -255,6 +353,9 @@ export function meshInterference(a, b, { tolerance } = {}) {
   } else if (a.watertight && boxInside(boxB, boxA, eps) && contained(b.triangles, a.triangles, eps)) {
     result.interferes = true;
     result.reason = 'b_inside_a';
+  } else if (a.watertight && b.watertight && volumesOverlap(a, b, candA, candB, region, eps)) {
+    result.interferes = true;
+    result.reason = 'volumes_overlap';
   }
   return result;
 }

@@ -68,6 +68,13 @@ before(async () => {
   // and 65, y 10): a 3 mm peg clears the first hole, a 7 mm one does not.
   files['pegs/clear.stl'] = encodeBinaryStl(box([3, 3, 15], [13.5, 8.5, -5]));
   files['pegs/tight.stl'] = encodeBinaryStl(box([7, 7, 15], [11.5, 6.5, -5]));
+  // Parts aligned on datum planes: a 10 mm cube, a copy of it, one shifted
+  // half its width along x, one standing on its top face, and one beside it.
+  files['aligned/cube.stl'] = encodeBinaryStl(box(10));
+  files['aligned/copy.stl'] = encodeBinaryStl(box(10));
+  files['aligned/half-over.stl'] = encodeBinaryStl(box(10, [5, 0, 0]));
+  files['aligned/on-top.stl'] = encodeBinaryStl(box(10, [0, 0, 10]));
+  files['aligned/beside.stl'] = encodeBinaryStl(box(10, [10, 0, 0]));
   project = makeRepo(files, { parent: tempDir('cad-project') });
 });
 
@@ -244,6 +251,30 @@ describe('cad.interference', () => {
     assert.equal(pair('overlap-b.stl', 'touching.stl').interferes, true);
     assert.equal(result.output.interfering, true);
     assert.match(result.findings[0], /^Interference: overlap-a\.stl with overlap-b\.stl/);
+  });
+
+  test('STL parts aligned on shared planes interfere when their volumes overlap, without CadQuery', async () => {
+    const result = await check(offline, ['aligned/cube.stl', 'aligned/copy.stl', 'aligned/half-over.stl', 'aligned/on-top.stl', 'aligned/beside.stl']);
+    const pair = (a, b) => result.output.pairs.find((p) => p.a === `aligned/${a}.stl` && p.b === `aligned/${b}.stl`);
+    assert.equal(pair('cube', 'copy').interferes, true);
+    assert.equal(pair('cube', 'half-over').interferes, true);
+    assert.equal(pair('cube', 'half-over').reason, 'volumes_overlap');
+    assert.equal(pair('half-over', 'beside').interferes, true);
+    assert.equal(pair('cube', 'on-top').interferes, false);
+    assert.equal(pair('cube', 'beside').interferes, false);
+  });
+
+  test('cad.no_interference fails a part that overlaps an aligned neighbour, and passes one that only touches', async () => {
+    const verify = (path, checkAgainst) => verifier(offline, 'cad.no_interference').verify({ output: { path, checkAgainst } }, readCtx());
+    const clash = await verify('aligned/half-over.stl', ['aligned/cube.stl']);
+    assert.equal(clash.ok, false, clash.detail);
+    assert.equal(clash.unavailable, undefined);
+    assert.match(clash.detail, /aligned\/half-over\.stl interferes with aligned\/cube\.stl/);
+    const copy = await verify('aligned/copy.stl', ['aligned/cube.stl']);
+    assert.equal(copy.ok, false, copy.detail);
+    const touching = await verify('aligned/on-top.stl', ['aligned/cube.stl']);
+    assert.equal(touching.ok, true, touching.detail);
+    assert.equal(touching.unavailable, undefined);
   });
 
   test('parts that clear give a no-interference finding', async () => {

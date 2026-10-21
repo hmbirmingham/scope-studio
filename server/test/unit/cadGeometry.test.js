@@ -200,6 +200,37 @@ describe('mesh interference', () => {
     assert.equal(meshInterference(inner, outer).reason, 'a_inside_b');
   });
 
+  test('parts aligned on shared planes still interfere when their volumes overlap', () => {
+    // Every face of one part lies in a plane of the other, so no surfaces
+    // cross and no vertex is strictly inside: the overlap is in the volume.
+    const cube = solid(box(10));
+    const cases = [
+      ['an identical copy', solid(box(10))],
+      ['a taller box sharing four sides and the base', solid(box([10, 10, 20]))],
+      ['a box overlapping along x only', solid(box(10, [5, 0, 0]))],
+      ['a thin slab inside, flush with one face', solid(box([10, 10, 1]))],
+    ];
+    for (const [label, other] of cases) {
+      const forward = meshInterference(cube, other);
+      assert.equal(forward.interferes, true, label);
+      assert.equal(forward.crossingPairs, 0, label);
+      assert.equal(meshInterference(other, cube).interferes, true, `${label}, reversed`);
+    }
+    assert.equal(meshInterference(cube, solid(box(10, [5, 0, 0]))).reason, 'volumes_overlap');
+    // Offset on two axes, the side faces cross along the shared top and
+    // bottom planes' edges; either way it is a clash.
+    assert.equal(meshInterference(cube, solid(box(10, [5, 5, 0]))).interferes, true);
+    // Winding does not matter: an inside-out copy still overlaps.
+    assert.equal(meshInterference(cube, solid(inverted(box(10)))).interferes, true);
+  });
+
+  test('aligned parts that only share a face, or a strip of one, still do not interfere', () => {
+    const cube = solid(box(10));
+    assert.equal(meshInterference(cube, solid(box(10, [10, 0, 0]))).interferes, false);
+    assert.equal(meshInterference(cube, solid(box(10, [10, 5, 0]))).interferes, false);
+    assert.equal(meshInterference(cube, solid(box([10, 10, 5], [0, 0, 10]))).interferes, false);
+  });
+
   test('parts far apart are rejected by their bounding boxes alone', () => {
     const result = meshInterference(solid(box(10)), solid(box(10, [100, 0, 0])));
     assert.equal(result.interferes, false);
@@ -222,6 +253,17 @@ describe('mesh interference', () => {
     assert.equal(trianglesCross(a, [[2, 2, 0], [2, 2, 5], [6, 2, 5]], 1e-9), false, 'a vertex resting on the face');
     assert.ok(pointInsideMesh([5, 5, 5], box(10)));
     assert.ok(!pointInsideMesh([15, 5, 5], box(10)));
+  });
+
+  test('point-in-mesh is not fooled by rays that run through grid edges', () => {
+    // From grid points, rays along small-integer directions pass exactly
+    // through the plate's quad diagonals and cell corners, where a crossing
+    // is counted twice or not at all.
+    const plate = bracket();
+    assert.ok(pointInsideMesh([2, 2, 2], plate), 'solid material');
+    assert.ok(pointInsideMesh([12.5, 2.5, 2.5], plate), 'solid material');
+    assert.ok(!pointInsideMesh([7.5, 7.5, 2.5], plate), 'the centre of a hole');
+    for (const x of [6.5, 7.5, 8.5]) for (const y of [6.5, 7.5, 8.5]) assert.ok(!pointInsideMesh([x, y, 2.5], plate), `hole point ${x},${y}`);
   });
 
   test('the grid prefilter finds the crossings a brute-force check finds', () => {
