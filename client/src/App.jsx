@@ -11,6 +11,8 @@ import { useChat } from './hooks/useChat';
 import { useProjectSettings } from './hooks/useProjectSettings';
 import { useGraphData } from './hooks/useGraphData';
 import WorkspaceTabs from './workspace/WorkspaceTabs.jsx';
+import WorkspaceProvider from './workspace/WorkspaceProvider.jsx';
+import './workspace/register.js';
 import './App.css';
 
 // Matches the breakpoint in App.css where the map stops taking a column.
@@ -158,7 +160,18 @@ function Studio() {
     setScope({ kind: 'node', node: nodesById.get(id) });
   }
 
+  // A node an agent wrote, opened from the activity tab. A closed map has no
+  // canvas, so it opens first and is focused once it has mounted.
+  function focusAgentNode(id) {
+    if (canvasRef.current) return handleFocusNode(id);
+    setPanelOpen(true);
+    requestAnimationFrame(() => handleFocusNode(id));
+  }
+
+  const graphSources = useMemo(() => [...new Set(graph.nodes.map((node) => node.source).filter(Boolean))], [graph]);
+
   return (
+    <WorkspaceProvider projects={graph.projects} sources={graphSources} nodesById={nodesById} onFocusNode={focusAgentNode} onGraphChanged={refresh}>
     <div className="app">
       <Sidebar
         open={sidebarOpen}
@@ -264,6 +277,7 @@ function Studio() {
         onFocusNode={handleFocusNode}
       />
     </div>
+    </WorkspaceProvider>
   );
 }
 

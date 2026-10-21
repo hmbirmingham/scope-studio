@@ -468,9 +468,21 @@ that no longer parses stops the task (`next_run_at` NULL).
 ## Client
 
 `client/src/workspace/tabs.js` is the tab registry: a module registers
-`{ id, label, order, Component }` and the workspace strip beside the
-conversation renders it. With nothing registered the strip does not render,
-so Wave 0 changes nothing the user sees.
+`{ id, label, order, Component, Badge? }` and the workspace strip beside the
+conversation renders it (`Badge`, if given, is drawn inside the tab button,
+as the approvals count is). `selectTab(id)` lets one tab open another. With
+nothing registered the strip does not render, so Wave 0 changes nothing the
+user sees.
+
+The workspace UI (`client/src/workspace/`) registers three tabs: Agents
+(builder, kill switch, tasks), Activity (a live step stream per run) and
+Approvals. It holds one `EventSource` on `/api/workspace/events` for the
+whole page; the browser's own retries resume with `Last-Event-ID`, the
+client drops any replayed event it already delivered, and after every
+reconnect it reloads the open run and the pending approvals over HTTP. When
+the browser gives up (the source is closed) the client opens a new
+`EventSource`, which cannot send `Last-Event-ID`, so that reload over HTTP is
+what catches it up.
 
 Visual language for agents on the map: obsidian circles with no hue at rest;
 the agent's colour appears only on the nodes it is touching or just wrote.

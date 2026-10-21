@@ -1,4 +1,5 @@
 import { forceCenter, forceLink, forceManyBody, forceSimulation, forceX, forceY } from 'd3-force';
+import { AgentCursor, mixColor } from '../workspace/cursor.js';
 
 const MIN_RADIUS = 3;
 const MAX_RADIUS = 22;
@@ -37,6 +38,11 @@ export class GraphEngine {
     this.preferences = new Map();
     this.selectedId = null;
     this.hoveredId = null;
+    // Nodes an agent is touching or just wrote; sampled per frame, fed by
+    // markAgentNodes from the activity stream, never by React state.
+    this.agentCursor = new AgentCursor();
+    this.agentSample = null;
+    this.frameTime = 0;
 
     this.camera = { x: 0, y: 0, scale: 1, targetX: 0, targetY: 0, targetScale: 1 };
     this.autoFit = true;
@@ -253,6 +259,10 @@ export class GraphEngine {
     this.selectedId = id;
   }
 
+  markAgentNodes(ids, color, kind = 'touched') {
+    this.agentCursor.mark(ids, color, kind, performance.now());
+  }
+
   setPreference(id, preference) {
     if (preference) this.preferences.set(id, preference);
     else this.preferences.delete(id);
@@ -334,6 +344,9 @@ export class GraphEngine {
   nodeState(node) {
     if (node.id === this.selectedId) return 'selected';
     if (this.active.has(node.id)) return 'active';
+    // Kept for drawNode, so a lit node is sampled once per frame, not twice.
+    this.agentSample = this.agentCursor.sample(node.id, this.frameTime);
+    if (this.agentSample) return 'agent';
     if (node.id === this.hoveredId) return 'hovered';
     return 'rest';
   }
@@ -341,6 +354,8 @@ export class GraphEngine {
   draw() {
     const ctx = this.ctx;
     ctx.clearRect(0, 0, this.width, this.height);
+    this.frameTime = performance.now();
+    this.agentCursor.prune(this.frameTime);
     this.drawEdges(ctx);
     for (const node of this.nodesById.values()) this.drawNode(ctx, node);
   }
@@ -375,10 +390,13 @@ export class GraphEngine {
     if (point.y < -radius || point.y > this.height + radius) return;
 
     const state = this.nodeState(node);
-    const hue = state === 'selected' ? SELECTED : state === 'active' ? ACTIVE : null;
+    // An agent's colour rises out of the resting obsidian and sinks back into
+    // it as the mark fades, so a node at rest never carries a hue.
+    const agent = state === 'agent' ? this.agentSample : null;
+    const hue = state === 'selected' ? SELECTED : state === 'active' ? ACTIVE : agent ? mixColor(REST_CORE, agent.color, agent.intensity) : null;
 
     if (hue) {
-      const pulse = state === 'active' ? 0.65 + 0.35 * Math.sin(this.phase * 1.6 + node.x) : 1;
+      const pulse = state === 'active' ? 0.65 + 0.35 * Math.sin(this.phase * 1.6 + node.x) : agent ? agent.intensity : 1;
       ctx.save();
       ctx.shadowColor = hue;
       ctx.shadowBlur = radius * 2.6 * pulse;
@@ -417,7 +435,7 @@ export class GraphEngine {
     }
 
     // Labels only where attention already is — the map stays uncluttered at rest.
-    if (state !== 'rest' && node.label) {
+    if (state !== 'rest' && (!agent || agent.intensity > 0.4) && node.label) {
       ctx.font = `500 ${Math.min(12, 11 * Math.max(this.camera.scale, 0.8))}px 'Space Grotesk', sans-serif`;
       ctx.textAlign = 'center';
       ctx.fillStyle = 'rgba(240,240,242,0.92)';
