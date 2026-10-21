@@ -8,8 +8,11 @@ import { streamPlatform } from '../control/platform.js';
 // calls `stream` on it; it never branches on the adapter, so adding or
 // changing one cannot change how a run behaves.
 //
-// port.stream({ messages, maxTokens, signal, purpose })
+// port.stream({ messages, maxTokens, signal, purpose, format })
 //   yields { text } … then { done: true, usage, costUsd, model }
+// `format: 'json'` asks for a single JSON reply where the adapter supports it;
+// an adapter that cannot constrain its output ignores it, and the caller
+// still validates what comes back.
 
 export const ADAPTERS = ['local', 'own_key', 'platform'];
 export const MODEL_POLICIES = ['local_only', 'local_cloud', 'own_key'];
@@ -40,9 +43,9 @@ export function localAdapter({ model = localChatModel(), stream = streamOllama }
   return {
     name: 'local',
     offline: true,
-    async *stream({ messages, maxTokens, signal }) {
+    async *stream({ messages, maxTokens, signal, format }) {
       let usage = null;
-      for await (const chunk of stream({ model, messages, options: maxTokens ? { num_predict: maxTokens } : undefined, signal })) {
+      for await (const chunk of stream({ model, messages, options: maxTokens ? { num_predict: maxTokens } : undefined, format, signal })) {
         if (chunk.message?.content) yield { text: chunk.message.content };
         if (chunk.done) usage = { input_tokens: chunk.prompt_eval_count ?? 0, output_tokens: chunk.eval_count ?? 0 };
       }
