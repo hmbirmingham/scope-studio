@@ -18,4 +18,8 @@ original tests and `package.json` put back first.
 No fixture has dependencies or touches the network; each runs with
 `node --test` alone and is deterministic.
 
+`research-harbor` is the research task's paper set rather than a project: a
+reference library the benchmark ingests into the graph. Its own README gives
+its provenance; it is CC0.
+
 Provenance and licence: written for this benchmark, MIT.

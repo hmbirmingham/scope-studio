@@ -1,0 +1,12 @@
+The Harbor Benchmark for Noisy Speech
+Kenji Ito
+Harbor holds 120 hours of speech recorded on docks and ships.
+Every system is scored by word error rate on the Harbor test set.
+
+3 Baselines
+Table 1: Word error rate on the Harbor benchmark.
+Hidden Markov baseline 14.2
+Recurrent baseline 11.6
+Lower is better.
+
+
