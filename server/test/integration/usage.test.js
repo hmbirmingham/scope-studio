@@ -1,11 +1,12 @@
 import assert from 'node:assert/strict';
 import { after, before, describe, test } from 'node:test';
 import { deleteLink } from '../../src/control/linkStore.js';
-import { linkUser, meFor } from '../fakeControl.js';
+import { linkUser, meFor, startFakeControl } from '../fakeControl.js';
 import { registeredSession, session, startServer } from '../helpers.js';
 
 describe('usage and spend', () => {
   let server;
+  let control;
   let api;
   let other;
 
@@ -17,6 +18,10 @@ describe('usage and spend', () => {
     );
 
   before(async () => {
+    // A cached plan only counts while a control plane is configured; the
+    // plans below are cached fresh, so the stand-in is never asked.
+    control = await startFakeControl();
+    process.env.CONTROL_URL = control.url;
     server = await startServer();
     api = await registeredSession(server.base);
     other = await registeredSession(server.base);
@@ -29,7 +34,11 @@ describe('usage and spend', () => {
     await record(mine, { model: 'anthropic/claude-opus-5', cost: 0.9, ageDays: 30 });
     await record(theirs, { model: 'anthropic/claude-opus-5', cost: 5 });
   });
-  after(() => server.close());
+  after(async () => {
+    delete process.env.CONTROL_URL;
+    await server.close();
+    await control.close();
+  });
 
   test('summarises the window: spend, cloud share, and a monthly projection', async () => {
     const { status, data } = await api('GET', '/api/usage?days=7');

@@ -6,7 +6,7 @@ import { resetConversations } from '../../src/routing/conversation.js';
 import { SYSTEM_PROMPTS } from '../../src/routing/prompt.js';
 import { resetWarmState } from '../../src/routing/warm.js';
 import { deadUrl, startFakeOllama } from '../fakeOllama.js';
-import { linkUser } from '../fakeControl.js';
+import { linkUser, startFakeControl } from '../fakeControl.js';
 import { ensureCentroids, registeredSession, session, startServer } from '../helpers.js';
 
 const realOllama = process.env.OLLAMA_URL || 'http://localhost:11434';
@@ -15,6 +15,7 @@ const DEFAULT_TOKENS = ['Returns ', 'a naïve ', 'count — ', 'done.'];
 describe('chat routing and streaming', () => {
   let server;
   let fake;
+  let control;
   let api;
   let privateApi;
   let ids;
@@ -50,6 +51,10 @@ describe('chat routing and streaming', () => {
   before(async () => {
     fake = await startFakeOllama({ embedUrl: realOllama });
     process.env.OLLAMA_URL = fake.url;
+    // A cached plan only counts while a control plane is configured; the
+    // plans below are cached fresh, so the stand-in is never asked.
+    control = await startFakeControl();
+    process.env.CONTROL_URL = control.url;
     server = await startServer();
     await ensureCentroids(server.pool);
     api = await registeredSession(server.base);
@@ -103,8 +108,10 @@ describe('chat routing and streaming', () => {
 
   after(async () => {
     process.env.OLLAMA_URL = realOllama;
+    delete process.env.CONTROL_URL;
     await server.close();
     await fake.close();
+    await control.close();
   });
 
   test('streams a local answer: context line, tokens, done; metrics logged after the stream', async () => {
