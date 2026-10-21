@@ -8,6 +8,9 @@ const PORT = 4173;
 
 export default defineConfig({
   testDir: './e2e',
+  // The demo walk-through needs a real engine and database; it has its own
+  // config (playwright.demo.config.js).
+  testIgnore: 'demo.spec.js',
   timeout: 30_000,
   retries: process.env.CI ? 1 : 0,
   reporter: process.env.CI ? 'line' : 'list',
