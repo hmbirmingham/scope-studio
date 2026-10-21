@@ -356,6 +356,7 @@ or missing), 409 (wrong state).
 - `GET /api/agents/:id`, `PATCH /api/agents/:id` (any field above except `state`), `DELETE /api/agents/:id`
 - `POST /api/agents/:id/pause | /resume | /kill | /reactivate` → `{ agent }`
 - `GET /api/agents/:id/can?capability=&project=&source=&inSandbox=&online=&privateContext=` → `{ decision, reason }` (for the UI's capability grid; an omitted flag takes the cautious value, exactly as an omitted field in the runner's context does)
+- Deletes answer 204 with no body. A kill also publishes `approval.resolved` (`status: 'expired'`) for each approval it expires, before the `run.finished` events. `GET /api/agents/roles/:id` and `GET /api/approvals/:id` return one record.
 
 **Task**
 `{ id, agentId, title, instructions, project, schedule, nextRunAt, enabled, createdAt, updatedAt }`
