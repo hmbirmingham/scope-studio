@@ -30,7 +30,9 @@ jobs:
         with:
           node-version: 26
           cache: npm
-          cache-dependency-path: server/package-lock.json
+          cache-dependency-path: |
+            server/package-lock.json
+            control/package-lock.json
 
       - name: Install Ollama
         run: curl -fsSL https://ollama.com/install.sh | sh
@@ -53,6 +55,11 @@ jobs:
 
       - run: npm ci
         working-directory: server
+
+      # The engine's control-plane tests run the real control app in-process,
+      # on a database next to the engine's test database.
+      - run: npm ci
+        working-directory: control
 
       - run: npm test
         working-directory: server

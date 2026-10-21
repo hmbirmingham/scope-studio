@@ -12,8 +12,7 @@
     "embed": "node src/db/embed-missing.js",
     "centroids": "node src/db/build-centroids.js",
     "benchmark": "node src/benchmark/run.js",
-    "endurance": "node src/benchmark/session.js",
-    "webhook-proxy": "node scripts/webhook-proxy.js"
+    "endurance": "node src/benchmark/session.js"
   },
   "keywords": [],
   "author": "Hynes Birmingham",
@@ -26,7 +25,6 @@
     "express": "^5.2.1",
     "express-session": "^1.19.0",
     "octokit": "^5.0.5",
-    "pg": "^8.23.0",
-    "stripe": "^23.0.0"
+    "pg": "^8.23.0"
   }
 }
