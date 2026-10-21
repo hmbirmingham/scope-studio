@@ -119,6 +119,17 @@ describe('RunView', () => {
     expect(getRun).toHaveBeenCalledTimes(2);
   });
 
+  it('shows long instructions clamped, and all of them on request', async () => {
+    const user = userEvent.setup();
+    const long = `Recompute g from the data. ${'Then check every number. '.repeat(10)}`;
+    renderRun({ getRun: vi.fn(async () => ({ ...RUN, instructions: long })) });
+    const text = await screen.findByText(/Recompute g from the data/);
+    expect(text).toHaveClass('is-clamped');
+    await user.click(screen.getByRole('button', { name: 'Show all instructions' }));
+    expect(text).not.toHaveClass('is-clamped');
+    expect(screen.getByRole('button', { name: 'Show less' })).toHaveAttribute('aria-expanded', 'true');
+  });
+
   it('labels the plan and the closing step of a run', async () => {
     renderRun({
       getRun: vi.fn(async () => ({

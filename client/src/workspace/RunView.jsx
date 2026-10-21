@@ -53,6 +53,25 @@ function StepApproval({ approval }) {
   );
 }
 
+// A task's instructions can be a paragraph; the run's header shows the start
+// of them, and all of them on request.
+const LONG_INSTRUCTIONS = 180;
+function Instructions({ text }) {
+  const [open, setOpen] = useState(false);
+  if (!text) return null;
+  const long = text.length > LONG_INSTRUCTIONS;
+  return (
+    <>
+      <p className={`ws-run-instructions${long && !open ? ' is-clamped' : ''}`}>{text}</p>
+      {long && (
+        <button type="button" className="ws-link" onClick={() => setOpen(!open)} aria-expanded={open}>
+          {open ? 'Show less' : 'Show all instructions'}
+        </button>
+      )}
+    </>
+  );
+}
+
 // What an agent wrote, readable where the run is, without leaving it.
 function NodeContent({ nodeId }) {
   const { api } = useWorkspace();
@@ -265,7 +284,7 @@ export default function RunView({ runId }) {
               {STATUS_WORDS[run.status] ?? run.status}
             </span>
           </h3>
-          <p className="ws-run-instructions">{run.instructions}</p>
+          <Instructions text={run.instructions} />
           {run.project && <p className="ws-hint">Project: {run.project}</p>}
         </div>
         {live && (

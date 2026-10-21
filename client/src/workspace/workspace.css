@@ -405,6 +405,7 @@
 .ws-run-head { display: flex; justify-content: space-between; align-items: flex-start; gap: 12px; }
 .ws-run-head h3 { display: flex; align-items: center; gap: 8px; font-size: 14px; }
 .ws-run-instructions { margin: 4px 0; color: var(--t1); font-size: 13px; white-space: pre-wrap; }
+.ws-run-instructions.is-clamped { display: -webkit-box; -webkit-line-clamp: 3; -webkit-box-orient: vertical; overflow: hidden; }
 
 .ws-meters { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 10px; }
 .ws-meter { display: flex; flex-direction: column; gap: 3px; font-size: 11px; color: var(--t2); }
