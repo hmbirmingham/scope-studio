@@ -1,7 +1,7 @@
 import loadEnv from './config/env.js';
 import createApp from './app.js';
 import { registerBuiltInPlugins } from './plugins/registry.js';
-import { createScheduler, createWorker, setRunQueuedListener } from './workspace/runner/index.js';
+import { createScheduler, createWorker, setRunQueuedListener, stopWithin } from './workspace/runner/index.js';
 
 const env = loadEnv();
 const app = createApp(env);
@@ -28,9 +28,12 @@ if (env.nodeEnv !== 'test') {
   scheduler.start();
 
   // On a normal shutdown each run in flight is handed back to the queue at
-  // its next step boundary; on a crash its lease simply expires.
+  // its next step boundary; on a crash its lease simply expires. The wait for
+  // a boundary is bounded, since a step may be a long test suite: after it
+  // the engine exits and the remaining leases expire as after a crash.
   const shutdown = async () => {
-    await Promise.allSettled([scheduler.stop(), worker.stop()]);
+    const outcome = await stopWithin([scheduler, worker]);
+    if (outcome === 'timed_out') console.warn('agent worker: runs still in flight will resume from their last checkpoint');
     process.exit(0);
   };
   process.once('SIGINT', shutdown);

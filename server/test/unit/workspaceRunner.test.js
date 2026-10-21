@@ -4,6 +4,7 @@ import { DEFAULT_MAX_STEPS, budgetError, effectiveBudget, exceededLimit, wallRem
 import { chooserMessages, extractJsonObject, parseChoice, validateInput } from '../../src/workspace/runner/chooser.js';
 import { createModelRouter } from '../../src/workspace/runner/models.js';
 import { advance } from '../../src/workspace/runner/scheduler.js';
+import { stopWithin } from '../../src/workspace/runner/shutdown.js';
 import { RUN_NODE_WINDOW, SLICE_NODES, SLICE_TOKENS, packSlice } from '../../src/workspace/runner/slice.js';
 import { notesFrom, stepContent } from '../../src/workspace/runner/writeBack.js';
 import { createFakeModelPort } from '../fakeModelPort.js';
@@ -281,5 +282,24 @@ describe('fake model port', () => {
     assert.equal(last.text, 'later');
     assert.deepEqual(last.done.usage, { input_tokens: 100, output_tokens: 20 });
     assert.equal(port.calls.length, 5);
+  });
+});
+
+describe('bounded shutdown', () => {
+  test('resolves stopped once every part has stopped, even one that throws', async () => {
+    const order = [];
+    const parts = [
+      { stop: async () => order.push('scheduler') },
+      { stop: () => { throw new Error('boom'); } },
+      { stop: () => new Promise((resolve) => setTimeout(() => resolve(order.push('worker')), 20)) },
+    ];
+    assert.equal(await stopWithin(parts, { timeoutMs: 1000 }), 'stopped');
+    assert.deepEqual(order, ['scheduler', 'worker']);
+  });
+
+  test('gives up after the timeout when a part never stops', async () => {
+    const started = Date.now();
+    assert.equal(await stopWithin([{ stop: () => new Promise(() => {}) }], { timeoutMs: 50 }), 'timed_out');
+    assert.ok(Date.now() - started < 1000);
   });
 });

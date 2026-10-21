@@ -5,7 +5,7 @@ import { join, resolve, sep } from 'node:path';
 import { after, before, beforeEach, describe, test } from 'node:test';
 import { listPlugins, registerPlugin } from '../../src/workspace/capabilities.js';
 import { createEventBus } from '../../src/workspace/events.js';
-import { createWorker } from '../../src/workspace/runner/index.js';
+import { createWorker, stopWithin } from '../../src/workspace/runner/index.js';
 import { SLICE_TOKENS } from '../../src/workspace/runner/slice.js';
 import { createFakeModelPort, platformUnavailable } from '../fakeModelPort.js';
 import { registeredSession, startServer } from '../helpers.js';
@@ -769,6 +769,29 @@ describe('agent runner', () => {
     local.push(done);
     assert.deepEqual(await worker().runNext(), { runId, outcome: 'finished' });
     assert.equal(invocations.block, 1);
+  });
+
+  test('a bounded shutdown gives up on a step that never reaches a boundary and leaves the run to be reclaimed', async () => {
+    const agentId = await makeAgent();
+    const runId = await makeRun(agentId);
+    local.push(plan, choose('fixture.block'));
+    const instance = worker({ pollMs: 20, leaseMs: 300 });
+    instance.start();
+    await gate.entered;
+    const started = Date.now();
+    assert.equal(await stopWithin([instance], { timeoutMs: 200 }), 'timed_out');
+    assert.ok(Date.now() - started < 2000, 'shutdown did not wait for the step');
+    // The process would exit here; stand in for that by abandoning the worker.
+    instance.abandon();
+    const run = await runRow(runId);
+    assert.equal(run.status, 'running', 'the run keeps its lease, which will expire');
+    assert.equal(run.step_index, 1);
+    await new Promise((resolveWait) => setTimeout(resolveWait, 400));
+    gate.blocking = false;
+    gate.open();
+    local.push(choose('fixture.block'), done);
+    assert.deepEqual(await worker().runNext(), { runId, outcome: 'finished' });
+    assert.equal((await runRow(runId)).status, 'succeeded');
   });
 
   test('two workers never claim the same run', async () => {
