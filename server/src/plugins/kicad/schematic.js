@@ -19,6 +19,14 @@ const GRID = 1e4; // KiCad stores millimetres to four decimals.
 const MAX_SHEET_DEPTH = 16;
 const MAX_SHEET_INSTANCES = 500;
 
+// Budgets that keep a large or hostile design from holding the event loop:
+// connection points across every sheet instance, and point-on-wire tests.
+// Real designs use a small fraction of both (each point lies on a wire or
+// two); a design past either is refused rather than resolved slowly.
+export const MAX_CONNECTION_POINTS = 500_000;
+export const MAX_WIRE_TESTS = 5_000_000;
+const CELL = 5; // mm: the grid cell for diagonal wires.
+
 const keyOf = (x, y) => `${Math.round(x * GRID)},${Math.round(y * GRID)}`;
 
 export const NAME_PRIORITY = { power: 0, global: 1, local: 2, hierarchical: 3, implicit: 0 };
@@ -200,6 +208,102 @@ function onSegment(p, a, b) {
   );
 }
 
+// The lower bound of `value` in a sorted array of { v } entries.
+function lowerBound(list, value) {
+  let lo = 0;
+  let hi = list.length;
+  while (lo < hi) {
+    const mid = (lo + hi) >>> 1;
+    if (list[mid].v < value) lo = mid + 1;
+    else hi = mid;
+  }
+  return lo;
+}
+
+// Calls `join(anchor, wire)` for every connection point that lies on a wire
+// of one sheet. Testing every wire against every point is quadratic, so the
+// points are indexed first: KiCad wires are almost always horizontal or
+// vertical, and such a wire only looks at the points in its own column (or
+// row), sorted along it and cut to its span by binary search. The rare
+// diagonal wire looks at the grid cells it passes through. Every candidate
+// tested counts against `budget`, which throws when spent.
+function joinPointsOnWires(wires, anchors, budget, join) {
+  const scaled = (value) => Math.round(value * GRID);
+  const byX = new Map(); // column → points sorted by y
+  const byY = new Map(); // row → points sorted by x
+  const bucket = (map, key, v, anchor) => {
+    let list = map.get(key);
+    if (!list) map.set(key, (list = []));
+    list.push({ v, anchor });
+  };
+  for (const anchor of anchors) {
+    const sx = scaled(anchor.x);
+    const sy = scaled(anchor.y);
+    bucket(byX, sx, sy, anchor);
+    bucket(byY, sy, sx, anchor);
+  }
+  for (const list of byX.values()) list.sort((a, b) => a.v - b.v);
+  for (const list of byY.values()) list.sort((a, b) => a.v - b.v);
+
+  let cells = null; // built only when a diagonal wire needs it
+  const cellKey = (cx, cy) => `${cx},${cy}`;
+  const buildCells = () => {
+    cells = new Map();
+    for (const anchor of anchors) {
+      const key = cellKey(Math.floor(anchor.x / CELL), Math.floor(anchor.y / CELL));
+      if (!cells.has(key)) cells.set(key, []);
+      cells.get(key).push(anchor);
+    }
+  };
+
+  const test = (anchor, a, b, wire) => {
+    budget.spend(1);
+    if (onSegment(anchor, a, b)) join(anchor, wire);
+  };
+  // Points within the rounding tolerance of a line sit in the neighbouring
+  // column or row, so those are searched too.
+  const scanLine = (map, line, from, to, a, b, wire) => {
+    for (let k = line - 1; k <= line + 1; k++) {
+      const list = map.get(k);
+      if (!list) continue;
+      for (let i = lowerBound(list, from - 1); i < list.length && list[i].v <= to + 1; i++) test(list[i].anchor, a, b, wire);
+    }
+  };
+
+  for (const wire of wires) {
+    const [a, b] = wire;
+    const ax = scaled(a.x);
+    const ay = scaled(a.y);
+    const bx = scaled(b.x);
+    const by = scaled(b.y);
+    if (ax === bx) {
+      scanLine(byX, ax, Math.min(ay, by), Math.max(ay, by), a, b, wire);
+    } else if (ay === by) {
+      scanLine(byY, ay, Math.min(ax, bx), Math.max(ax, bx), a, b, wire);
+    } else {
+      // A diagonal: walk the columns of cells it crosses and, in each, the
+      // rows its span covers there, so the cells visited grow with its
+      // length rather than with its bounding box.
+      if (!cells) buildCells();
+      const tolerance = 1 / GRID;
+      const x0 = Math.min(a.x, b.x);
+      const x1 = Math.max(a.x, b.x);
+      const yAt = (x) => a.y + ((b.y - a.y) * (x - a.x)) / (b.x - a.x);
+      for (let cx = Math.floor((x0 - tolerance) / CELL); cx <= Math.floor((x1 + tolerance) / CELL); cx++) {
+        const left = Math.max(x0, cx * CELL);
+        const right = Math.min(x1, (cx + 1) * CELL);
+        const ya = yAt(left);
+        const yb = yAt(right);
+        budget.spend(1);
+        for (let cy = Math.floor((Math.min(ya, yb) - tolerance) / CELL); cy <= Math.floor((Math.max(ya, yb) + tolerance) / CELL); cy++) {
+          budget.spend(1);
+          for (const anchor of cells.get(cellKey(cx, cy)) ?? []) test(anchor, a, b, wire);
+        }
+      }
+    }
+  }
+}
+
 class UnionFind {
   constructor() {
     this.parent = new Map();
@@ -256,7 +360,17 @@ export function resolveDesign(files, rootPath) {
   const missingSheets = [];
   const usedFiles = new Set([rootPath]);
   let instancesSeen = 0;
+  let pointsSeen = 0;
   let powerSymbols = 0;
+  // Shared by every sheet instance, so a sheet used many times counts each
+  // time it is resolved.
+  let wireTests = 0;
+  const budget = {
+    spend(n) {
+      wireTests += n;
+      if (wireTests > MAX_WIRE_TESTS) throw new KicadError('design_too_large', 'the design has too many connection points on its wires to resolve');
+    },
+  };
 
   const addName = (key, name, kind) => {
     uf.find(key);
@@ -272,6 +386,8 @@ export function resolveDesign(files, rootPath) {
     const localPrefix = `/${sheetNames.map((name) => `${name}/`).join('')}`;
     const anchors = [];
     const anchor = (x, y) => {
+      pointsSeen += 1;
+      if (pointsSeen > MAX_CONNECTION_POINTS) throw new KicadError('design_too_large', `more than ${MAX_CONNECTION_POINTS} connection points`);
       const key = point(x, y);
       anchors.push({ x, y, key });
       return key;
@@ -375,12 +491,7 @@ export function resolveDesign(files, rootPath) {
     }
 
     // Connection points that lie on a wire join it.
-    for (const [a, b] of file.wires) {
-      const wireKey = point(a.x, a.y);
-      for (const candidate of anchors) {
-        if (onSegment(candidate, a, b)) uf.union(candidate.key, wireKey);
-      }
-    }
+    joinPointsOnWires(file.wires, anchors, budget, (candidate, [a]) => uf.union(candidate.key, point(a.x, a.y)));
   };
 
   visit(rootPath, root, [], [], 0);

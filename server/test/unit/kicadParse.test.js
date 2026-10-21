@@ -150,6 +150,52 @@ describe('schematic parsing', () => {
     assert.deepEqual(pinsOf(tee.nets[0]), ['R1.2', 'R2.2', 'R3.2']);
   });
 
+  test('points on the middle of a diagonal wire join it; points beside it do not', () => {
+    // The wire runs from (0, 0) to (40, 30) across several grid cells. R1
+    // pin 2 lands at (8, 6) and R2 pin 1 at (32, 24), both on it; R3 pin 2
+    // at (16, 12.5) is half a millimetre off it.
+    const diagonal = parseSchematic(sch(`${resistor('R1', 8, 2.19)} ${resistor('R2', 32, 27.81)} ${resistor('R3', 16, 8.69)}
+      ${wire(0, 0, 40, 30)} (label "D" (at 20 15 0))`));
+    assert.deepEqual(pinsOf(netByName(diagonal, '/D')), ['R1.2', 'R2.1']);
+    assert.ok(diagonal.unconnected.some((pin) => pin.reference === 'R3' && pin.number === '2'));
+  });
+
+  test('a large sheet resolves quickly: wires look only at points in their own row or column', () => {
+    // 50,000 short vertical wires (100,000 connection points) in a grid.
+    // Testing every wire against every point took minutes for this.
+    const wires = [];
+    for (let i = 0; i < 50_000; i++) {
+      const x = (i % 400) * 2.54;
+      const y = Math.floor(i / 400) * 5.08;
+      wires.push(wire(x, y, x, y + 2.54));
+    }
+    const file = parseSchematicFile(sch(`${wires.join('\n')} ${resistor('R1', 0, -3.81)} (label "TOP" (at 0 1.27 0))`));
+    const started = performance.now();
+    const design = resolveDesign(new Map([['big.kicad_sch', file]]), 'big.kicad_sch');
+    const elapsed = performance.now() - started;
+    assert.ok(elapsed < 1000, `resolving took ${elapsed.toFixed(0)} ms`);
+    // The label in the middle of the first wire still joins R1's pin at its end.
+    assert.deepEqual(pinsOf(netByName(design, '/TOP')), ['R1.2']);
+  });
+
+  test('a design whose wires pile up on the same points is refused, not resolved for minutes', () => {
+    // 3,000 copies of one long wire with 3,000 labels along it: every label
+    // lies on every wire, so no index can make this cheap.
+    const body = [];
+    for (let i = 0; i < 3000; i++) body.push(wire(0, 0, 0, 3000), `(label "N" (at 0 ${i} 0))`);
+    const file = parseSchematicFile(sch(body.join('\n')));
+    const started = performance.now();
+    assert.throws(() => resolveDesign(new Map([['pile.kicad_sch', file]]), 'pile.kicad_sch'), (err) => err instanceof KicadError && err.code === 'design_too_large');
+    assert.ok(performance.now() - started < 2000);
+  });
+
+  test('a design with too many connection points is refused', () => {
+    const wires = [];
+    for (let i = 0; i < 260_000; i++) wires.push(wire(i, 0, i, 1));
+    const file = parseSchematicFile(sch(wires.join('\n')));
+    assert.throws(() => resolveDesign(new Map([['huge.kicad_sch', file]]), 'huge.kicad_sch'), (err) => err.code === 'design_too_large' && /connection points/.test(err.message));
+  });
+
   test('global and local labels join points without wires; local names stay on their sheet', () => {
     const labelled = parseSchematic(sch(`${resistor('R1', 10, 10)} ${resistor('R2', 50, 10)} ${resistor('R3', 90, 10)}
       (global_label "SDA" (shape bidirectional) (at 10 13.81 0)) (global_label "SDA" (shape bidirectional) (at 50 13.81 0))
