@@ -14,6 +14,11 @@ import githubPluginRouter from './routes/plugins/github.js';
 import graphRouter from './routes/graph.js';
 import queryRouter from './routes/query.js';
 import usageRouter from './routes/usage.js';
+import agentsRouter from './routes/workspace/agents.js';
+import agentRunsRouter from './routes/workspace/agentRuns.js';
+import approvalsRouter from './routes/workspace/approvals.js';
+import tasksRouter from './routes/workspace/tasks.js';
+import workspaceEventsRouter from './routes/workspace/events.js';
 
 const PgSessionStore = connectPgSimple(session);
 
@@ -56,6 +61,12 @@ function createApp(env) {
   app.use('/api/plugins/github', githubPluginRouter);
   app.use('/api/query', queryRouter);
   app.use('/api/usage', usageRouter);
+  // The agent workspace (docs/architecture/agent-workspace.md).
+  app.use('/api/agents', agentsRouter);
+  app.use('/api/tasks', tasksRouter);
+  app.use('/api/approvals', approvalsRouter);
+  app.use('/api/agent-runs', agentRunsRouter);
+  app.use('/api/workspace/events', workspaceEventsRouter);
 
   return app;
 }

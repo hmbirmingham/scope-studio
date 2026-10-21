@@ -10,6 +10,7 @@ import { edgeKey } from './graph/GraphEngine';
 import { useChat } from './hooks/useChat';
 import { useProjectSettings } from './hooks/useProjectSettings';
 import { useGraphData } from './hooks/useGraphData';
+import WorkspaceTabs from './workspace/WorkspaceTabs.jsx';
 import './App.css';
 
 // Matches the breakpoint in App.css where the map stops taking a column.
@@ -193,20 +194,22 @@ function Studio() {
         <button type="button" className="menu-open" onClick={() => setSidebarOpen(true)} aria-label="Show menu" title="Menu">
           ☰
         </button>
-        <ChatPanel
-          project={activeProject}
-          chat={chat}
-          onNarrow={handleSelectProject}
-          tier={tier}
-          onTierChange={setTier}
-          webSearch={webSearch}
-          onWebSearchChange={setWebSearch}
-          cloudPlan={cloudPlan}
-          displayControl={displayControl}
-          displayAvailable={displayAvailable}
-          onDisplayControlChange={changeDisplayControl}
-          hasKey={Boolean(apiKey)}
-        />
+        <WorkspaceTabs>
+          <ChatPanel
+            project={activeProject}
+            chat={chat}
+            onNarrow={handleSelectProject}
+            tier={tier}
+            onTierChange={setTier}
+            webSearch={webSearch}
+            onWebSearchChange={setWebSearch}
+            cloudPlan={cloudPlan}
+            displayControl={displayControl}
+            displayAvailable={displayAvailable}
+            onDisplayControlChange={changeDisplayControl}
+            hasKey={Boolean(apiKey)}
+          />
+        </WorkspaceTabs>
         {!panelOpen && (
           <button
             type="button"
