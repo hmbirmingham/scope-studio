@@ -61,6 +61,15 @@ describe('reading a zotero.sqlite library', () => {
     assert.deepEqual(readFileSync(lib.sqlite), before);
   });
 
+  test('a stored attachment name that climbs out of its folder is not followed', async () => {
+    const lib = buildLibrary(temp());
+    const db = new DatabaseSync(lib.sqlite);
+    db.exec("UPDATE itemAttachments SET path = 'storage:../../../etc/x.pdf' WHERE itemID = 4");
+    db.close();
+    const library = await readLibrary(lib.sqlite);
+    assert.equal(library.items[0].attachments[0].path, null);
+  });
+
   test('a storage directory elsewhere can be named', async () => {
     const lib = buildLibrary(temp());
     const library = await readLibrary(lib.sqlite, { storageDir: '/elsewhere/storage' });

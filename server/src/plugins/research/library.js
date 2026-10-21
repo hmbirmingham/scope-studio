@@ -1,6 +1,6 @@
 import { copyFile, mkdtemp, open, readFile, rm, stat } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
-import { basename, dirname, isAbsolute, join, resolve } from 'node:path';
+import { basename, dirname, isAbsolute, join, resolve, sep } from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
 import { ResearchError, htmlToText, normalizeDoi, terms } from './text.js';
 
@@ -113,7 +113,13 @@ async function openCopy(path) {
 
 function attachmentPath(path, { storageDir, attachmentKey }) {
   if (typeof path !== 'string' || !path) return null;
-  if (path.startsWith('storage:')) return join(storageDir, attachmentKey, path.slice('storage:'.length));
+  if (path.startsWith('storage:')) {
+    // A stored file lives in its attachment's own folder; a name that climbs
+    // out of it (a hand-edited or hostile database) is not followed.
+    const folder = resolve(storageDir, attachmentKey);
+    const file = resolve(folder, path.slice('storage:'.length));
+    return file.startsWith(`${folder}${sep}`) ? file : null;
+  }
   // Linked files are stored as absolute paths. Paths relative to Zotero's
   // "linked attachment base directory" (attachments:…) depend on a preference
   // that lives outside the database, so they are reported, not guessed.
