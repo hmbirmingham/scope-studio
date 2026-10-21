@@ -1,6 +1,7 @@
 import { randomUUID } from 'node:crypto';
 import { existsSync } from 'node:fs';
 import { join } from 'node:path';
+import { ingestProblems } from '../../plugins/physics/ingest.js';
 import { registerBuiltInPlugins } from '../../plugins/registry.js';
 import { createEventBus } from '../../workspace/events.js';
 import { roleTemplate } from '../../workspace/roles.js';
@@ -8,6 +9,7 @@ import { executeRun } from '../../workspace/runner/execute.js';
 import { runCosts } from '../../workspace/runner/ledger.js';
 import { sandboxRoot } from '../../workspace/runner/sandbox.js';
 import { insertRun, loadRun } from '../../workspace/runner/store.js';
+import { problemOf } from './catalog.js';
 import { createCallLog, createScript, livePlatformPort, recordedLocalPort, scriptedPort } from './models.js';
 import { prepareProject, snapshotTree } from './workspace.js';
 
@@ -18,7 +20,8 @@ import { prepareProject, snapshotTree } from './workspace.js';
 // a transcript, which is the property the benchmark measures.
 
 // Debugger: the built-in role whose tags cover reading, editing, the
-// project's scripts and generated code.
+// project's scripts and generated code. A task may name another (physics
+// tasks use the Physicist).
 const ROLE = 'debugger';
 const LEASE_MS = 60_000;
 // Generous limits: a dry run ends well inside them, and a live run should
@@ -41,8 +44,8 @@ async function claimOwn(runId, workerId, db) {
   return { ...run, was_started: false };
 }
 
-async function createBenchAgent({ db, ownerId, project, arm }) {
-  const role = roleTemplate(ROLE);
+async function createBenchAgent({ db, ownerId, project, arm, task }) {
+  const role = roleTemplate(task.role ?? ROLE);
   // Local+cloud: the user has said yes to the cloud for this agent, so the
   // plan's cloud calls are allowed without a per-run approval.
   const overrides = arm.policy === 'local_cloud' ? { cloud_model: 'allow' } : {};
@@ -77,7 +80,12 @@ export async function runScopeTask({ task, arm, workspace, ownerId, db, mode = '
   const project = `bench-${task.id}-${arm.name}`;
   const repo = await prepareProject(task, workspace, arm.name);
   await db.query('INSERT INTO project_settings (owner_id, project, local_path) VALUES ($1, $2, $3)', [ownerId, project, repo]);
-  const agentId = await createBenchAgent({ db, ownerId, project, arm });
+  // A physics task's problem is a node in the project's graph, which is
+  // where the agent reads it from.
+  if (task.kind === 'physics') {
+    await ingestProblems(ownerId, { project, privacy: 'cloud', problems: [problemOf(task)] }, { embed: mode === 'dry' ? null : undefined });
+  }
+  const agentId = await createBenchAgent({ db, ownerId, project, arm, task });
   const run = await insertRun({ ownerId, agentId, instructions: task.instructions, project }, db);
 
   // The worker removes the run's sandbox as soon as the run ends, right after
@@ -120,6 +128,12 @@ export async function runScopeTask({ task, arm, workspace, ownerId, db, mode = '
   const final = await loadRun(run.id, db);
   const { rows: steps } = await db.query('SELECT index, kind, capability, status, error FROM agent_run_steps WHERE run_id = $1 ORDER BY index', [run.id]);
   const ledger = await runCosts(run.id, db);
+  // What the verified steps produced, for a check that reads a result rather
+  // than a working tree.
+  const { rows: answers } = await db.query(
+    "SELECT capability, output FROM agent_run_steps WHERE run_id = $1 AND status = 'done' AND capability IS NOT NULL ORDER BY index",
+    [run.id]
+  );
   const claimedDone = final.status === 'succeeded';
 
   return {
@@ -129,6 +143,7 @@ export async function runScopeTask({ task, arm, workspace, ownerId, db, mode = '
     claimedDone,
     // The objective check runs on this afterwards (run.js), outside the timing.
     resultDir: snapshot,
+    answers,
     wallMs,
     // Every step the runner executed, the plan included.
     steps: steps.length,

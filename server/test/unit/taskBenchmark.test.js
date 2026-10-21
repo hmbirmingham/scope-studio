@@ -200,8 +200,9 @@ describe('the task catalog', () => {
     assert.match(readFileSync(join(FIXTURES_DIR, 'README.md'), 'utf8'), /written for this benchmark, MIT/);
   });
 
-  test('KiCad, research, physics and CAD are pending gates that say what makes them ready', () => {
-    for (const kind of ['kicad', 'research', 'physics', 'cad']) {
+  // Physics is ready now that its plug-in exists (physicsBenchmark.test.js).
+  test('KiCad, research and CAD are pending gates that say what makes them ready', () => {
+    for (const kind of ['kicad', 'research', 'cad']) {
       const gates = TASKS.filter((entry) => entry.kind === kind);
       assert.ok(gates.length >= 1, kind);
       for (const gate of gates) {

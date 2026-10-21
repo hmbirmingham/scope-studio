@@ -62,6 +62,12 @@ jobs:
           sudo apt-get install -y bubblewrap
           sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
 
+      # The physics plug-in runs NumPy, SciPy and Pint in the same sandbox,
+      # which sees the system site-packages but not a user's (~/.local), so
+      # they are installed system-wide.
+      - name: Install the physics toolchain
+        run: sudo python3 -m pip install --break-system-packages --quiet scipy pint
+
       - run: npm ci
         working-directory: server
 

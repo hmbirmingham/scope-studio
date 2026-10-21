@@ -60,7 +60,7 @@ export function assumptions(mode) {
       ? 'counted from the prompts actually built, at four characters a token (the corpus counts nodes the same way)'
       : 'as the model reported them; prompt sizes for the curve are the same four-characters-a-token estimate when a model reports none',
     replies: mode === 'dry' ? 'scripted: both arms play the same capability calls in the same order (catalog.js dry.actions)' : 'chosen by the models',
-    completion: 'objective only: the task check (for code, the fixture’s test script with its original tests restored) run in the OS sandbox on the result',
+    completion: 'objective only: the task check (for code, the fixture’s test script with its original tests restored, run in the OS sandbox on the result; for physics, the last verified computation within tolerance of a reference kept out of the fixture)',
     prices: 'USD per million tokens from lib/anthropic.js; cache writes at 1.25x input, cache reads at 0.1x input',
     baseline: {
       loop: 'full transcript: every turn re-sends the system prompt, the tool list and the whole conversation; one tool call per turn',
@@ -174,7 +174,7 @@ export async function runTaskBenchmark({
         try {
           const result = arm.kind === 'scope'
             ? await runScopeTask({ task, arm, workspace, ownerId: owner, db, mode, cap, apiKey })
-            : await runBaselineTask({ task, arm, workspace, mode, cap, apiKey });
+            : await runBaselineTask({ task, arm, workspace, mode, cap, apiKey, ownerId: owner });
           finished.push({ arm, result });
         } catch (err) {
           finished.push({ arm, row: errorRow(task, arm, err) });
@@ -184,7 +184,7 @@ export async function runTaskBenchmark({
         let row = early;
         if (!row) {
           try {
-            const check = await objectiveCheck(task, { resultDir: result.resultDir, workspace, label: arm.name, ...(sandbox ? { sandbox } : {}) });
+            const check = await objectiveCheck(task, { resultDir: result.resultDir, answers: result.answers, workspace, label: arm.name, ...(sandbox ? { sandbox } : {}) });
             row = taskRow({ task, arm, result: { ...result, check } });
           } catch (err) {
             row = errorRow(task, arm, err);
