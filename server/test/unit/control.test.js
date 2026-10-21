@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
-import { describe, test } from 'node:test';
+import { beforeEach, describe, test } from 'node:test';
 import { ControlError, controlUrl, readJson } from '../../src/control/client.js';
-import { PLAN_TTL_MS, controlState } from '../../src/control/plan.js';
+import { FAILURE_TTL_MS, PLAN_TTL_MS, controlState, forgetFailures } from '../../src/control/plan.js';
 import { MAX_ATTEMPTS, PlatformUnavailable, parseSse, platformCall, sourcesOf } from '../../src/control/platform.js';
 import { challengeFor, newState, newVerifier, signinUrl, startSignIn, stateMatches } from '../../src/control/signin.js';
 import { openToken, sealToken } from '../../src/control/tokenBox.js';
@@ -227,6 +227,9 @@ describe('control plane link: plan cache', () => {
     return store;
   }
   const linked = (me, fetchedAt) => ({ ownerId: 'o', token: TOKEN, email: 'a@b.c', devMode: false, me, meFetchedAt: fetchedAt });
+  // Every test here uses owner 'o'; a failure one test leaves must not hold
+  // back the next one's refresh.
+  beforeEach(() => forgetFailures());
 
   test('signed out is Free, and no request is made', async () => {
     const fetchImpl = scriptedFetch([]);
@@ -313,6 +316,101 @@ describe('control plane link: plan cache', () => {
     assert.deepEqual([state.plan, state.reason], ['free', 'not_configured']);
   });
 
+  test('with no CONTROL_URL even a fresh cached answer grants nothing: Free, not configured', async () => {
+    delete process.env.CONTROL_URL;
+    const store = memoryStore(linked(meFor('engineer'), new Date()));
+    const fetchImpl = scriptedFetch([]);
+    for (const refresh of [false, true]) {
+      const state = await controlState('o', { store, fetchImpl, refresh });
+      assert.deepEqual(
+        [state.configured, state.signedIn, state.online, state.plan, state.reason],
+        [false, true, false, 'free', 'not_configured']
+      );
+      assert.equal(state.account.plan, 'engineer', 'the last answer is still shown');
+    }
+    assert.equal(fetchImpl.calls.length, 0);
+    assert.ok(store.link.me, 'the cache is kept for when CONTROL_URL comes back');
+  });
+
+  test('after a failed refresh the control plane is not asked again for a while', async () => {
+    process.env.CONTROL_URL = base;
+    try {
+      const now = Date.now();
+      const store = memoryStore(linked(meFor('engineer'), new Date(now - 2 * PLAN_TTL_MS)));
+      const fetchImpl = scriptedFetch([new TypeError('fetch failed'), jsonResponse(200, meFor('student'))]);
+      const first = await controlState('o', { store, fetchImpl, now });
+      assert.deepEqual([first.plan, first.reason, first.refreshFailed], ['free', 'offline', true]);
+      assert.equal(fetchImpl.calls.length, 1);
+
+      // Within the window: answered at once, without a request, forced or not.
+      for (const refresh of [false, true]) {
+        const held = await controlState('o', { store, fetchImpl, now: now + FAILURE_TTL_MS - 1, refresh });
+        assert.deepEqual([held.plan, held.online, held.reason, held.refreshFailed], ['free', false, 'offline', true]);
+      }
+      assert.equal(fetchImpl.calls.length, 1, 'no request inside the window');
+
+      // After it: asked again, and the answer clears the failure.
+      const later = await controlState('o', { store, fetchImpl, now: now + FAILURE_TTL_MS });
+      assert.deepEqual([later.plan, later.online, later.refreshFailed], ['student', true, false]);
+      assert.equal(fetchImpl.calls.length, 2);
+    } finally {
+      delete process.env.CONTROL_URL;
+    }
+  });
+
+  test('a failed forced refresh keeps serving a plan still within its TTL', async () => {
+    process.env.CONTROL_URL = base;
+    try {
+      const now = Date.now();
+      // Confirmed with two seconds of its TTL left.
+      const store = memoryStore(linked(meFor('engineer'), new Date(now - PLAN_TTL_MS + 2000)));
+      const fetchImpl = scriptedFetch([jsonResponse(503, { error: 'busy', code: 'unavailable' })]);
+      const state = await controlState('o', { store, fetchImpl, now, refresh: true });
+      assert.deepEqual([state.plan, state.online, state.stale, state.refreshFailed], ['engineer', true, false, true]);
+      // Still within the TTL and the failure window: the same, with no request.
+      const again = await controlState('o', { store, fetchImpl, now: now + 1000, refresh: true });
+      assert.deepEqual([again.plan, again.online], ['engineer', true]);
+      assert.equal(fetchImpl.calls.length, 1);
+      // Once the TTL runs out inside the window, the plan is Free until the control plane answers.
+      const expired = await controlState('o', { store, fetchImpl, now: now + 2000 });
+      assert.deepEqual([expired.plan, expired.online, expired.reason], ['free', false, 'offline']);
+      assert.equal(fetchImpl.calls.length, 1);
+    } finally {
+      delete process.env.CONTROL_URL;
+    }
+  });
+
+  test('a new sign-in (a new token) is not held back by the old link\'s failure', async () => {
+    process.env.CONTROL_URL = base;
+    try {
+      const now = Date.now();
+      const store = memoryStore(linked(null, null));
+      const fetchImpl = scriptedFetch([new TypeError('fetch failed'), jsonResponse(200, meFor('student'))]);
+      assert.equal((await controlState('o', { store, fetchImpl, now })).reason, 'offline');
+      store.link = { ...linked(null, null), token: `sst_${'b'.repeat(43)}` };
+      const state = await controlState('o', { store, fetchImpl, now: now + 1 });
+      assert.deepEqual([state.plan, state.online], ['student', true]);
+      assert.equal(fetchImpl.calls.length, 2);
+    } finally {
+      delete process.env.CONTROL_URL;
+    }
+  });
+
+  test('a 401 is not remembered as a failure: it signs out at once', async () => {
+    process.env.CONTROL_URL = base;
+    try {
+      const now = Date.now();
+      const store = memoryStore(linked(meFor('student'), new Date(0)));
+      const fetchImpl = scriptedFetch([new TypeError('fetch failed'), jsonResponse(401, { error: 'Sign in again.', code: 'unauthenticated' })]);
+      assert.equal((await controlState('o', { store, fetchImpl, now })).reason, 'offline');
+      const state = await controlState('o', { store, fetchImpl, now: now + FAILURE_TTL_MS });
+      assert.deepEqual([state.signedIn, state.reason], [false, 'signed_out']);
+      assert.equal(store.link, null);
+    } finally {
+      delete process.env.CONTROL_URL;
+    }
+  });
+
   test('a burst of reads after the cache expires shares one refresh', async () => {
     process.env.CONTROL_URL = base;
     try {
@@ -327,8 +425,14 @@ describe('control plane link: plan cache', () => {
   });
 
   test('a plan name the engine does not know is Free', async () => {
-    const store = memoryStore(linked({ ...meFor('student'), account: { plan: 'platinum' } }, new Date()));
-    assert.equal((await controlState('o', { store })).plan, 'free');
+    process.env.CONTROL_URL = base;
+    try {
+      const store = memoryStore(linked({ ...meFor('student'), account: { plan: 'platinum' } }, new Date()));
+      const state = await controlState('o', { store });
+      assert.deepEqual([state.online, state.plan], [true, 'free']);
+    } finally {
+      delete process.env.CONTROL_URL;
+    }
   });
 });
 

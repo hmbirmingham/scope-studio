@@ -271,8 +271,11 @@ port.stream({ messages, maxTokens, signal, purpose })
 The `plan` passed to `selectAdapter` is the control plane's, from
 `currentPlan(ownerId)` / `controlState(ownerId)` in
 `server/src/control/plan.js`: `GET /v1/me`, cached per local user for five
-minutes. Signed out, offline or unconfigured (`CONTROL_URL` unset), it is
-`free`. The engine keeps no billing tables of its own.
+minutes. Signed out, offline or unconfigured (`CONTROL_URL` unset, even with
+a cached answer), it is `free`. After a failed refresh the control plane is
+not asked again for 30 seconds; a plan confirmed within the five minutes is
+still served meanwhile. The same plan decides whether an agent may have
+`modelPolicy: 'own_key'`. The engine keeps no billing tables of its own.
 
 `selectAdapter({ policy, purpose, hard, online, plan, hasOwnKey, privateContext })`
 returns which adapter a step uses and why. The runner calls `selectAdapter`
