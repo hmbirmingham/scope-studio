@@ -1,0 +1,38 @@
+{
+  "$schema": "https://schemas.kicad.org/drc.v1.json",
+  "coordinate_units": "mm",
+  "date": "2026-10-21T10:00:00+0000",
+  "kicad_version": "8.0.5",
+  "schematic_parity": [],
+  "source": "ldo-led.kicad_pcb",
+  "unconnected_items": [
+    {
+      "description": "Missing connection between items",
+      "items": [
+        { "description": "Pad 1 [+5V] of J1 on F.Cu", "pos": { "x": 110, "y": 100 }, "uuid": "7d3a9b20-1c2e-4f60-8a10-000000000151" },
+        { "description": "Pad 1 [+5V] of C1 on F.Cu", "pos": { "x": 117.05, "y": 106 }, "uuid": "7d3a9b20-1c2e-4f60-8a10-000000000170" }
+      ],
+      "severity": "error",
+      "type": "unconnected_items"
+    },
+    {
+      "description": "Missing connection between items",
+      "items": [
+        { "description": "Pad 2 [/LED_A] of R1 on F.Cu", "pos": { "x": 138, "y": 100.825 }, "uuid": "7d3a9b20-1c2e-4f60-8a10-000000000191" },
+        { "description": "Pad 2 [/LED_A] of D1 on F.Cu", "pos": { "x": 138.7875, "y": 106 }, "uuid": "7d3a9b20-1c2e-4f60-8a10-000000000198" }
+      ],
+      "severity": "error",
+      "type": "unconnected_items"
+    }
+  ],
+  "violations": [
+    {
+      "description": "Silkscreen clipped by solder mask",
+      "items": [
+        { "description": "Reference field of C2", "pos": { "x": 132, "y": 104 }, "uuid": "7d3a9b20-1c2e-4f60-8a10-000000000176" }
+      ],
+      "severity": "warning",
+      "type": "silk_over_copper"
+    }
+  ]
+}
