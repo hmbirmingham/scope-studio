@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { mkdtemp, readdir, readFile, writeFile } from 'node:fs/promises';
+import { mkdtemp, readdir, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join, resolve, sep } from 'node:path';
 import { after, before, beforeEach, describe, test } from 'node:test';
@@ -222,6 +222,7 @@ describe('agent runner', () => {
   after(async () => {
     for (const instance of workers.splice(0)) instance.abandon();
     await server.close();
+    await rm(workdir, { recursive: true, force: true });
   });
 
   test('a multi-step run plans, acts, verifies and writes its memory into the graph', async () => {
@@ -257,7 +258,9 @@ describe('agent runner', () => {
     assert.equal(byType('plan').length, 1);
     assert.equal(run.plan_node_id, byType('plan')[0].id);
     assert.equal(byType('step').length, 3);
-    assert.equal(byType('finding').length, 2);
+    // Two from the capabilities, and the run's conclusion from the final step.
+    assert.equal(byType('finding').length, 3);
+    assert.ok(byType('finding').some((node) => node.content === 'all counted'));
     assert.equal(byType('artifact').length, 1);
     assert.match(byType('artifact')[0].content, /line-count\.csv\n\nfile,lines\na\.js,3/);
     assert.ok(nodes.every((node) => node.source === 'agent' && node.project === PROJECT && node.owner_id === ownerId && node.privacy === 'cloud'));
@@ -266,7 +269,7 @@ describe('agent runner', () => {
     const count = (type) => links.filter((link) => link.type === type).length;
     assert.equal(count('part_of'), 3, 'every step is part of the plan');
     assert.equal(count('follows'), 2, 'each step follows the previous one');
-    assert.equal(count('produces'), 3, 'steps produce their notes');
+    assert.equal(count('produces'), 4, 'steps produce their notes');
     assert.ok(count('derived_from') >= 3, 'notes are derived from the slice they were read from');
     const planId = run.plan_node_id;
     assert.ok(links.filter((link) => link.type === 'part_of').every((link) => link.target_id === planId));
@@ -395,6 +398,33 @@ describe('agent runner', () => {
     [approval] = await approvals();
     assert.equal(approval.status, 'approved');
   });
+
+  for (const [label, change, reason] of [
+    ['an override that now denies', (id) => server.pool.query(`UPDATE agents SET overrides = '{"run_scripts": "deny"}' WHERE id = $1`, [id]), 'denied: override'],
+    ['a hard denial (the project left the write scope)', (id) => server.pool.query(`UPDATE agents SET scopes = jsonb_set(scopes, '{write,projects}', '[]') WHERE id = $1`, [id]), 'denied: outside_write_scope'],
+    ['a role that no longer carries the capability', (id) => server.pool.query(`UPDATE agents SET role = jsonb_set(role, '{tags}', '["graph"]') WHERE id = $1`, [id]), 'capability_not_in_role'],
+  ]) {
+    test(`an approved step is decided again before it runs: ${label} fails it`, async () => {
+      const agentId = await makeAgent({ level: 'supervised' });
+      const runId = await makeRun(agentId);
+      local.push(plan, choose('fixture.count_lines', { file: 'a.js' }));
+      const instance = worker();
+      assert.deepEqual(await instance.drain(), [{ runId, outcome: 'parked' }]);
+      await server.pool.query("UPDATE agent_approvals SET status = 'approved', resolved_at = now() WHERE run_id = $1", [runId]);
+      await change(agentId);
+      await server.pool.query("UPDATE agent_runs SET status = 'queued' WHERE id = $1", [runId]);
+      local.push(done);
+      await instance.drain();
+
+      assert.equal(invocations.count, 0, 'the capability never ran');
+      const rows = await steps(runId);
+      assert.equal(rows[1].status, 'failed');
+      assert.equal(rows[1].error, reason);
+      const [node] = (await server.pool.query('SELECT content FROM nodes WHERE id = $1', [rows[1].node_ids[0]])).rows;
+      assert.match(node.content, new RegExp(`Reason: ${reason}`));
+      assert.equal((await runRow(runId)).status, 'succeeded', 'the run continues without the step');
+    });
+  }
 
   test('a rejected step is recorded and the run continues without it', async () => {
     const agentId = await makeAgent({ level: 'supervised' });

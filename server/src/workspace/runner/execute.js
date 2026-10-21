@@ -5,9 +5,11 @@ import { effectiveBudget, exceededLimit, wallRemaining } from './budget.js';
 import { chooserMessages, parseChoice, planMessages, validateInput } from './chooser.js';
 import { stepTotals } from './ledger.js';
 import { createModelRouter } from './models.js';
+import { createRunSandbox, removeRunSandbox } from './sandbox.js';
 import { packSlice } from './slice.js';
 import {
   MAX_ATTEMPTS,
+  TERMINAL_STATUSES,
   getStepAt,
   loadAgent,
   presentRun,
@@ -76,7 +78,23 @@ function untilAborted(promise, signal) {
   });
 }
 
+// Runs the claimed run, then removes its sandbox if the run ended. A run
+// that parked, paused or was handed back keeps its sandbox for the resume.
 export async function executeRun(claimed, deps) {
+  const outcome = await executeSteps(claimed, deps);
+  if (outcome === 'abandoned') return outcome;
+  const db = deps.db ?? getPool();
+  try {
+    const { rows: [row] } = await db.query("SELECT status, checkpoint ? 'sandbox' AS has_sandbox FROM agent_runs WHERE id = $1", [claimed.id]);
+    if (row && row.has_sandbox && TERMINAL_STATUSES.includes(row.status)) await removeRunSandbox(claimed.id, { db, env: deps.sandboxEnv });
+  } catch (err) {
+    // A sandbox that could not be removed now is removed by a later sweep.
+    deps.onSandboxError?.(err);
+  }
+  return outcome;
+}
+
+async function executeSteps(claimed, deps) {
   const {
     workerId,
     leaseMs,
@@ -88,6 +106,7 @@ export async function executeRun(claimed, deps) {
     heartbeatMs = 1000,
     isAbandoned = () => false,
     shouldRelease = () => false,
+    sandboxEnv,
     db = getPool(),
   } = deps;
   const run = claimed;
@@ -129,6 +148,24 @@ export async function executeRun(claimed, deps) {
   const localPath = run.project
     ? (await db.query('SELECT local_path FROM project_settings WHERE owner_id = $1 AND project = $2', [run.owner_id, run.project])).rows[0]?.local_path ?? null
     : null;
+  // The run's sandbox, made the first time a step needs it. Its record is
+  // stored in the checkpoint at once (not at the next checkpoint), so a crash
+  // right after making it still finds it.
+  const sandboxes = createRunSandbox({
+    runId: run.id,
+    localPath,
+    record: state.checkpoint.sandbox ?? null,
+    env: sandboxEnv,
+    persist: async (record) => {
+      const { rowCount } = await db.query(
+        `UPDATE agent_runs SET checkpoint = jsonb_set(checkpoint, '{sandbox}', $3::jsonb)
+         WHERE id = $1 AND status = 'running' AND lease_owner = $2`,
+        [run.id, workerId, JSON.stringify(record)]
+      );
+      if (rowCount !== 1) throw new Stop('lost');
+      state.checkpoint = { ...state.checkpoint, sandbox: record };
+    },
+  });
   const stepAdapters = new Map();
   const models = createModelRouter({
     agent: () => agent,
@@ -357,6 +394,9 @@ export async function executeRun(claimed, deps) {
 
   // Act, verify, write back and checkpoint for an allowed capability.
   async function act(step, { capability, choice, sources, privateContext, signal }) {
+    // Every capability sees the run's sandbox once it has one, so a read after
+    // an edit reads the edited copy, not the user's checkout.
+    const sandbox = await sandboxes.current();
     const emit = ({ type, data = {} } = {}) => {
       if (!CAPABILITY_EVENTS.has(type)) throw new Error(`a capability may not emit ${type}`);
       publish(type, { ...data, stepId: step.id });
@@ -368,6 +408,7 @@ export async function executeRun(claimed, deps) {
       step: presentStep({ ...step, capability: capability.name, input: choice.input }),
       project: run.project,
       localPath,
+      ...(sandbox ? { sandbox } : {}),
       model: models.portFor({ hard: choice.hard, privateContext, stepId: step.id }),
       signal,
       emit,
@@ -469,6 +510,28 @@ export async function executeRun(claimed, deps) {
     return decide(agent, 'write_notes', { project: run.project, online, privateContext: slice.privateContext, inSandbox: false });
   }
 
+  // can() for a chosen capability. `inSandbox` is true only when the
+  // capability will actually run in the run's sandbox.
+  async function capabilityDecision(capability, privateContext) {
+    const inSandbox = await sandboxes.applies(capability);
+    return { inSandbox, ...decide(agent, capability.permission, { project: run.project, source: capability.source, inSandbox, online, privateContext }) };
+  }
+
+  // Makes (or finds) the sandbox an allowed capability runs in, then acts. A
+  // sandbox that cannot be made fails the step, like any capability error.
+  async function actAllowed(step, { capability, choice, sources, privateContext, signal, inSandbox }) {
+    if (inSandbox) {
+      try {
+        await sandboxes.ensure();
+      } catch (err) {
+        if (err instanceof Stop || err instanceof Abandoned) throw err;
+        return failStep(step, { reason: `sandbox_error: ${err?.message ?? 'failed'}`, sources, capability: capability.name, input: choice.input, detail: { choice }, summary: choice.summary });
+      }
+      await stage();
+    }
+    return act(step, { capability, choice, sources, privateContext, signal });
+  }
+
   async function resumeParked(step, signal) {
     const { rows: [approval] } = await db.query(
       'SELECT id, status FROM agent_approvals WHERE step_id = $1 ORDER BY created_at DESC, id DESC LIMIT 1',
@@ -504,11 +567,32 @@ export async function executeRun(claimed, deps) {
       return 'continue';
     }
 
-    if (step.kind === 'plan') return planStep(step, { slice: { nodes: sources, privateContext }, signal });
+    // The approval was given for the agent as it was then. can() is asked
+    // again before acting, so a hard denial since (the agent's scope changed,
+    // the context became private, the engine went offline) or an override
+    // that now denies fails the step instead of running it. An `ask` stands:
+    // that is what the user just approved.
+    if (step.kind === 'plan') {
+      const { decision, reason } = planDecision({ privateContext });
+      if (decision === 'deny') {
+        await checkpoint(step, { status: 'failed', capability: null, input: {}, error: `denied:${reason}`, sources, reason: `denied: ${reason}`, detail });
+        await finish('failed', { error: `plan_denied:${reason}` });
+        return 'finished';
+      }
+      return planStep(step, { slice: { nodes: sources, privateContext }, signal });
+    }
     const capability = getCapability(step.capability);
     if (!capability) return failStep(step, { reason: 'unknown_capability', sources, capability: step.capability, input: step.input, detail });
+    // The role may have been edited while the step waited.
+    if (!capabilitiesForTags(agent.role?.tags ?? []).some((entry) => entry.name === capability.name)) {
+      return failStep(step, { reason: 'capability_not_in_role', sources, capability: capability.name, input: step.input, detail });
+    }
+    const { decision, reason, inSandbox } = await capabilityDecision(capability, privateContext);
+    if (decision === 'deny') {
+      return failStep(step, { reason: `denied: ${reason}`, sources, capability: capability.name, input: step.input, detail, summary: detail.choice?.summary ?? null });
+    }
     await stage();
-    return act(step, { capability, choice: detail.choice, sources, privateContext, signal });
+    return actAllowed(step, { capability, choice: detail.choice, sources, privateContext, signal, inSandbox });
   }
 
   async function runStep(signal) {
@@ -572,7 +656,19 @@ export async function executeRun(claimed, deps) {
     const choice = parsed.choice;
 
     if (choice.done && !choice.capability) {
-      await checkpoint(step, { status: 'done', capability: null, input: {}, output: { done: true, summary: choice.summary }, sources: slice.nodes, summary: choice.summary ?? 'Run complete', detail: { choice } });
+      // The run's conclusion is something later runs should know, so its
+      // summary is kept as a finding of the final step, derived from what
+      // that step read.
+      await checkpoint(step, {
+        status: 'done',
+        capability: null,
+        input: {},
+        output: { done: true, summary: choice.summary },
+        sources: slice.nodes,
+        summary: choice.summary ?? 'Run complete',
+        detail: { choice },
+        notes: notesFrom({ findings: choice.summary ? [choice.summary] : [] }),
+      });
       await finish('succeeded');
       return 'finished';
     }
@@ -588,8 +684,7 @@ export async function executeRun(claimed, deps) {
     await updateStep(step.id, { capability: capability.name, input: choice.input }, db);
     publish('step.started', { stepId: step.id, index, capability: capability.name });
 
-    const context = { project: run.project, source: capability.source, inSandbox: false, online, privateContext: slice.privateContext };
-    const { decision, reason } = decide(agent, capability.permission, context);
+    const { decision, reason, inSandbox } = await capabilityDecision(capability, slice.privateContext);
     if (decision === 'deny') {
       return failStep(step, { reason: `denied: ${reason}`, sources: slice.nodes, capability: capability.name, input: choice.input, detail: { choice }, summary: choice.summary });
     }
@@ -603,7 +698,7 @@ export async function executeRun(claimed, deps) {
         detail: { choice, permission: capability.permission, sourceIds: sourceIdsOf(slice), privateContext: slice.privateContext, summary },
       });
     }
-    return act(step, { capability, choice, sources: slice.nodes, privateContext: slice.privateContext, signal });
+    return actAllowed(step, { capability, choice, sources: slice.nodes, privateContext: slice.privateContext, signal, inSandbox });
   }
 
   // Marks the step in flight when a stop interrupts it, so the record says

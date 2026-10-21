@@ -1,9 +1,11 @@
 import { randomUUID } from 'node:crypto';
 import { hostname } from 'node:os';
 import { getPool } from '../../db/pool.js';
+import { registerBuiltInPlugins } from '../../plugins/registry.js';
 import { workspaceEvents } from '../events.js';
 import { localAdapter, platformAdapter } from '../modelPort.js';
 import { executeRun } from './execute.js';
+import { sweepSandboxes } from './sandbox.js';
 import { claimRun } from './store.js';
 
 // The worker: claims runs from the durable queue and executes them. Each of
@@ -13,6 +15,9 @@ import { claimRun } from './store.js';
 
 export const DEFAULT_LEASE_MS = 30_000;
 export const DEFAULT_POLL_MS = 1_000;
+// How often an idle worker looks for sandboxes of runs that ended while no
+// worker held them.
+export const DEFAULT_SWEEP_MS = 60_000;
 
 // The adapters a background run can use. own_key is absent on purpose: the
 // user's Key Pro key travels per request and is never stored, so a run that
@@ -33,13 +38,21 @@ export function createWorker({
   gather,
   events = workspaceEvents,
   db = getPool(),
+  sandboxEnv,
+  sweepMs = DEFAULT_SWEEP_MS,
+  // The capabilities a run can use come from the registered plug-ins, so
+  // the worker registers the built-in ones itself (safe to repeat). Tests
+  // that register their own pass false.
+  registerPlugins = true,
   onError = (err) => console.error(`agent worker: ${err.message}`),
 } = {}) {
+  if (registerPlugins) registerBuiltInPlugins();
   let running = false;
   let stopping = false;
   let abandoned = false;
   const loops = [];
   const sleepers = new Set();
+  let lastSweep = 0;
 
   function sleep(ms) {
     return new Promise((resolve) => {
@@ -76,8 +89,16 @@ export function createWorker({
       db,
       isAbandoned: () => abandoned,
       shouldRelease: () => stopping,
+      sandboxEnv,
+      onSandboxError: onError,
     });
     return { runId: claimed.id, outcome };
+  }
+
+  // Removes the sandboxes of runs that ended while no worker held them.
+  function sweep() {
+    lastSweep = Date.now();
+    return sweepSandboxes({ db, env: sandboxEnv, onError });
   }
 
   // Runs the queue until it is empty (tests use this to step deterministically).
@@ -99,7 +120,10 @@ export function createWorker({
       } catch (err) {
         onError(err);
       }
-      if (!result && running && !stopping) await sleep(pollMs);
+      if (!result && running && !stopping) {
+        if (Date.now() - lastSweep >= sweepMs) await sweep().catch(onError);
+        await sleep(pollMs);
+      }
     }
   }
 
@@ -107,6 +131,7 @@ export function createWorker({
     id,
     runNext,
     drain,
+    sweep,
     start() {
       if (running) return;
       running = true;

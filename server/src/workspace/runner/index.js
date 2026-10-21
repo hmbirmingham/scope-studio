@@ -1,6 +1,7 @@
 // The agent runner (path B): the durable queue, the worker that executes the
 // run-step protocol, and the scheduler for recurring tasks.
-export { createWorker, defaultAdapters, DEFAULT_LEASE_MS, DEFAULT_POLL_MS } from './worker.js';
+export { createWorker, defaultAdapters, DEFAULT_LEASE_MS, DEFAULT_POLL_MS, DEFAULT_SWEEP_MS } from './worker.js';
+export { SANDBOX_PERMISSIONS, createRunSandbox, removeRunSandbox, sweepSandboxes } from './sandbox.js';
 export { createScheduler, enqueueDueTasks, DEFAULT_SCHEDULER_MS } from './scheduler.js';
 export { executeRun, MAX_CONSECUTIVE_FAILURES } from './execute.js';
 export { MAX_ATTEMPTS, TERMINAL_STATUSES, presentRun, presentStep } from './store.js';

@@ -1,6 +1,5 @@
 import loadEnv from './config/env.js';
 import createApp from './app.js';
-import { registerBuiltInPlugins } from './plugins/registry.js';
 import { createScheduler, createWorker, setRunQueuedListener, stopWithin } from './workspace/runner/index.js';
 
 const env = loadEnv();
@@ -14,7 +13,6 @@ app.listen(port, () => {
 // The agent runner works in the background of the engine process. Tests
 // create their own workers and schedulers, so none is started there.
 if (env.nodeEnv !== 'test') {
-  registerBuiltInPlugins();
   const workers = Number.parseInt(process.env.WORKSPACE_WORKERS ?? '', 10);
   const worker = createWorker({
     concurrency: Number.isInteger(workers) && workers > 0 ? workers : 1,
