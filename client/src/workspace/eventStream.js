@@ -8,7 +8,8 @@
 // this module adds is (1) a resync signal after any reconnect, because the
 // replay buffer is bounded and the HTTP records are the durable truth, (2)
 // reopening when the browser gives up for good (a non-200 answer closes an
-// EventSource permanently), and (3) dropping an event already delivered, since
+// EventSource permanently; a new EventSource cannot send Last-Event-ID, so
+// the resync over HTTP is what catches it up), and (3) dropping an event already delivered, since
 // a replay may overlap what arrived just before the connection broke.
 
 export const EVENT_TYPES = [

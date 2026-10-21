@@ -31,9 +31,12 @@ export default function ApprovalActions({ approval, label, onResolved }) {
       onResolved?.(result);
     } catch (failure) {
       if (failure.status === 409) {
-        setResolved(failure.body?.approval?.status ?? 'expired');
+        const current = failure.body?.approval ?? { id: approval.id, status: 'expired' };
+        setResolved(current.status);
         dropApproval(approval.id);
         setProblem('This was already decided.');
+        // A list showing decided approvals is as stale as this row was.
+        onResolved?.(current);
       } else {
         setProblem(failure.message);
       }

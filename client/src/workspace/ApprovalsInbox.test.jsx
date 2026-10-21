@@ -3,6 +3,7 @@ import userEvent from '@testing-library/user-event';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import ApprovalsBadge from './ApprovalsBadge.jsx';
 import ApprovalsInbox from './ApprovalsInbox.jsx';
+import { ApiError } from './api.js';
 import { FakeEventSource, workspaceEvent } from '../test/fakeEventSource.js';
 import { AGENT, fakeApi, renderWithWorkspace } from '../test/workspace.jsx';
 
@@ -50,6 +51,23 @@ describe('approvals inbox and badge', () => {
     expect(screen.queryByLabelText(/pending/)).not.toBeInTheDocument();
     act(() => FakeEventSource.latest().emit(workspaceEvent('approval.requested', { data: { approvalId: 'p3', capability: 'apply_merge', summary: 'Merge it' } })));
     expect(await screen.findByLabelText('1 pending')).toBeInTheDocument();
+  });
+
+  it('refreshes the All list when someone else decided first', async () => {
+    const user = userEvent.setup();
+    let decided = false;
+    const listApprovals = vi.fn(async (status) => {
+      if (status === 'pending') return [];
+      return [{ ...pending('p4', 'Open PR for tests'), status: decided ? 'approved' : 'pending' }];
+    });
+    const resolveApproval = vi.fn(async () => {
+      decided = true;
+      throw new ApiError(409, 'already_resolved', 'this approval is approved', { approval: { id: 'p4', status: 'approved' } });
+    });
+    renderWithWorkspace(<ApprovalsInbox />, { api: fakeApi({ listApprovals, resolveApproval }) });
+    await user.click(screen.getByLabelText('All'));
+    await user.click(await screen.findByRole('button', { name: 'Approve: Open PR for tests' }));
+    await waitFor(() => expect(listApprovals.mock.calls.filter(([status]) => status !== 'pending')).toHaveLength(2));
   });
 
   it('shows decided approvals under All', async () => {

@@ -41,6 +41,7 @@ export class GraphEngine {
     // Nodes an agent is touching or just wrote; sampled per frame, fed by
     // markAgentNodes from the activity stream, never by React state.
     this.agentCursor = new AgentCursor();
+    this.agentSample = null;
     this.frameTime = 0;
 
     this.camera = { x: 0, y: 0, scale: 1, targetX: 0, targetY: 0, targetScale: 1 };
@@ -343,7 +344,9 @@ export class GraphEngine {
   nodeState(node) {
     if (node.id === this.selectedId) return 'selected';
     if (this.active.has(node.id)) return 'active';
-    if (this.agentCursor.sample(node.id, this.frameTime)) return 'agent';
+    // Kept for drawNode, so a lit node is sampled once per frame, not twice.
+    this.agentSample = this.agentCursor.sample(node.id, this.frameTime);
+    if (this.agentSample) return 'agent';
     if (node.id === this.hoveredId) return 'hovered';
     return 'rest';
   }
@@ -389,7 +392,7 @@ export class GraphEngine {
     const state = this.nodeState(node);
     // An agent's colour rises out of the resting obsidian and sinks back into
     // it as the mark fades, so a node at rest never carries a hue.
-    const agent = state === 'agent' ? this.agentCursor.sample(node.id, this.frameTime) : null;
+    const agent = state === 'agent' ? this.agentSample : null;
     const hue = state === 'selected' ? SELECTED : state === 'active' ? ACTIVE : agent ? mixColor(REST_CORE, agent.color, agent.intensity) : null;
 
     if (hue) {

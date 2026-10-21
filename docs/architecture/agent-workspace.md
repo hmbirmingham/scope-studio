@@ -370,9 +370,12 @@ user sees.
 The workspace UI (`client/src/workspace/`) registers three tabs: Agents
 (builder, kill switch, tasks), Activity (a live step stream per run) and
 Approvals. It holds one `EventSource` on `/api/workspace/events` for the
-whole page; the browser's reconnect resumes with `Last-Event-ID`, the client
-drops any replayed event it already delivered, and after every reconnect it
-reloads the open run and the pending approvals over HTTP.
+whole page; the browser's own retries resume with `Last-Event-ID`, the
+client drops any replayed event it already delivered, and after every
+reconnect it reloads the open run and the pending approvals over HTTP. When
+the browser gives up (the source is closed) the client opens a new
+`EventSource`, which cannot send `Last-Event-ID`, so that reload over HTTP is
+what catches it up.
 
 Visual language for agents on the map: obsidian circles with no hue at rest;
 the agent's colour appears only on the nodes it is touching or just wrote.

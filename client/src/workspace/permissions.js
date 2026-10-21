@@ -55,6 +55,9 @@ export function levelDefault(level, capability) {
 // hard denials that depend on where and how a step runs.
 export function expectedDecision(level, overrides, capability) {
   const override = overrides?.[capability];
+  // No override lifts the hard limit on model-written code: can() denies it
+  // outside the sandbox whatever the setting, so an Allow says so.
+  if (override === 'allow' && capability === 'run_generated_code') return { decision: 'allow', note: 'in sandbox only' };
   if (override === 'allow' || override === 'ask' || override === 'deny') return { decision: override, note: 'override' };
   return levelDefault(level, capability);
 }

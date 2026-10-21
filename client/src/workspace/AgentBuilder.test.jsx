@@ -3,6 +3,7 @@ import userEvent from '@testing-library/user-event';
 import { describe, expect, it, vi } from 'vitest';
 import AgentBuilder from './AgentBuilder.jsx';
 import { ApiError } from './api.js';
+import { CAPABILITIES } from './permissions.js';
 import { AGENT, fakeApi, renderWithWorkspace } from '../test/workspace.jsx';
 
 function renderBuilder({ agent = null, api = fakeApi(), onSaved = vi.fn(), onClose = vi.fn() } = {}) {
@@ -142,6 +143,39 @@ describe('AgentBuilder', () => {
 
     fireEvent.click(screen.getByLabelText('Online'));
     await waitFor(() => expect(screen.getByTestId('effective-web')).toHaveTextContent('Deny'));
+  });
+
+  it('does not show answers for the previous situation while the new one is checked, or after a failed check', async () => {
+    let failNext = false;
+    const api = fakeApi({
+      listAgents: vi.fn(async () => [AGENT]),
+      can: vi.fn((id, capability, context) => {
+        if (failNext) return Promise.reject(new Error('server unreachable'));
+        // Offline answers never arrive, so only the stale online answer could fill the cell.
+        if (!context.online) return new Promise(() => {});
+        return Promise.resolve({ decision: 'ask', reason: 'level' });
+      }),
+    });
+    renderBuilder({ agent: AGENT, api });
+    await waitFor(() => expect(screen.getByTestId('effective-web')).toHaveTextContent('Ask'));
+
+    fireEvent.click(screen.getByLabelText('Online'));
+    expect(screen.getByTestId('effective-web')).toHaveTextContent('…');
+    expect(screen.getByTestId('effective-web')).not.toHaveTextContent('Ask');
+
+    failNext = true;
+    fireEvent.click(screen.getByLabelText('Holds private nodes'));
+    expect(await screen.findByText(/Could not check permissions: server unreachable/)).toBeInTheDocument();
+    expect(screen.getByTestId('effective-web')).toHaveTextContent('…');
+  });
+
+  it('notes that an Allow override for model-written code still holds only in the sandbox', async () => {
+    const user = userEvent.setup();
+    renderBuilder();
+    const label = CAPABILITIES.find((capability) => capability.id === 'run_generated_code').label;
+    await user.selectOptions(screen.getByLabelText(`Override for ${label}`), 'allow');
+    const row = screen.getByLabelText(`Override for ${label}`).closest('tr');
+    expect(row).toHaveTextContent('Allow (in sandbox only)');
   });
 
   it('saves an edited agent with PATCH, including overrides set back to inherit', async () => {

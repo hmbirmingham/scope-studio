@@ -14,12 +14,17 @@ export default function CapabilityGrid({ agent, level, overrides, onOverride, di
     online: true,
     privateContext: false,
   }));
-  const [decisions, setDecisions] = useState({});
+  // Answers are kept with the situation they were asked for, and shown only
+  // while that is still the situation: a changed context shows '…' until its
+  // own answers arrive, and a failed check shows none rather than old ones.
+  const [answered, setAnswered] = useState({ key: null, decisions: {} });
   const [loadError, setLoadError] = useState(null);
 
   const agentId = agent?.id ?? null;
   const version = agent?.updatedAt ?? null;
   const state = agent?.state ?? null;
+  const key = JSON.stringify([agentId, version, state, context]);
+  const decisions = answered.key === key ? answered.decisions : {};
   useEffect(() => {
     if (!agentId) return undefined;
     let cancelled = false;
@@ -27,16 +32,18 @@ export default function CapabilityGrid({ agent, level, overrides, onOverride, di
     Promise.all(CAPABILITIES.map((capability) => api.can(agentId, capability.id, query).then((answer) => [capability.id, answer])))
       .then((entries) => {
         if (cancelled) return;
-        setDecisions(Object.fromEntries(entries));
+        setAnswered({ key, decisions: Object.fromEntries(entries) });
         setLoadError(null);
       })
       .catch((failure) => {
-        if (!cancelled) setLoadError(failure.message);
+        if (cancelled) return;
+        setAnswered({ key: null, decisions: {} });
+        setLoadError(failure.message);
       });
     return () => {
       cancelled = true;
     };
-  }, [api, agentId, version, state, context]);
+  }, [api, agentId, version, state, context, key]);
 
   const situation = (
     <fieldset className="ws-situation">
