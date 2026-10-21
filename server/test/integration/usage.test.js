@@ -1,9 +1,12 @@
 import assert from 'node:assert/strict';
 import { after, before, describe, test } from 'node:test';
+import { deleteLink } from '../../src/control/linkStore.js';
+import { linkUser, meFor, startFakeControl } from '../fakeControl.js';
 import { registeredSession, session, startServer } from '../helpers.js';
 
 describe('usage and spend', () => {
   let server;
+  let control;
   let api;
   let other;
 
@@ -15,6 +18,10 @@ describe('usage and spend', () => {
     );
 
   before(async () => {
+    // A cached plan only counts while a control plane is configured; the
+    // plans below are cached fresh, so the stand-in is never asked.
+    control = await startFakeControl();
+    process.env.CONTROL_URL = control.url;
     server = await startServer();
     api = await registeredSession(server.base);
     other = await registeredSession(server.base);
@@ -27,7 +34,11 @@ describe('usage and spend', () => {
     await record(mine, { model: 'anthropic/claude-opus-5', cost: 0.9, ageDays: 30 });
     await record(theirs, { model: 'anthropic/claude-opus-5', cost: 5 });
   });
-  after(() => server.close());
+  after(async () => {
+    delete process.env.CONTROL_URL;
+    await server.close();
+    await control.close();
+  });
 
   test('summarises the window: spend, cloud share, and a monthly projection', async () => {
     const { status, data } = await api('GET', '/api/usage?days=7');
@@ -49,7 +60,9 @@ describe('usage and spend', () => {
 
   test('weekly allowance is reported against the plan, and is absent on a own-key plan', async () => {
     const mine = (await api('GET', '/api/auth/session')).data.userId;
-    await server.pool.query("UPDATE users SET plan = 'student' WHERE id = $1", [mine]);
+    // The plan comes from the control plane; with no limits in its answer the
+    // engine's own records stand in.
+    await linkUser(server.pool, mine, 'student', { me: { ...meFor('student'), limits: null } });
     const student = (await api('GET', '/api/usage')).data;
     assert.equal(student.plan, 'student');
     assert.ok(Math.abs(student.weekly.allowanceUsd - (12 * 0.936 - 0.3) * 0.4 / (30 / 7)) < 1e-9, '40% of what $12 keeps, per week');
@@ -66,17 +79,48 @@ describe('usage and spend', () => {
     assert.ok(platform.n > 0, 'the fixture includes a platform-paid answer');
     assert.deepEqual(student.monthlyAnswers, { limit: 200, used: platform.n }, 'only platform-paid answers in the last 30 days count');
 
-    await server.pool.query("UPDATE users SET plan = 'key_pro' WHERE id = $1", [mine]);
+    await linkUser(server.pool, mine, 'key_pro');
     const keyPro = (await api('GET', '/api/usage')).data;
     assert.equal(keyPro.weekly.allowanceUsd, null);
     assert.match(keyPro.weekly.note, /own key/);
     assert.equal(keyPro.chooseCloud, true);
 
-    await server.pool.query("UPDATE users SET plan = 'free' WHERE id = $1", [mine]);
+    await linkUser(server.pool, mine, 'free');
     const free = (await api('GET', '/api/usage')).data;
     assert.deepEqual([free.chooseCloud, free.autoCloud, free.weekly.note], [false, false, 'local only']);
 
-    await server.pool.query("UPDATE users SET plan = 'free' WHERE id = $1", [mine]);
+    await deleteLink(mine, server.pool);
+  });
+
+  test("on a platform plan the control plane's ledger figures are shown, not this engine's", async () => {
+    const mine = (await api('GET', '/api/auth/session')).data.userId;
+    await linkUser(server.pool, mine, 'engineer', {
+      me: meFor('engineer', { limits: { answersUsed: 17, weeklySpentUsd: 0.75, weeklyAllowanceUsd: 1.95 } }),
+    });
+    const data = (await api('GET', '/api/usage')).data;
+    assert.equal(data.plan, 'engineer');
+    assert.deepEqual(data.monthlyAnswers, { limit: 340, used: 17 });
+    assert.equal(data.weekly.allowanceUsd, 1.95);
+    assert.equal(data.weekly.spentUsd, 0.75);
+    assert.ok(Math.abs(data.weekly.remainingUsd - 1.2) < 1e-9);
+    await deleteLink(mine, server.pool);
+  });
+
+  test('signed out, or with a plan the control plane has not confirmed lately, usage reports Free', async () => {
+    const mine = (await api('GET', '/api/auth/session')).data.userId;
+    assert.equal((await api('GET', '/api/usage')).data.plan, 'free', 'signed out');
+    // Confirmed an hour ago, and no control plane to ask again: offline.
+    const saved = process.env.CONTROL_URL;
+    delete process.env.CONTROL_URL;
+    try {
+      await linkUser(server.pool, mine, 'engineer', { fetchedAt: new Date(Date.now() - 60 * 60 * 1000) });
+      const offline = (await api('GET', '/api/usage')).data;
+      assert.equal(offline.plan, 'free');
+      assert.equal(offline.autoCloud, false);
+    } finally {
+      if (saved !== undefined) process.env.CONTROL_URL = saved;
+      await deleteLink(mine, server.pool);
+    }
   });
 
   test('a longer window picks up the older query', async () => {

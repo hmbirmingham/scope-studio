@@ -414,27 +414,28 @@ to the cloud, one of them to Opus for $0.055.
   the user's key header is never read, so it can never be sent.
 - **Auto is the most efficient path.** It answers locally unless the question
   is hard or the local model cannot answer at all.
-- **The allowance is enforced, not reported.** Before a platform-paid answer
-  the week's platform spend is checked; spent means no cloud.
-- Platform-paid answers need `PLATFORM_ANTHROPIC_API_KEY`; unset, Student and
-  Engineer answer locally only. There is never a default.
+- **The plan comes from the account, not the engine.** The engine signs in
+  to the control plane (`control/`, `control/API.md`) through the browser,
+  with a loopback redirect and PKCE (`server/src/control/signin.js`), and
+  keeps the device token sealed in `control_links`. Its plan rules read the
+  control plane's `GET /v1/me`, cached for five minutes per user
+  (`server/src/control/plan.js`). Signed out, offline or unconfigured
+  (`CONTROL_URL` unset), the engine runs as Free: local answers only, never an
+  error page.
+- **The allowance is enforced, not reported.** Platform-paid answers go
+  through the control plane's `POST /v1/cloud/messages`, which holds the
+  platform key, checks the plan, the month's answers and the week's spend
+  against its ledger, picks the model and charges every answer. The engine
+  never holds a platform key; it pre-checks the limits `/v1/me` last reported
+  so a spent allowance costs no round trip, and when the control plane refuses
+  it answers locally if it can. Every attempt carries a fresh `requestId`.
 - Every answer records **who paid** (`billed_to`): spend on a user's own key is
   not margin, and a total that mixes the two cannot be separated afterwards.
-- **Billing** (`billing/stripe.js`, `routes/billing.js`): each account gets one
-  Stripe Customer before its first checkout, and every webhook is matched to
-  the account through that Customer (metadata is only a fallback for accounts
-  without one, per Stripe's guidance). Stripe Checkout with
-  `managed_payments[enabled]`; Stripe's signed webhook (`Stripe-Signature`)
-  sets `users.plan` from `customer.subscription.*` and `invoice.paid` /
-  `invoice.payment_failed` events. Active, trialing and
-  past-due keep the plan (a scheduled cancellation stays active until the
-  period ends); canceled, unpaid, paused and incomplete return to Free. Stripe
-  does not deliver events in order and events can share a timestamp, so each
-  event only prompts a fresh read of the subscription from the API, and that
-  current state is applied: order and duplicates stop mattering. The endpoint
-  must use the Snapshot payload. Plan changes and cancellation go
-  through Stripe's customer portal. (Lemon Squeezy was the first choice; its
-  signup now routes to Stripe, whose Managed Payments the same team builds.)
+- **Billing** lives on the control plane (`control/src/billing`,
+  `control/src/routes/billing.js`): Stripe Checkout with Managed Payments, the
+  customer portal and the signed webhook that sets the account's plan. The
+  engine's `/api/billing` routes forward to `/v1/billing*` with the device
+  token, and hold no Stripe key, price or webhook of their own.
 
 Two caps bound the worst case rather than trusting the average: the context
 budget (4,000 tokens on the cloud tier) and `max_tokens` (2,048, against

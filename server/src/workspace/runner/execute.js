@@ -1,4 +1,5 @@
 import { getPool } from '../../db/pool.js';
+import { currentPlan } from '../../control/plan.js';
 import { capabilitiesForTags, getCapability, getVerifier } from '../capabilities.js';
 import { decide } from '../permissions.js';
 import { effectiveBudget, exceededLimit, wallRemaining } from './budget.js';
@@ -144,7 +145,9 @@ async function executeSteps(claimed, deps) {
     return 'failed';
   }
   let budget = effectiveBudget(agent.budget, run.budget);
-  const { rows: [user] } = await db.query('SELECT plan FROM users WHERE id = $1', [run.owner_id]);
+  // The plan comes from the control plane's cached /v1/me, as it does for
+  // chat. Signed out, offline or unreachable is Free: the run stays local.
+  const userPlan = await (deps.planOf ?? currentPlan)(run.owner_id).catch(() => 'free');
   const localPath = run.project
     ? (await db.query('SELECT local_path FROM project_settings WHERE owner_id = $1 AND project = $2', [run.owner_id, run.project])).rows[0]?.local_path ?? null
     : null;
@@ -170,7 +173,7 @@ async function executeSteps(claimed, deps) {
   const models = createModelRouter({
     agent: () => agent,
     run,
-    userPlan: user?.plan ?? 'free',
+    userPlan,
     online,
     adapters,
     publish,

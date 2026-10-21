@@ -104,7 +104,7 @@ subscription could not be re-read, so Stripe retries).
 Request:
 ```json
 {
-  "requestId": "uuid from the engine, reused on retry",
+  "requestId": "uuid from the engine, fresh for every attempt (a retry sends a new one)",
   "messages": [{ "role": "system" | "user" | "assistant", "content": "…" }],
   "cacheMarker": "optional, as the engine's streamChat takes it",
   "hard": false,

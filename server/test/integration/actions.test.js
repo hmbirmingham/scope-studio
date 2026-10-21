@@ -9,6 +9,7 @@ import { resetConversations } from '../../src/routing/conversation.js';
 import { resetWarmState } from '../../src/routing/warm.js';
 import { startFakeAnthropic } from '../fakeAnthropic.js';
 import { startFakeOllama } from '../fakeOllama.js';
+import { linkUser } from '../fakeControl.js';
 import { ensureCentroids, registeredSession, startServer } from '../helpers.js';
 
 const realOllama = process.env.OLLAMA_URL || 'http://localhost:11434';
@@ -45,7 +46,7 @@ describe('screen actions', { skip: onMac ? false : 'actions open things only on 
     api = await registeredSession(server.base);
     other = await registeredSession(server.base);
     // These tests exercise cloud requests, which only Key Pro may make.
-    await server.pool.query("UPDATE users SET plan = 'key_pro' WHERE id = $1", [(await api('GET', '/api/auth/session')).data.userId]);
+    await linkUser(server.pool, (await api('GET', '/api/auth/session')).data.userId, 'key_pro');
 
     await api('POST', '/api/nodes', {
       type: 'file',

@@ -1,5 +1,7 @@
 import { costUsd, streamChat as streamAnthropic } from '../lib/anthropic.js';
 import { localChatModel, streamChat as streamOllama } from '../lib/ollama.js';
+import { deviceToken } from '../control/plan.js';
+import { streamPlatform } from '../control/platform.js';
 
 // One interface for every model a run can use (docs/architecture/agent-workspace.md,
 // "ModelPort"). The runner asks `selectAdapter` which one a step gets, then
@@ -66,15 +68,31 @@ export function ownKeyAdapter({ apiKey, model, effort, stream = streamAnthropic 
   };
 }
 
-// The platform adapter calls the control plane's /v1/cloud/messages with the
-// device token (Wave 2, path F). Until that lands it refuses, and
-// selectAdapter's caller falls back to local.
-export function platformAdapter() {
+// The platform adapter: the control plane's POST /v1/cloud/messages with this
+// user's device token (control/platform.js). The control plane picks the
+// model, effort and output ceiling from the plan, so `maxTokens` is not sent.
+// A planning call or a step marked hard asks for the plan's hard-question
+// model. Without a token, or when the control plane refuses (signed out,
+// offline, allowance spent), `stream` throws `code: 'platform_unavailable'`
+// before yielding anything, and the runner answers locally instead.
+//
+// `ownerId` is the local user whose sign-in pays; `sources` are the plug-ins
+// whose nodes are in the context, which the control plane records per answer.
+export function platformAdapter({ ownerId, token, sources = [], getToken = deviceToken, fetchImpl, base } = {}) {
   return {
     name: 'platform',
     offline: false,
-    async *stream() {
-      throw Object.assign(new Error('the platform model is not connected yet'), { code: 'platform_unavailable' });
+    async *stream({ messages, signal, purpose, hard }) {
+      const bearer = token ?? (ownerId ? await getToken(ownerId) : null);
+      yield* streamPlatform({
+        token: bearer,
+        messages,
+        hard: hard === true || purpose === 'plan',
+        sources,
+        signal,
+        ...(fetchImpl ? { fetchImpl } : {}),
+        ...(base ? { base } : {}),
+      });
     },
   };
 }

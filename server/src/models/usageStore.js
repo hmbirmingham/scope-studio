@@ -1,8 +1,9 @@
 import { getPool } from '../db/pool.js';
 import { canAutoCloud, canChooseCloud, monthlyAnswerLimit, monthlyCloudBudgetUsd, planFor, platformModel, weeklyAllowanceUsd } from '../billing/plans.js';
 
-// Platform-paid answers over the last 30 days: what the monthly answer limit
-// is checked against.
+// Platform-paid answers over the last 30 days, as this engine recorded them.
+// The control plane's ledger is what the monthly limit is enforced against;
+// this count stands in for display when its figures are not to hand.
 export async function monthlyPlatformAnswers(ownerId, pool = getPool()) {
   const { rows } = await pool.query(
     `SELECT count(*)::int AS answers FROM query_metrics
@@ -13,8 +14,8 @@ export async function monthlyPlatformAnswers(ownerId, pool = getPool()) {
 }
 
 // What the platform has paid for this user's cloud answers over the last seven
-// days: the figure the weekly allowance is checked against before every
-// platform-paid answer.
+// days, as this engine recorded them; like the count above, a stand-in for the
+// control plane's own figure.
 export async function weeklyPlatformSpend(ownerId, pool = getPool()) {
   const { rows } = await pool.query(
     `SELECT COALESCE(sum(cost_usd) FILTER (WHERE billed_to = 'platform'), 0)::float8 AS spend
@@ -27,7 +28,12 @@ export async function weeklyPlatformSpend(ownerId, pool = getPool()) {
 
 // What a user actually costs to serve. Metered tiers are priced against this,
 // so it reads from the recorded per-query cost rather than an estimate.
-export async function usageSummary(ownerId, { days = 7, plan = 'free' } = {}) {
+//
+// `plan` and `limits` come from the control plane (GET /v1/me, as cached by
+// control/plan.js). The control plane's ledger is the authority on a
+// platform plan's answers and weekly spend, so its figures are shown when it
+// sent them; this engine's own records stand in when it did not.
+export async function usageSummary(ownerId, { days = 7, plan = 'free', limits = null } = {}) {
   const pool = getPool();
   planFor(plan);
   const window = `${Number(days)} days`;
@@ -45,7 +51,8 @@ export async function usageSummary(ownerId, { days = 7, plan = 'free' } = {}) {
     [ownerId, window]
   );
 
-  const thisWeek = await weeklyPlatformSpend(ownerId, pool);
+  const fromControl = (value) => (Number.isFinite(value) ? value : null);
+  const thisWeek = fromControl(limits?.weeklySpentUsd) ?? (await weeklyPlatformSpend(ownerId, pool));
 
   const { rows: byModel } = await pool.query(
     `SELECT model_used AS model, count(*)::int AS queries,
@@ -59,7 +66,7 @@ export async function usageSummary(ownerId, { days = 7, plan = 'free' } = {}) {
 
   const total = totals[0];
   const perDay = total.platform_spend / Number(days);
-  const allowance = weeklyAllowanceUsd(plan);
+  const allowance = fromControl(limits?.weeklyAllowanceUsd) ?? weeklyAllowanceUsd(plan);
 
   return {
     plan,
@@ -71,7 +78,10 @@ export async function usageSummary(ownerId, { days = 7, plan = 'free' } = {}) {
     monthlyCloudBudgetUsd: monthlyCloudBudgetUsd(plan),
     monthlyAnswers: monthlyAnswerLimit(plan) === null
       ? null
-      : { limit: monthlyAnswerLimit(plan), used: await monthlyPlatformAnswers(ownerId, pool) },
+      : {
+          limit: fromControl(limits?.monthlyAnswers) ?? monthlyAnswerLimit(plan),
+          used: fromControl(limits?.answersUsed) ?? (await monthlyPlatformAnswers(ownerId, pool)),
+        },
     windowDays: Number(days),
     queries: total.queries,
     cloudQueries: total.cloud_queries,

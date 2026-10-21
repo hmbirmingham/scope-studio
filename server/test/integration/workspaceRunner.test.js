@@ -5,8 +5,9 @@ import { join, resolve, sep } from 'node:path';
 import { after, before, beforeEach, describe, test } from 'node:test';
 import { listPlugins, registerPlugin } from '../../src/workspace/capabilities.js';
 import { createEventBus } from '../../src/workspace/events.js';
-import { createWorker, stopWithin } from '../../src/workspace/runner/index.js';
+import { createWorker, defaultAdapters, stopWithin } from '../../src/workspace/runner/index.js';
 import { SLICE_TOKENS } from '../../src/workspace/runner/slice.js';
+import { linkUser, startFakeControl } from '../fakeControl.js';
 import { createFakeModelPort, platformUnavailable } from '../fakeModelPort.js';
 import { registeredSession, startServer } from '../helpers.js';
 
@@ -128,6 +129,7 @@ const done = { done: true, summary: 'all counted' };
 
 describe('agent runner', () => {
   let server;
+  let control;
   let ownerId;
   let workdir;
   let bus;
@@ -192,6 +194,10 @@ describe('agent runner', () => {
   const typesFor = (runId) => events.filter((event) => event.runId === runId).map((event) => event.type);
 
   before(async () => {
+    // The plan comes from the control plane's cached /v1/me; a fake control
+    // plane stands behind CONTROL_URL for the platform adapter's calls.
+    control = await startFakeControl();
+    process.env.CONTROL_URL = control.url;
     server = await startServer();
     const api = await registeredSession(server.base);
     ({ data: { userId: ownerId } } = await api('GET', '/api/auth/session'));
@@ -206,7 +212,8 @@ describe('agent runner', () => {
   beforeEach(async () => {
     for (const instance of workers.splice(0)) instance.abandon();
     await server.pool.query("UPDATE agent_runs SET status = 'killed' WHERE status IN ('queued', 'running', 'waiting_approval', 'paused')");
-    await server.pool.query("UPDATE users SET plan = 'free' WHERE id = $1", [ownerId]);
+    // Signed out is Free: a test that needs a paid plan links the user.
+    await server.pool.query('DELETE FROM control_links WHERE owner_id = $1', [ownerId]);
     // Anything private (and everything learned from it) would keep later runs
     // local, so each test starts without it.
     await server.pool.query("DELETE FROM nodes WHERE privacy = 'local'");
@@ -222,6 +229,8 @@ describe('agent runner', () => {
   after(async () => {
     for (const instance of workers.splice(0)) instance.abandon();
     await server.close();
+    await control.close();
+    delete process.env.CONTROL_URL;
     await rm(workdir, { recursive: true, force: true });
   });
 
@@ -656,7 +665,7 @@ describe('agent runner', () => {
   });
 
   test('private context never reaches a non-local adapter, and what it produces stays private', async () => {
-    await server.pool.query("UPDATE users SET plan = 'engineer' WHERE id = $1", [ownerId]);
+    await linkUser(server.pool, ownerId, 'engineer');
     await server.pool.query(
       "INSERT INTO nodes (owner_id, type, content, source, project, privacy) VALUES ($1, 'decision', 'Secret widget gizmo tolerances: count lines carefully', 'manual', $2, 'local')",
       [ownerId, PROJECT]
@@ -676,7 +685,7 @@ describe('agent runner', () => {
   });
 
   test('without private context the plan and hard steps use the cloud the agent may use', async () => {
-    await server.pool.query("UPDATE users SET plan = 'engineer' WHERE id = $1", [ownerId]);
+    await linkUser(server.pool, ownerId, 'engineer');
     const agentId = await makeAgent({ modelPolicy: 'local_cloud' });
     const runId = await makeRun(agentId);
     platform.push(plan, 'cloud thoughts');
@@ -702,7 +711,7 @@ describe('agent runner', () => {
   });
 
   test('offline keeps every call local', async () => {
-    await server.pool.query("UPDATE users SET plan = 'engineer' WHERE id = $1", [ownerId]);
+    await linkUser(server.pool, ownerId, 'engineer');
     const agentId = await makeAgent({ modelPolicy: 'local_cloud' });
     const runId = await makeRun(agentId);
     local.push(plan, done);
@@ -711,8 +720,35 @@ describe('agent runner', () => {
     assert.equal(platform.calls.length, 0);
   });
 
+  test('the platform adapter speaks for the run owner, with their device token', async () => {
+    const token = await linkUser(server.pool, ownerId, 'engineer');
+    control.state.me.set(token, { account: { plan: 'engineer' } });
+    const agentId = await makeAgent({ modelPolicy: 'local_cloud' });
+    const runId = await makeRun(agentId);
+    control.state.cloud.push({ events: [{ text: plan }, { done: true, usage: { input_tokens: 900, output_tokens: 60 }, model: 'claude-sonnet-5', costUsd: 0.003 }] });
+    local.push(done);
+    await worker({ adapters: { local, platform: defaultAdapters().platform } }).runNext();
+
+    assert.equal((await runRow(runId)).status, 'succeeded');
+    const calls = control.cloudRequests();
+    assert.equal(calls.length, 1, 'only the plan went to the platform');
+    assert.equal(calls[0].auth, `Bearer ${token}`);
+    assert.equal((await steps(runId))[0].adapter, 'platform');
+  });
+
+  test('signed out, a local_cloud run on any plan stays local', async () => {
+    const agentId = await makeAgent({ modelPolicy: 'local_cloud' });
+    const runId = await makeRun(agentId);
+    const before = control.cloudRequests().length;
+    local.push(plan, done);
+    await worker({ adapters: { local, platform: defaultAdapters().platform } }).runNext();
+    assert.equal((await runRow(runId)).status, 'succeeded');
+    assert.equal(control.cloudRequests().length, before);
+    assert.equal(platform.calls.length, 0);
+  });
+
   test('platform_unavailable falls back to local for that call and is recorded', async () => {
-    await server.pool.query("UPDATE users SET plan = 'engineer' WHERE id = $1", [ownerId]);
+    await linkUser(server.pool, ownerId, 'engineer');
     const agentId = await makeAgent({ modelPolicy: 'local_cloud' });
     const runId = await makeRun(agentId);
     platform.push(platformUnavailable());
@@ -729,7 +765,7 @@ describe('agent runner', () => {
   });
 
   test('cloud ask opens one approval per run and stays local until it is approved', async () => {
-    await server.pool.query("UPDATE users SET plan = 'engineer' WHERE id = $1", [ownerId]);
+    await linkUser(server.pool, ownerId, 'engineer');
     const agentId = await makeAgent({ level: 'supervised', modelPolicy: 'local_cloud' });
     const runId = await makeRun(agentId);
     // The plan asks for the cloud and is served locally meanwhile; the hard
