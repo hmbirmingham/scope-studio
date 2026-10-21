@@ -4,7 +4,7 @@ import ApprovalActions from './ApprovalActions.jsx';
 import BudgetMeter from './BudgetMeter.jsx';
 import { useWorkspace, useWorkspaceEvents } from './workspaceContext.js';
 import { CAPABILITIES } from './permissions.js';
-import { TERMINAL_STATUSES, applyRunEvent, runViewFromHttp } from './runState.js';
+import { TERMINAL_STATUSES, applyRunEvent, replayOverRecord, runViewFromHttp } from './runState.js';
 
 const STATUS_WORDS = {
   queued: 'Queued',
@@ -110,7 +110,8 @@ export default function RunView({ runId }) {
   const [view, setView] = useState(null);
   const [problem, setProblem] = useState(null);
   const [cancelling, setCancelling] = useState(false);
-  // Events that arrive while the record is loading are applied after it.
+  // Events that arrive while the record is loading are applied after it,
+  // minus those the record already holds (see replayOverRecord).
   const pending = useRef([]);
   const loading = useRef(false);
 
@@ -118,9 +119,7 @@ export default function RunView({ runId }) {
     loading.current = true;
     try {
       const [run, approvals] = await Promise.all([api.getRun(runId), api.listApprovals().catch(() => [])]);
-      let next = runViewFromHttp(run, approvals);
-      for (const event of pending.current) next = applyRunEvent(next, event);
-      setView(next);
+      setView(replayOverRecord(runViewFromHttp(run, approvals), pending.current));
       setProblem(null);
     } catch (failure) {
       setProblem(failure.message);

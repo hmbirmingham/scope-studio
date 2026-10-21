@@ -58,7 +58,9 @@ function createMockServer() {
     second.status = 'waiting_approval';
     state.run.status = 'waiting_approval';
     state.approvals.push({ id: APPROVAL_ID, agentId: AGENT_ID, runId: RUN_ID, stepId: 's2', capability: 'edit_files', summary: 'Edit README.md', detail: { path: 'README.md' }, status: 'pending', createdAt: new Date().toISOString(), resolvedAt: null });
+    // The runner's parking sequence: the request, then the run pauses on it.
     emit('approval.requested', { approvalId: APPROVAL_ID, capability: 'edit_files', summary: 'Edit README.md' });
+    emit('run.paused', { reason: 'waiting_approval', approvalId: APPROVAL_ID });
     return state.run;
   }
 
@@ -67,10 +69,14 @@ function createMockServer() {
     approval.status = decision === 'approve' ? 'approved' : 'rejected';
     approval.resolvedAt = new Date().toISOString();
     emit('approval.resolved', { approvalId: APPROVAL_ID, status: approval.status });
+    // As on the server: the approval store requeues the run, then a worker
+    // reclaims it and resumes the parked step without a new step.started.
     const second = state.run.steps[1];
+    state.run.status = 'queued';
+    emit('run.queued', {});
     second.status = 'running';
     state.run.status = 'running';
-    emit('run.started', {});
+    emit('run.resumed', { attempt: 1 });
     second.output = 'Edited README.md';
     emit('step.output', { stepId: 's2', text: second.output });
     second.status = 'succeeded';
@@ -172,6 +178,7 @@ test('create an agent, run it, watch the steps stream and approve', async ({ pag
   await expect(steps.getByText(/result\.schema: passed/)).toBeVisible();
   await expect(page.getByRole('region', { name: 'Findings and artifacts' }).getByRole('button', { name: /Drift is thermal/ })).toBeVisible();
   await expect(page.getByLabel('1 pending')).toBeVisible();
+  await expect(page.getByRole('heading', { name: /Ada/ }).getByRole('status')).toHaveText('Waiting for approval');
 
   // Approve inline; the run finishes.
   await steps.getByRole('button', { name: 'Approve: Edit README.md' }).click();

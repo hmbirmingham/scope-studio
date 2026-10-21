@@ -30,6 +30,9 @@ afterEach(() => FakeEventSource.reset());
 
 const emit = (type, data) => act(() => FakeEventSource.latest().emit(workspaceEvent(type, { runId: 'run-1', agentId: AGENT.id, data })));
 
+// The run's own status badge, in its heading (approvals have status badges too).
+const runStatus = () => within(screen.getByRole('heading', { name: /Ada/ })).getByRole('status');
+
 function renderRun(overrides = {}) {
   const api = fakeApi({
     listAgents: vi.fn(async () => [AGENT]),
@@ -76,12 +79,24 @@ describe('RunView', () => {
     await screen.findByText('Summarise the sensor notes');
     emit('step.started', { stepId: 's2', index: 1, capability: 'edit_files' });
     emit('approval.requested', { approvalId: 'p1', capability: 'edit_files', summary: 'Edit README.md' });
+    emit('run.paused', { reason: 'waiting_approval', approvalId: 'p1' });
 
+    expect(runStatus()).toHaveTextContent('Waiting for approval');
+    expect(screen.queryByText('Paused')).not.toBeInTheDocument();
     expect(screen.getAllByText('Waiting for approval').length).toBeGreaterThan(0);
     await user.click(screen.getByRole('button', { name: 'Approve: Edit README.md' }));
     expect(api.resolveApproval).toHaveBeenCalledWith('p1', 'approve');
     expect(await screen.findByText('Approved')).toBeInTheDocument();
     expect(screen.queryByRole('button', { name: 'Approve: Edit README.md' })).not.toBeInTheDocument();
+
+    // The runner's own sequence after a decision: resolved, requeued, resumed.
+    emit('approval.resolved', { approvalId: 'p1', status: 'approved' });
+    emit('run.queued', {});
+    expect(runStatus()).toHaveTextContent('Queued');
+    emit('run.resumed', { attempt: 1 });
+    expect(runStatus()).toHaveTextContent('Running');
+    const steps = screen.getByRole('list', { name: 'Steps' });
+    expect(within(steps).queryByText('Waiting for approval')).not.toBeInTheDocument();
   });
 
   it('shows an approval already pending when the page loads, and rejects it', async () => {
@@ -122,6 +137,31 @@ describe('RunView', () => {
     await waitFor(() => expect(getRun).toHaveBeenCalledTimes(2));
     expect(await screen.findByText('done offline')).toBeInTheDocument();
     expect(screen.queryByRole('button', { name: 'Stop run' })).not.toBeInTheDocument();
+  });
+
+  it('does not show twice what arrived while the record was loading and is already in it', async () => {
+    let answer;
+    const getRun = vi.fn(() => new Promise((resolve) => (answer = resolve)));
+    renderRun({ getRun });
+    await waitFor(() => expect(getRun).toHaveBeenCalled());
+    emit('step.started', { stepId: 's1', index: 0, capability: 'read_graph' });
+    emit('step.output', { stepId: 's1', text: 'Reading 12 notes' });
+    emit('step.verified', { stepId: 's1', verifier: 'result.schema', ok: true, detail: null });
+    emit('node.written', { nodeId: 'n7', type: 'finding' });
+    emit('cost', { tokens: 400, usd: 0.1, adapter: 'local' });
+    emit('step.finished', { stepId: 's1', status: 'succeeded' });
+    await act(async () =>
+      answer({
+        ...RUN,
+        tokensUsed: 400,
+        costUsd: 0.1,
+        steps: [{ id: 's1', index: 0, capability: 'read_graph', status: 'succeeded', output: 'Reading 12 notes', verification: [{ verifier: 'result.schema', ok: true, detail: null }], nodeIds: ['n7'] }],
+      })
+    );
+    const steps = await screen.findByRole('list', { name: 'Steps' });
+    expect(within(steps).getAllByText('Reading 12 notes')).toHaveLength(1);
+    expect(within(steps).getAllByText(/result.schema: passed/)).toHaveLength(1);
+    expect(screen.getByLabelText('Tokens used')).toHaveAttribute('aria-valuetext', '400 of 1000');
   });
 
   it('stops a live run', async () => {

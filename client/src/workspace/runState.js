@@ -4,13 +4,28 @@
 
 export const TERMINAL_STATUSES = new Set(['succeeded', 'failed', 'budget_exceeded', 'killed']);
 
-const RUN_STATUS_BY_EVENT = {
-  'run.queued': 'queued',
-  'run.started': 'running',
-  'run.paused': 'paused',
-  // Resuming puts a run back in the queue; the worker starts it again.
-  'run.resumed': 'queued',
-};
+// The run status a lifecycle event implies, or null for any other event. The
+// run view and the run list both read status this way so they cannot drift.
+// The runner parks a step by publishing approval.requested and then
+// run.paused with reason 'waiting_approval'; that is a run waiting on the
+// user, not one the user paused. run.resumed is published by the worker that
+// has reclaimed a started run and is running it again, so it means running.
+export function runStatusForEvent(event) {
+  const data = event?.data ?? {};
+  switch (event?.type) {
+    case 'run.queued':
+      return 'queued';
+    case 'run.started':
+    case 'run.resumed':
+      return 'running';
+    case 'run.paused':
+      return data.reason === 'waiting_approval' ? 'waiting_approval' : 'paused';
+    case 'run.finished':
+      return data.status ?? 'succeeded';
+    default:
+      return null;
+  }
+}
 
 // Step output is whatever the capability returned. Text is shown as is; a
 // structured result is shown as compact JSON so nothing is hidden.
@@ -85,6 +100,10 @@ function currentStepId(view) {
   return view.steps.at(-1)?.id ?? null;
 }
 
+function hasPendingApproval(view, stepId) {
+  return Object.values(view.approvals).some((approval) => approval.stepId === stepId && approval.status === 'pending');
+}
+
 function updateStep(view, stepId, change) {
   let found = false;
   const steps = view.steps.map((step) => {
@@ -108,13 +127,29 @@ export function applyRunEvent(view, event) {
   const data = event.data ?? {};
   switch (event.type) {
     case 'run.queued':
-    case 'run.started':
-    case 'run.paused':
-    case 'run.resumed':
       if (TERMINAL_STATUSES.has(view.run.status)) return view;
-      return { ...view, run: { ...view.run, status: RUN_STATUS_BY_EVENT[event.type] } };
+      return { ...view, run: { ...view.run, status: 'queued' } };
+    case 'run.started':
+    case 'run.resumed': {
+      if (TERMINAL_STATUSES.has(view.run.status)) return view;
+      // A parked step does not announce itself again when its run resumes
+      // (the runner goes straight to acting on the decision), so a step
+      // whose approvals are all decided is running again from here.
+      const steps = view.steps.map((step) =>
+        step.status === 'waiting_approval' && !hasPendingApproval(view, step.id) ? { ...step, status: 'running' } : step
+      );
+      return { ...view, steps, run: { ...view.run, status: 'running' } };
+    }
+    case 'run.paused': {
+      if (TERMINAL_STATUSES.has(view.run.status)) return view;
+      const status = runStatusForEvent(event);
+      if (status !== 'waiting_approval') return { ...view, run: { ...view.run, status } };
+      const stepId = view.approvals[data.approvalId]?.stepId ?? currentStepId(view);
+      const parked = stepId ? updateStep(view, stepId, () => ({ status: 'waiting_approval' })) : view;
+      return { ...parked, run: { ...view.run, status } };
+    }
     case 'run.finished':
-      return { ...view, run: { ...view.run, status: data.status ?? 'succeeded', finishedAt: event.at ?? view.run.finishedAt } };
+      return { ...view, run: { ...view.run, status: runStatusForEvent(event), finishedAt: event.at ?? view.run.finishedAt } };
     case 'step.started': {
       const exists = view.steps.some((step) => step.id === data.stepId);
       const steps = exists
@@ -132,13 +167,18 @@ export function applyRunEvent(view, event) {
     case 'step.finished':
       return updateStep(view, data.stepId, () => ({ status: data.status ?? 'succeeded' }));
     case 'approval.requested': {
-      const stepId = currentStepId(view);
+      // Already known (from the HTTP record, say): keep that fuller record.
+      if (view.approvals[data.approvalId]) return view;
+      // A request alone does not stop the run: a cloud_model request is
+      // run-scoped and the runner carries on locally while it is open. Only
+      // the run.paused{reason:'waiting_approval'} that follows a step's
+      // request parks the run and the step, so status changes wait for it.
+      const stepId = data.capability === 'cloud_model' ? null : (data.stepId ?? currentStepId(view));
       const approvals = {
         ...view.approvals,
         [data.approvalId]: { id: data.approvalId, stepId, capability: data.capability, summary: data.summary ?? '', detail: null, status: 'pending' },
       };
-      const parked = stepId ? updateStep(view, stepId, () => ({ status: 'waiting_approval' })) : view;
-      return { ...parked, approvals, run: { ...view.run, status: 'waiting_approval' } };
+      return { ...view, approvals };
     }
     case 'approval.resolved': {
       const known = view.approvals[data.approvalId];
@@ -168,6 +208,33 @@ export function applyRunEvent(view, event) {
     default:
       return view;
   }
+}
+
+const LIVE_STEP_STATUSES = new Set(['pending', 'running', 'waiting_approval']);
+
+// Folds the events that arrived while the HTTP record was loading. Some of
+// them are already in the record and must not be counted twice:
+// - a step's output and verification are stored when the step finishes, so
+//   for a step the record shows finished they are already there;
+// - a written node is in the record's step once that step checkpointed;
+// - a cost event is published after the call is recorded on the run, so one
+//   that reached the page before the record did is almost always in its
+//   totals. Skipping it may leave the meter a call behind until the next
+//   reload; adding it could double it, and the record is the durable truth.
+// Status changes are idempotent and are all applied.
+export function replayOverRecord(view, events) {
+  const settled = new Set(view.steps.filter((step) => !LIVE_STEP_STATUSES.has(step.status)).map((step) => step.id));
+  const written = new Set(view.written.map((entry) => entry.nodeId));
+  let next = view;
+  for (const event of events) {
+    if (!event || event.runId !== view.run.id) continue;
+    const data = event.data ?? {};
+    if ((event.type === 'step.output' || event.type === 'step.verified') && settled.has(data.stepId)) continue;
+    if (event.type === 'node.written' && written.has(data.nodeId)) continue;
+    if (event.type === 'cost') continue;
+    next = applyRunEvent(next, event);
+  }
+  return next;
 }
 
 // How far a run is through each budget limit, as fractions for the meter.

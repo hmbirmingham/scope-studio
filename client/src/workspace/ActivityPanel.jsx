@@ -1,9 +1,9 @@
 import { useCallback, useEffect, useId, useRef, useState } from 'react';
 import AgentDot from './AgentDot.jsx';
 import RunView from './RunView.jsx';
+import { runStatusForEvent } from './runState.js';
 import { useWorkspace, useWorkspaceEvents } from './workspaceContext.js';
 
-const RUN_STATUS = { 'run.queued': 'queued', 'run.started': 'running', 'run.paused': 'paused', 'run.resumed': 'queued' };
 const CONNECTION_WORDS = { open: 'Live', connecting: 'Connecting…', reconnecting: 'Reconnecting…', idle: 'Offline', unavailable: 'Live updates unavailable' };
 
 function NewRunForm({ onStarted }) {
@@ -108,7 +108,8 @@ export default function ActivityPanel() {
         load();
         return;
       }
-      const status = event.type === 'run.finished' ? event.data?.status ?? 'succeeded' : RUN_STATUS[event.type];
+      const status = runStatusForEvent(event);
+      if (!status) return;
       setRuns((current) => current.map((run) => (run.id === event.runId ? { ...run, status } : run)));
     },
     { onResync: load }
