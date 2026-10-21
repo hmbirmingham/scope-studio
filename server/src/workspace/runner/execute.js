@@ -18,7 +18,7 @@ import {
   transitionHeld,
   updateStep,
 } from './store.js';
-import { embedAll, notesFrom, outputText, planContent, stepContent, writePlanNode, writeStepNodes } from './writeBack.js';
+import { clipError, embedAll, notesFrom, outputText, planContent, stepContent, writePlanNode, writeStepNodes } from './writeBack.js';
 
 // Executes one claimed run, step by step, following the run-step protocol in
 // docs/architecture/agent-workspace.md: read → act → verify → write back →
@@ -103,7 +103,7 @@ export async function executeRun(claimed, deps) {
   const wallNow = () => state.wallBase + (Date.now() - state.mark);
 
   async function finish(status, { error = null, limit = null } = {}) {
-    const row = await transitionHeld(run.id, workerId, { status, error, wallMs: wallNow() }, db);
+    const row = await transitionHeld(run.id, workerId, { status, error: clipError(error), wallMs: wallNow() }, db);
     if (!row) return null;
     if (status === 'budget_exceeded') publish('budget.exceeded', { limit });
     if (status === 'paused') publish('run.paused', { reason: error ?? 'paused' });
@@ -260,7 +260,7 @@ export async function executeRun(claimed, deps) {
           totals.usd,
           written.map((node) => node.id),
           { ...detail, fallbacks: seen?.fallbacks ?? [] },
-          error,
+          clipError(error),
         ]
       );
       const failed = status === 'failed';

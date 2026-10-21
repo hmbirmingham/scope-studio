@@ -91,6 +91,16 @@ const fixturePlugin = {
       },
     },
     {
+      name: 'fixture.explode',
+      tags: ['fixture'],
+      permission: 'read_graph',
+      source: 'fixture',
+      input: { type: 'object', properties: {} },
+      async run() {
+        throw new Error(`exploded ${'x'.repeat(5000)} END-OF-TRACE`);
+      },
+    },
+    {
       name: 'fixture.think',
       tags: ['fixture'],
       permission: 'read_graph',
@@ -453,6 +463,22 @@ describe('agent runner', () => {
     const { rows: never } = await server.pool.query("SELECT 1 FROM nodes WHERE content LIKE 'this must never be written%'");
     assert.equal(never.length, 0);
     assert.equal((await runRow(runId)).status, 'succeeded');
+  });
+
+  test('a long capability error is truncated in the step record and the step node', async () => {
+    const agentId = await makeAgent();
+    const runId = await makeRun(agentId);
+    local.push(plan, choose('fixture.explode'), done);
+    await worker().drain();
+    const [, failed] = await steps(runId);
+    assert.equal(failed.status, 'failed');
+    assert.match(failed.error, /^capability_error: exploded x+/);
+    assert.ok(failed.error.length <= 500, `error is ${failed.error.length} chars`);
+    assert.doesNotMatch(failed.error, /END-OF-TRACE/);
+    const [node] = (await server.pool.query('SELECT content FROM nodes WHERE id = $1', [failed.node_ids[0]])).rows;
+    assert.match(node.content, /Reason: capability_error: exploded/);
+    assert.doesNotMatch(node.content, /END-OF-TRACE/);
+    assert.ok(node.content.length < 700, `step node is ${node.content.length} chars`);
   });
 
   test('a run that only fails is stopped after five failures in a row', async () => {

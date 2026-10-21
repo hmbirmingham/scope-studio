@@ -9,6 +9,10 @@ import { AGENT_SOURCE, WRITE_BACK_RELATIONSHIPS as REL, inheritPrivacy } from '.
 const NOTE_MAX_CHARS = 4000;
 const NOTES_PER_STEP = 10;
 const STEP_OUTPUT_PREVIEW = 800;
+// Error text comes from capabilities, verifiers and the model, and can be a
+// whole stack trace or a script's output. It is kept short wherever it is
+// stored, so a step record or a step node never grows with it.
+export const ERROR_MAX_CHARS = 500;
 const NOTE_KINDS = [
   ['findings', 'finding'],
   ['decisions', 'decision'],
@@ -18,6 +22,10 @@ const NOTE_KINDS = [
 
 function clip(text, max) {
   return text.length > max ? `${text.slice(0, max - 1)}…` : text;
+}
+
+export function clipError(text) {
+  return text == null ? null : clip(String(text), ERROR_MAX_CHARS);
 }
 
 export function outputText(output) {
@@ -87,7 +95,7 @@ export async function writePlanNode(client, { ownerId, project, sources, content
 export function stepContent({ index, capability, status, summary, output, reason }) {
   const lines = [`Step ${index}${capability ? ` · ${capability}` : ''} · ${status}`];
   if (summary) lines.push(summary);
-  if (reason) lines.push(`Reason: ${reason}`);
+  if (reason) lines.push(`Reason: ${clipError(reason)}`);
   const text = outputText(output).trim();
   if (text) lines.push(`Outcome: ${clip(text, STEP_OUTPUT_PREVIEW)}`);
   return lines.join('\n');
