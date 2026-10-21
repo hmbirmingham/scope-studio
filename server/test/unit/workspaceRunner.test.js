@@ -175,6 +175,19 @@ describe('graph slice packing', () => {
     assert.ok(early.nodes.some((entry) => entry.id.startsWith('r')));
   });
 
+  test('the run’s own notes still outrank retrieval hits whose score is missing or NaN', async () => {
+    // Retrieval without an embedding can leave scores undefined; NaN compares
+    // false with everything, so the boost must not depend on comparing it.
+    const unscored = Array.from({ length: 10 }, (_, i) => ({ node: node(`u${i}`, { tokens: 100 }), score: i % 2 ? NaN : undefined }));
+    const written = node('w1', { source: 'agent', type: 'finding', tokens: 100 });
+    const slice = await packSlice({
+      ownerId: 'o', agent, goal: 'g', project: 'p', planNodeId: 'plan', runNodeIds: ['w1', 'u7'],
+      gather: fakeGather(unscored),
+      db: fakeDb([node('plan', { source: 'agent', type: 'plan', tokens: 100 }), written, unscored[7].node]),
+    });
+    assert.deepEqual(slice.nodes.slice(0, 3).map((entry) => entry.id), ['plan', 'w1', 'u7']);
+  });
+
   test('retrieval candidates outside the read scope never enter the slice', async () => {
     const slice = await sliceAt(1, [
       { node: node('elsewhere', { project: 'q', tokens: 10 }), score: 99 },

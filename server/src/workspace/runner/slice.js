@@ -17,6 +17,14 @@ const PLAN_BOOST = 1.5;
 const RUN_NODE_BOOST = 1.25;
 const RUN_NODE_DECAY = 0.85;
 
+// A candidate's score as a number. Retrieval without an embedding can leave
+// a score undefined or NaN, and NaN compares false with everything, which
+// would keep the run's own nodes from ever outranking it.
+function scoreOf(entry) {
+  const score = Number(entry?.score);
+  return Number.isFinite(score) ? score : 0;
+}
+
 const NODE_COLUMNS = 'id, type, content, source, project, created_at, token_length, privacy';
 
 async function loadRunNodes(ownerId, ids, db) {
@@ -52,7 +60,7 @@ export async function packSlice({
 
   const boostIds = [...new Set([planNodeId, ...runNodeIds.slice(0, RUN_NODE_WINDOW)].filter(Boolean))];
   const runNodes = await loadRunNodes(ownerId, boostIds, db);
-  const top = candidates.reduce((best, entry) => Math.max(best, Number(entry.score) || 0), 0) || 1;
+  const top = candidates.reduce((best, entry) => Math.max(best, scoreOf(entry)), 0) || 1;
 
   const byId = new Map(candidates.map((entry) => [entry.node.id, entry]));
   boostIds.forEach((id, position) => {
@@ -61,10 +69,10 @@ export async function packSlice({
     const boost = id === planNodeId ? PLAN_BOOST : RUN_NODE_BOOST * RUN_NODE_DECAY ** position;
     const score = top * boost;
     const existing = byId.get(id);
-    if (!existing || existing.score < score) byId.set(id, { ...(existing ?? {}), node, score, boosts: { run: boost } });
+    if (!existing || scoreOf(existing) < score) byId.set(id, { ...(existing ?? {}), node, score, boosts: { run: boost } });
   });
 
-  const ranked = [...byId.values()].sort((a, b) => b.score - a.score);
+  const ranked = [...byId.values()].sort((a, b) => scoreOf(b) - scoreOf(a));
   const packed = packForTier(ranked, 'local_7b', { max_context_tokens: tokens, max_nodes: maxNodes });
   const nodes = packed.selected.map((entry) => entry.node);
   return {
