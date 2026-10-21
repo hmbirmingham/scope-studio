@@ -5,8 +5,11 @@ import { createScheduler, createWorker, setRunQueuedListener, stopWithin } from 
 const env = loadEnv();
 const app = createApp(env);
 const port = process.env.PORT || 3001;
+// HOST=127.0.0.1 keeps the engine off the network (the demo launcher sets
+// it); unset, it listens on every interface as before.
+const host = process.env.HOST || undefined;
 
-app.listen(port, () => {
+app.listen(port, host, () => {
   console.log(`Scope Studio server listening on port ${port}`);
 });
 
