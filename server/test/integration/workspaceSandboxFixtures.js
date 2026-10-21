@@ -7,8 +7,17 @@ import { dirname, join } from 'node:path';
 // plug-in tests. Everything lives under the system temp directory and is
 // removed by the returned cleanup.
 
+const made = [];
+
 export function tempDir(prefix) {
-  return mkdtempSync(join(tmpdir(), `scope-${prefix}-`));
+  const dir = mkdtempSync(join(tmpdir(), `scope-${prefix}-`));
+  made.push(dir);
+  return dir;
+}
+
+// Removes every directory tempDir made; test files call it in after().
+export function removeTempDirs() {
+  while (made.length) rmSync(made.pop(), { recursive: true, force: true });
 }
 
 function git(cwd, args) {

@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { randomUUID } from 'node:crypto';
-import { existsSync, mkdirSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, readFileSync, readdirSync, writeFileSync } from 'node:fs';
 import { createServer as createHttpServer } from 'node:http';
 import { createServer as createTcpServer } from 'node:net';
 import { homedir } from 'node:os';
@@ -15,7 +15,7 @@ import {
   sandboxesDir,
   withSandbox,
 } from '../../src/workspace/sandbox/index.js';
-import { makeRepo, processesWith, tempDir, useDataDir } from './workspaceSandboxFixtures.js';
+import { makeRepo, processesWith, removeTempDirs, tempDir, useDataDir } from './workspaceSandboxFixtures.js';
 
 // These tests run real code inside the real OS sandbox and check that what
 // must fail does fail. CI installs bubblewrap and allows user namespaces;
@@ -31,7 +31,7 @@ before(() => {
 });
 after(() => {
   data.restore();
-  rmSync(work, { recursive: true, force: true });
+  removeTempDirs();
 });
 
 function scratchDir() {
@@ -178,6 +178,10 @@ except OSError as e:
     const { repo, cleanup } = makeRepo({ 'a.txt': 'a' });
     try {
       await assert.rejects(runSandboxed({ command: 'node', args: ['-e', '0'], cwd: repo, writable: [repo], protect: [repo] }), { code: 'invalid_sandbox_request' });
+      mkdirSync(join(repo, 'sub'));
+      await assert.rejects(runSandboxed({ command: 'node', args: ['-e', '0'], cwd: join(repo, 'sub'), writable: [join(repo, 'sub')], protect: [repo] }), { code: 'invalid_sandbox_request' });
+      const cwd = scratchDir();
+      await assert.rejects(runSandboxed({ command: 'node', args: ['-e', '0'], cwd, readOnly: [repo], protect: [repo] }), { code: 'invalid_sandbox_request' });
       await assert.rejects(runSandboxed({ command: 'node', args: ['-e', '0'], cwd: '/', writable: ['/'] }), { code: 'invalid_sandbox_request' });
     } finally {
       cleanup();

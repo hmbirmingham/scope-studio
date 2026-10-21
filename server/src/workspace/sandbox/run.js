@@ -2,8 +2,8 @@ import { execFile } from 'node:child_process';
 import { constants, accessSync, lstatSync, readlinkSync, realpathSync, statSync } from 'node:fs';
 import { chown, lstat, readdir } from 'node:fs/promises';
 import { homedir } from 'node:os';
-import { basename, delimiter, dirname, isAbsolute, join, resolve } from 'node:path';
-import { isInside } from './paths.js';
+import { basename, delimiter, dirname, isAbsolute, join } from 'node:path';
+import { isInside, realpathLoose } from './paths.js';
 
 // The OS sandbox that model-written code runs in (docs/architecture/
 // agent-workspace.md, `run_generated_code`). Nothing here ever runs a command
@@ -353,9 +353,14 @@ export function createSandboxRunner({
     if (![...writable, ...readOnly].some((path) => isInside(path, cwd))) {
       throw new SandboxError('invalid_sandbox_request', 'cwd must be inside a directory mounted into the sandbox');
     }
-    const protect = [home, ...(options.protect ?? []).map((path) => resolve(path))];
+    // Protected directories (the user's checkout) may not be mounted at all,
+    // nor anything inside or around them. The home directory may not be
+    // mounted or reached through an ancestor, but the data directory is
+    // usually inside it, so a mount below home is fine.
+    const checkouts = (options.protect ?? []).map((path) => realpathLoose(path));
+    const protect = [realpathLoose(home), ...checkouts];
     for (const path of [...writable, ...readOnly]) {
-      if (protect.some((guarded) => isInside(path, guarded))) {
+      if (protect.some((guarded) => isInside(path, guarded)) || checkouts.some((guarded) => isInside(guarded, path))) {
         throw new SandboxError('invalid_sandbox_request', `${path} would expose a protected directory`);
       }
     }

@@ -6,7 +6,7 @@ import { after, before, beforeEach, describe, test } from 'node:test';
 import { registerBuiltInPlugins } from '../../src/plugins/registry.js';
 import { capabilitiesForTags, getCapability, getVerifier, listPlugins, resetRegistry } from '../../src/workspace/capabilities.js';
 import { createSandbox, removeSandbox, sandboxesDir } from '../../src/workspace/sandbox/index.js';
-import { makeRepo, tempDir, useDataDir } from './workspaceSandboxFixtures.js';
+import { makeRepo, removeTempDirs, tempDir, useDataDir } from './workspaceSandboxFixtures.js';
 
 const linux = process.platform === 'linux';
 
@@ -43,7 +43,10 @@ before(() => {
   resetRegistry();
   registerBuiltInPlugins();
 });
-after(() => data.restore());
+after(() => {
+  data.restore();
+  removeTempDirs();
+});
 
 beforeEach(async () => {
   if (sandbox) await removeSandbox(sandbox).catch(() => {});
