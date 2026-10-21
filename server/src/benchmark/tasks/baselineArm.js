@@ -12,6 +12,8 @@ import { estimateTokens, priceRequest, promptTokens, worstCaseUsd } from '../end
 import { problemContent } from '../../plugins/physics/ingest.js';
 import { problemOf } from './catalog.js';
 import { createCallLog, createScript } from './models.js';
+import { prepareLibrary } from './research.js';
+import { ROLE_FOR_KIND, roleFor } from './scopeArm.js';
 import { prepareProject, snapshotTree } from './workspace.js';
 
 // The cloud-agent baseline: the standard tool loop. The model sees the task,
@@ -39,12 +41,17 @@ function toolSpec(capability) {
   return { name: capability.name, input_schema: capability.input ?? { type: 'object' } };
 }
 
-export function baselineSystem(capabilities, { role = roleTemplate('debugger'), kind = 'code' } = {}) {
+const INTRO = {
+  code: 'You work in a copy of a software project and fix the task you are given, one tool call per turn.',
+  research: 'You answer the task you are given from the papers in a reference library, one tool call per turn.',
+  physics: 'You solve the physics problem you are given with the tools below, one tool call per turn.',
+};
+
+export function baselineSystem(capabilities, kind = 'code', roleName = ROLE_FOR_KIND[kind] ?? ROLE_FOR_KIND.code) {
+  const role = roleTemplate(roleName);
   return [
     role.embodiment,
-    kind === 'physics'
-      ? 'You solve the physics problem you are given with the tools below, one tool call per turn.'
-      : 'You work in a copy of a software project and fix the task you are given, one tool call per turn.',
+    INTRO[kind] ?? INTRO.code,
     'Reply with exactly one JSON object and nothing else:',
     '{"capability": "<tool name>", "input": {…}, "summary": "<one sentence: what this call does>"}',
     'When the task is done, reply {"done": true, "summary": "<what was achieved>"}.',
@@ -91,34 +98,60 @@ async function modelTurn({ mode, model, system, messages, script, cache, cap, ap
   return { text, usage, usd, prompt };
 }
 
-export async function runBaselineTask({ task, arm, workspace, mode = 'dry', cap, apiKey, stream = streamAnthropic, maxTurns = BASELINE_MAX_TURNS, ownerId = null }) {
-  registerBuiltInPlugins();
-  const role = roleTemplate(task.role ?? 'debugger');
-  const capabilities = capabilitiesForTags(role.tags);
-  const byName = new Map(capabilities.map((capability) => [capability.name, capability]));
-  const repo = await prepareProject(task, workspace, arm.name);
-  const box = await createSandbox({ runId: `bench-${arm.name}-${randomUUID().slice(0, 8)}`, repoPath: repo, env: workspace.sandboxEnv });
-  // A physics capability writes its nodes for an owner and reads them back
-  // under an agent's read scope, so the baseline acts as the benchmark's
-  // account, scoped to a project of its own.
-  const project = task.kind === 'physics' ? `bench-${task.id}-${arm.name}` : null;
-  const agent = task.kind === 'physics'
-    ? { state: 'active', level: 'sandboxed', overrides: {}, role, scopes: { read: { projects: [project], sources: ['*'] }, write: { projects: [project] } } }
-    : null;
-  const ctx = {
-    ownerId: task.kind === 'physics' ? ownerId : null,
-    agent,
-    run: null,
-    step: null,
-    project,
-    localPath: repo,
-    sandbox: box,
-    model: null,
-    signal: new AbortController().signal,
-    emit: () => {},
-  };
+// The reader a research tool needs: the arm's own library, nothing else.
+// The baseline has no agent record, so this stands in for one with the same
+// read scope the Scope arm's agent has.
+function libraryReader(project) {
+  return { state: 'active', level: 'sandboxed', modelPolicy: 'local_only', overrides: {}, scopes: { read: { projects: [project], sources: ['*'] }, write: { projects: [] } } };
+}
 
-  const system = baselineSystem(capabilities, { role, kind: task.kind });
+// The tools the baseline loop may call for a kind of task (the role's tags,
+// as the Scope arm's agent has them). The baseline calls them without can(),
+// so it is given none that reach the web (research.web_search would use
+// SEARXNG_URL if it were set): a benchmark run stays offline whatever the
+// engine's environment says.
+export function baselineCapabilities(kind, roleName = ROLE_FOR_KIND[kind] ?? ROLE_FOR_KIND.code) {
+  return capabilitiesForTags(roleTemplate(roleName).tags).filter((capability) => capability.permission !== 'web');
+}
+
+export async function runBaselineTask({ task, arm, workspace, mode = 'dry', cap, apiKey, stream = streamAnthropic, maxTurns = BASELINE_MAX_TURNS, ownerId = null, db }) {
+  registerBuiltInPlugins();
+  const roleName = roleFor(task);
+  const capabilities = baselineCapabilities(task.kind, roleName);
+  const byName = new Map(capabilities.map((capability) => [capability.name, capability]));
+  const project = `bench-${task.id}-${arm.name}`;
+  let box = null;
+  let ctx;
+  if (task.kind === 'research') {
+    if (!ownerId) throw new Error('a research task needs the benchmark owner to ingest its library for');
+    await prepareLibrary(task, { ownerId, project, db, embed: mode !== 'dry' });
+    // The tools that draft with a model (extract, related work) get none:
+    // the baseline's one model is the loop itself, so they report that.
+    ctx = { ownerId, agent: libraryReader(project), run: null, step: null, project, localPath: null, model: null, signal: new AbortController().signal, emit: () => {} };
+  } else {
+    const repo = await prepareProject(task, workspace, arm.name);
+    box = await createSandbox({ runId: `bench-${arm.name}-${randomUUID().slice(0, 8)}`, repoPath: repo, env: workspace.sandboxEnv });
+    // A physics capability writes its nodes for an owner and reads them back
+    // under an agent's read scope, so the baseline acts as the benchmark's
+    // account, scoped to the arm's project.
+    const physics = task.kind === 'physics';
+    ctx = {
+      ownerId: physics ? ownerId : null,
+      agent: physics
+        ? { state: 'active', level: 'sandboxed', overrides: {}, role: roleTemplate(roleName), scopes: { read: { projects: [project], sources: ['*'] }, write: { projects: [project] } } }
+        : null,
+      run: null,
+      step: null,
+      project: physics ? project : null,
+      localPath: repo,
+      sandbox: box,
+      model: null,
+      signal: new AbortController().signal,
+      emit: () => {},
+    };
+  }
+
+  const system = baselineSystem(capabilities, task.kind, roleName);
   const answers = [];
   const script = mode === 'dry' ? createScript(task) : null;
   const cache = new Set();
@@ -127,6 +160,7 @@ export async function runBaselineTask({ task, arm, workspace, mode = 'dry', cap,
   const problem = task.kind === 'physics' ? `\n\nProject notes:\n${problemContent(problemOf(task))}` : '';
   const transcript = [{ role: 'user', content: `Task:\n${task.instructions}${problem}` }];
   let claimedDone = false;
+  let answer = null;
   let stopped = null;
   let toolCalls = 0;
   let invalidReplies = 0;
@@ -164,6 +198,7 @@ export async function runBaselineTask({ task, arm, workspace, mode = 'dry', cap,
       const { choice } = parsed;
       if (choice.done && !choice.capability) {
         claimedDone = true;
+        answer = choice.summary;
         break;
       }
       const capability = byName.get(choice.capability);
@@ -171,9 +206,9 @@ export async function runBaselineTask({ task, arm, workspace, mode = 'dry', cap,
       toolCalls += 1;
       transcript.push({ role: 'user', content: `Result of ${choice.capability}:\n${result}` });
     }
-    resultDir = snapshotTree(box.worktree, join(workspace.dir('results', task.id), arm.name));
+    if (box) resultDir = snapshotTree(box.worktree, join(workspace.dir('results', task.id), arm.name));
   } finally {
-    await removeSandbox(box, { env: workspace.sandboxEnv }).catch(() => {});
+    if (box) await removeSandbox(box, { env: workspace.sandboxEnv }).catch(() => {});
   }
   const wallMs = Math.round(performance.now() - started);
 
@@ -183,6 +218,8 @@ export async function runBaselineTask({ task, arm, workspace, mode = 'dry', cap,
     claimedDone,
     resultDir,
     answers,
+    project,
+    answer,
     wallMs,
     steps: toolCalls,
     invalidReplies,

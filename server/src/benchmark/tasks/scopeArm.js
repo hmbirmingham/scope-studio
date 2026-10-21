@@ -11,6 +11,7 @@ import { sandboxRoot } from '../../workspace/runner/sandbox.js';
 import { insertRun, loadRun } from '../../workspace/runner/store.js';
 import { problemOf } from './catalog.js';
 import { createCallLog, createScript, livePlatformPort, recordedLocalPort, scriptedPort } from './models.js';
+import { prepareLibrary } from './research.js';
 import { prepareProject, snapshotTree } from './workspace.js';
 
 // The Scope arm: the real runner (executeRun, the same function the worker
@@ -19,10 +20,15 @@ import { prepareProject, snapshotTree } from './workspace.js';
 // run's only memory. Each step reads a fixed-size slice of the graph, never
 // a transcript, which is the property the benchmark measures.
 
-// Debugger: the built-in role whose tags cover reading, editing, the
-// project's scripts and generated code. A task may name another (physics
-// tasks use the Physicist).
-const ROLE = 'debugger';
+// The built-in role for the kind of task: Debugger, whose tags cover
+// reading, editing, the project's scripts and generated code; Researcher,
+// whose tags cover the research plug-in; Physicist, whose tags cover the
+// physics plug-in. A task may still name a role of its own (`task.role`).
+export const ROLE_FOR_KIND = Object.freeze({ code: 'debugger', research: 'researcher', physics: 'physicist' });
+
+export function roleFor(task) {
+  return task?.role ?? ROLE_FOR_KIND[task?.kind] ?? ROLE_FOR_KIND.code;
+}
 const LEASE_MS = 60_000;
 // Generous limits: a dry run ends well inside them, and a live run should
 // stop on the task, not on a budget the benchmark set.
@@ -45,7 +51,7 @@ async function claimOwn(runId, workerId, db) {
 }
 
 async function createBenchAgent({ db, ownerId, project, arm, task }) {
-  const role = roleTemplate(task.role ?? ROLE);
+  const role = roleTemplate(roleFor(task));
   // Local+cloud: the user has said yes to the cloud for this agent, so the
   // plan's cloud calls are allowed without a per-run approval.
   const overrides = arm.policy === 'local_cloud' ? { cloud_model: 'allow' } : {};
@@ -78,12 +84,18 @@ function adaptersFor({ arm, mode, task, log, cap, apiKey }) {
 export async function runScopeTask({ task, arm, workspace, ownerId, db, mode = 'dry', cap, apiKey }) {
   registerBuiltInPlugins();
   const project = `bench-${task.id}-${arm.name}`;
-  const repo = await prepareProject(task, workspace, arm.name);
-  await db.query('INSERT INTO project_settings (owner_id, project, local_path) VALUES ($1, $2, $3)', [ownerId, project, repo]);
-  // A physics task's problem is a node in the project's graph, which is
-  // where the agent reads it from.
-  if (task.kind === 'physics') {
-    await ingestProblems(ownerId, { project, privacy: 'cloud', problems: [problemOf(task)] }, { embed: mode === 'dry' ? null : undefined });
+  // A code task works on a checkout of its fixture; a research task on its
+  // paper set, ingested into the graph under the arm's project.
+  if (task.kind === 'research') {
+    await prepareLibrary(task, { ownerId, project, db, embed: mode !== 'dry' });
+  } else {
+    const repo = await prepareProject(task, workspace, arm.name);
+    await db.query('INSERT INTO project_settings (owner_id, project, local_path) VALUES ($1, $2, $3)', [ownerId, project, repo]);
+    // A physics task's problem is a node in the project's graph, which is
+    // where the agent reads it from.
+    if (task.kind === 'physics') {
+      await ingestProblems(ownerId, { project, privacy: 'cloud', problems: [problemOf(task)] }, { embed: mode === 'dry' ? null : undefined });
+    }
   }
   const agentId = await createBenchAgent({ db, ownerId, project, arm, task });
   const run = await insertRun({ ownerId, agentId, instructions: task.instructions, project }, db);
@@ -135,6 +147,12 @@ export async function runScopeTask({ task, arm, workspace, ownerId, db, mode = '
     [run.id]
   );
   const claimedDone = final.status === 'succeeded';
+  // The run's conclusion, which a research task's check reads: the summary
+  // the final step gave when it declared the goal met.
+  const { rows: [last] } = await db.query(
+    "SELECT output->>'summary' AS summary FROM agent_run_steps WHERE run_id = $1 AND output->>'done' = 'true' ORDER BY index DESC LIMIT 1",
+    [run.id]
+  );
 
   return {
     runId: run.id,
@@ -143,7 +161,11 @@ export async function runScopeTask({ task, arm, workspace, ownerId, db, mode = '
     claimedDone,
     // The objective check runs on this afterwards (run.js), outside the timing.
     resultDir: snapshot,
+    // What a check reads besides the working tree: the verified steps'
+    // outputs (physics) and the final answer in the arm's project (research).
     answers,
+    project,
+    answer: last?.summary ?? null,
     wallMs,
     // Every step the runner executed, the plan included.
     steps: steps.length,

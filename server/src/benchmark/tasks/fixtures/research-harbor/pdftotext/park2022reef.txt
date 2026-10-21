@@ -1,0 +1,10 @@
+Reef: Data Augmentation for Noisy Speech
+Ji-woo Park
+Reef adds noise from 40 recorded sources during training.
+
+6 Results
+Table 4: Word error rate.
+Reef on the Harbor benchmark 8.1
+Reef on the Lagoon benchmark 6.9
+
+

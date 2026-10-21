@@ -15,7 +15,7 @@ import { fileURLToPath } from 'node:url';
 const here = dirname(fileURLToPath(import.meta.url));
 export const FIXTURES_DIR = join(here, 'fixtures');
 // Kinds whose plug-in, verifiers and check exist; the rest are pending gates.
-export const RUNNABLE_KINDS = ['code', 'physics'];
+export const RUNNABLE_KINDS = ['code', 'research', 'physics'];
 
 // The check puts these back from the pristine fixture before it runs, so a
 // result that "passes" by editing the tests or the test script does not.
@@ -235,16 +235,31 @@ export const TASKS = [
     },
   },
   {
+    // A research task: the paper set is ingested into the graph, and the
+    // check compares the run's final answer with the key. One paper holds
+    // the answer; two are near misses (a lower number on another benchmark,
+    // an abstract that rounds down).
     id: 'research-cited-summary',
     kind: 'research',
-    status: 'pending',
+    status: 'ready',
     title: 'Answer a question from a fixed paper set, with citations',
-    instructions: 'Using only the papers in the project, state which method has the lowest reported error on the benchmark and cite the table it comes from.',
-    fixture: { kind: 'paper set', description: 'five open-licence papers ingested as nodes, one of which holds the answer' },
-    check: { description: 'the named method and the cited paper and table match the answer key, and every citation resolves to an ingested node' },
-    pending: {
-      reason: 'no research plug-in is registered yet, so there is no citation capability or citation verifier',
-      readyWhen: 'the research plug-in registers a cited-answer capability and a research.citations verifier that resolves every citation to a node',
+    fixture: 'research-harbor',
+    instructions:
+      'Using only the papers in the project, state which method has the lowest reported word error rate on the Harbor benchmark, and cite the paper and the table it comes from, citing papers as [@citekey].',
+    check: {
+      kind: 'answer',
+      method: 'Kelp',
+      citekey: 'osei2022kelp',
+      table: 'Table 2',
+      description: 'the final answer names Kelp, cites [@osei2022kelp] and Table 2, and every citation in it resolves to an ingested paper',
+    },
+    dry: {
+      plan: '1. Sweep the library for word error rates on Harbor.\n2. Compare the lowest candidates.\n3. Answer with the method, paper and table.',
+      actions: [
+        { capability: 'research.sweep', input: { question: 'lowest word error rate on the Harbor benchmark', maxPapers: 5 }, summary: 'Find every paper reporting a word error rate on Harbor' },
+        { capability: 'research.sweep', input: { question: 'Table word error rate Harbor', papers: ['osei2022kelp', 'silva2023drift', 'park2022reef'] }, summary: 'Compare the three lowest Harbor results and their tables' },
+      ],
+      summary: 'Kelp has the lowest reported word error rate on the Harbor benchmark, 7.4, in Table 2 of [@osei2022kelp]; Drift reports 7.9 [@silva2023drift] and Reef 8.1 [@park2022reef].',
     },
   },
   {
@@ -313,17 +328,23 @@ export function validateTask(task) {
     if (!task.pending?.reason || !task.pending?.readyWhen) problems.push('a pending task says why it is pending and what makes it ready');
     return problems;
   }
-  if (!RUNNABLE_KINDS.includes(task.kind)) problems.push(`only ${RUNNABLE_KINDS.join(' and ')} tasks can run so far, not ${task.kind}`);
+  if (!RUNNABLE_KINDS.includes(task.kind)) problems.push(`only ${RUNNABLE_KINDS.slice(0, -1).join(', ')} and ${RUNNABLE_KINDS.at(-1)} tasks can run so far, not ${task.kind}`);
   const dir = typeof task.fixture === 'string' ? join(FIXTURES_DIR, task.fixture) : null;
-  if (task.kind === 'physics') {
+  if (task.kind === 'code') {
+    if (!dir || !existsSync(join(dir, 'package.json')) || !statSync(dir).isDirectory()) problems.push(`fixture ${task.fixture} is missing`);
+    if (typeof task.check?.script !== 'string') problems.push('a code task names the script its check runs');
+  } else if (task.kind === 'research') {
+    // A research fixture is a reference library: a Better BibTeX export and its PDFs.
+    if (!dir || !existsSync(join(dir, 'library.json'))) problems.push(`fixture ${task.fixture} is missing its library.json`);
+    if (task.check?.kind !== 'answer' || !['method', 'citekey', 'table'].every((key) => typeof task.check?.[key] === 'string' && task.check[key])) {
+      problems.push('a research task checks its answer against a key: method, citekey and table');
+    }
+  } else if (task.kind === 'physics') {
     if (!dir || typeof task.problem !== 'string' || !existsSync(join(dir, task.problem))) problems.push(`fixture ${task.fixture} has no problem statement`);
     const check = task.check ?? {};
     if (check.kind !== 'quantity' || typeof check.capability !== 'string' || typeof check.output !== 'string' || typeof check.units !== 'string' || !Number.isFinite(check.reference) || !(check.rtol > 0)) {
       problems.push('a physics task checks a quantity: capability, output, units, reference and rtol');
     }
-  } else {
-    if (!dir || !existsSync(join(dir, 'package.json')) || !statSync(dir).isDirectory()) problems.push(`fixture ${task.fixture} is missing`);
-    if (typeof task.check?.script !== 'string') problems.push('a code task names the script its check runs');
   }
   if (!Array.isArray(task.dry?.actions) || task.dry.actions.length === 0) problems.push('a ready task scripts its dry run');
   for (const action of task.dry?.actions ?? []) {
