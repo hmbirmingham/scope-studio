@@ -18,7 +18,8 @@ import { prepareProject, snapshotTree } from './workspace.js';
 // a transcript, which is the property the benchmark measures.
 
 // Debugger: the built-in role whose tags cover reading, editing, the
-// project's scripts and generated code.
+// project's scripts and generated code. A task of another vertical names the
+// role whose tags reach its capabilities (a CAD task, the CAD Designer).
 const ROLE = 'debugger';
 const LEASE_MS = 60_000;
 // Generous limits: a dry run ends well inside them, and a live run should
@@ -41,8 +42,8 @@ async function claimOwn(runId, workerId, db) {
   return { ...run, was_started: false };
 }
 
-async function createBenchAgent({ db, ownerId, project, arm }) {
-  const role = roleTemplate(ROLE);
+async function createBenchAgent({ db, ownerId, project, arm, task }) {
+  const role = roleTemplate(task?.role ?? ROLE);
   // Local+cloud: the user has said yes to the cloud for this agent, so the
   // plan's cloud calls are allowed without a per-run approval.
   const overrides = arm.policy === 'local_cloud' ? { cloud_model: 'allow' } : {};
@@ -77,7 +78,7 @@ export async function runScopeTask({ task, arm, workspace, ownerId, db, mode = '
   const project = `bench-${task.id}-${arm.name}`;
   const repo = await prepareProject(task, workspace, arm.name);
   await db.query('INSERT INTO project_settings (owner_id, project, local_path) VALUES ($1, $2, $3)', [ownerId, project, repo]);
-  const agentId = await createBenchAgent({ db, ownerId, project, arm });
+  const agentId = await createBenchAgent({ db, ownerId, project, arm, task });
   const run = await insertRun({ ownerId, agentId, instructions: task.instructions, project }, db);
 
   // The worker removes the run's sandbox as soon as the run ends, right after

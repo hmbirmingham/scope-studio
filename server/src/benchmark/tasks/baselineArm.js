@@ -37,11 +37,11 @@ function toolSpec(capability) {
   return { name: capability.name, input_schema: capability.input ?? { type: 'object' } };
 }
 
-export function baselineSystem(capabilities) {
-  const role = roleTemplate('debugger');
+export function baselineSystem(capabilities, roleKey = 'debugger') {
+  const role = roleTemplate(roleKey);
   return [
     role.embodiment,
-    'You work in a copy of a software project and fix the task you are given, one tool call per turn.',
+    'You work in a copy of a project and complete the task you are given, one tool call per turn.',
     'Reply with exactly one JSON object and nothing else:',
     '{"capability": "<tool name>", "input": {…}, "summary": "<one sentence: what this call does>"}',
     'When the task is done, reply {"done": true, "summary": "<what was achieved>"}.',
@@ -88,7 +88,9 @@ async function modelTurn({ mode, model, system, messages, script, cache, cap, ap
 
 export async function runBaselineTask({ task, arm, workspace, mode = 'dry', cap, apiKey, stream = streamAnthropic, maxTurns = BASELINE_MAX_TURNS }) {
   registerBuiltInPlugins();
-  const capabilities = capabilitiesForTags(roleTemplate('debugger').tags);
+  // The same role, and so the same tools, as the Scope arm gets for the task.
+  const roleKey = task.role ?? 'debugger';
+  const capabilities = capabilitiesForTags(roleTemplate(roleKey).tags);
   const byName = new Map(capabilities.map((capability) => [capability.name, capability]));
   const repo = await prepareProject(task, workspace, arm.name);
   const box = await createSandbox({ runId: `bench-${arm.name}-${randomUUID().slice(0, 8)}`, repoPath: repo, env: workspace.sandboxEnv });
@@ -105,7 +107,7 @@ export async function runBaselineTask({ task, arm, workspace, mode = 'dry', cap,
     emit: () => {},
   };
 
-  const system = baselineSystem(capabilities);
+  const system = baselineSystem(capabilities, roleKey);
   const script = mode === 'dry' ? createScript(task) : null;
   const cache = new Set();
   const log = createCallLog();

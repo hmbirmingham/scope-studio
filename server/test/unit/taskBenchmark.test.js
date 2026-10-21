@@ -175,6 +175,7 @@ describe('scripted models', () => {
     assert.match(system, /"name":"code.read"/);
     assert.match(system, /"required":\["path"\]/);
     assert.match(system, /exactly one JSON object/);
+    assert.match(baselineSystem([], 'cad_designer'), /mechanical designer/, 'a task’s role sets the persona');
   });
 });
 
@@ -200,8 +201,8 @@ describe('the task catalog', () => {
     assert.match(readFileSync(join(FIXTURES_DIR, 'README.md'), 'utf8'), /written for this benchmark, MIT/);
   });
 
-  test('KiCad, research, physics and CAD are pending gates that say what makes them ready', () => {
-    for (const kind of ['kicad', 'research', 'physics', 'cad']) {
+  test('KiCad, research and physics are pending gates that say what makes them ready', () => {
+    for (const kind of ['kicad', 'research', 'physics']) {
       const gates = TASKS.filter((entry) => entry.kind === kind);
       assert.ok(gates.length >= 1, kind);
       for (const gate of gates) {
@@ -210,6 +211,26 @@ describe('the task catalog', () => {
         assert.ok(!existsSync(join(FIXTURES_DIR, gate.id)));
       }
     }
+  });
+
+  test('the CAD task is ready: the CAD Designer does it, CadQuery is required, and the part is the check', () => {
+    const task = TASKS.find((entry) => entry.id === 'cad-bracket-hole-spacing');
+    assert.equal(task.status, 'ready');
+    assert.equal(task.role, 'cad_designer');
+    assert.deepEqual(task.requires, ['cadquery']);
+    assert.equal(task.check.kind, 'cad');
+    assert.equal(task.check.file, 'bracket.stl');
+    assert.ok(existsSync(join(fixturePath(task), 'bracket.stl')));
+    assert.ok(task.dry.actions.some((action) => action.capability === 'cad.parametric_edit'), 'the dry run regenerates the part');
+    assert.ok(task.check.dimensions.some((check) => check.measure === 'holes.spacing' && check.value === 50));
+    assert.match(readFileSync(join(FIXTURES_DIR, 'README.md'), 'utf8'), /cad-bracket/);
+  });
+
+  test('a cad task without a measured file is refused', () => {
+    const task = TASKS.find((entry) => entry.id === 'cad-bracket-hole-spacing');
+    assert.ok(validateTask({ ...task, check: { kind: 'cad', file: 'bracket.stl', dimensions: [] } }).length === 1);
+    assert.ok(validateTask({ ...task, fixture: 'nope' }).length === 1);
+    assert.ok(validateTask({ ...task, kind: 'kicad' }).length >= 1);
   });
 
   test('a broken definition is refused', () => {
