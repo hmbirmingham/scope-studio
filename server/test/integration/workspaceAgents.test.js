@@ -1,10 +1,12 @@
 import assert from 'node:assert/strict';
 import { after, before, describe, test } from 'node:test';
 import { workspaceEvents } from '../../src/workspace/events.js';
+import { linkUser, meFor, startFakeControl } from '../fakeControl.js';
 import { registeredSession, startServer } from '../helpers.js';
 
 describe('agents API', () => {
   let server;
+  let control;
   let api;
   let other;
   let userId;
@@ -30,14 +32,28 @@ describe('agents API', () => {
     return { events, stop };
   }
 
+  // The plan comes from the control plane: a signed-in link with its /v1/me
+  // answer cached, which the stand-in control plane would also give if asked.
+  async function setPlan(ownerId, plan) {
+    const me = meFor(plan);
+    const token = await linkUser(server.pool, ownerId, plan, { me });
+    control.state.me.set(token, me);
+  }
+
   before(async () => {
+    control = await startFakeControl();
+    process.env.CONTROL_URL = control.url;
     server = await startServer();
     api = await registeredSession(server.base);
     other = await registeredSession(server.base);
     userId = (await api('GET', '/api/auth/session')).data.userId;
     otherId = (await other('GET', '/api/auth/session')).data.userId;
   });
-  after(() => server.close());
+  after(async () => {
+    delete process.env.CONTROL_URL;
+    await server.close();
+    await control.close();
+  });
 
   test('requires a session', async () => {
     const anonymous = await fetch(`${server.base}/api/agents`);
@@ -153,7 +169,7 @@ describe('agents API', () => {
     test('own_key is accepted only on the key_pro plan', async () => {
       const keyed = await registeredSession(server.base);
       const id = (await keyed('GET', '/api/auth/session')).data.userId;
-      await server.pool.query("UPDATE users SET plan = 'key_pro' WHERE id = $1", [id]);
+      await setPlan(id, 'key_pro');
       const agent = await makeAgent({ modelPolicy: 'own_key' }, keyed);
       assert.equal(agent.modelPolicy, 'own_key');
       // Patching in own_key for a free user is refused too.
@@ -161,9 +177,12 @@ describe('agents API', () => {
       const refused = await api('PATCH', `/api/agents/${free.id}`, { modelPolicy: 'own_key' });
       assert.deepEqual([refused.status, refused.data.error], [400, 'own_key_requires_key_pro']);
       // A downgraded user can still edit other fields of an own_key agent.
-      await server.pool.query("UPDATE users SET plan = 'free' WHERE id = $1", [id]);
+      await setPlan(id, 'free');
       const edited = await keyed('PATCH', `/api/agents/${agent.id}`, { name: 'Renamed', modelPolicy: 'own_key' });
       assert.equal(edited.status, 200);
+      // …but cannot give a new agent own_key once the control plane says Free.
+      const again = await keyed('POST', '/api/agents', { name: 'Ada', template: 'builder', modelPolicy: 'own_key' });
+      assert.deepEqual([again.status, again.data.error], [400, 'own_key_requires_key_pro']);
     });
   });
 

@@ -1,4 +1,4 @@
-import { getUserPlan } from '../../models/userStore.js';
+import { currentPlan } from '../../control/plan.js';
 import { roleTemplate } from '../roles.js';
 import { getRole } from './roleStore.js';
 import {
@@ -19,6 +19,9 @@ import {
 // Turns a create or patch body into complete agent fields, or a rejection
 // `{ status, error, message }`. `state` is never settable here: it changes only
 // through the pause / resume / kill / reactivate endpoints.
+//
+// The plan that decides whether `own_key` is allowed is the control plane's
+// (control/plan.js): signed out, offline or unconfigured, that is Free.
 
 const reject = (status, error, message) => ({ rejection: { status, error, message } });
 const bad = (result) => reject(400, result.error, result.message);
@@ -75,7 +78,7 @@ export async function buildNewAgent(ownerId, body) {
     agent[field] = checked.value;
   }
   if (body.modelPolicy !== undefined) {
-    const checked = validateModelPolicy(body.modelPolicy, await getUserPlan(ownerId));
+    const checked = validateModelPolicy(body.modelPolicy, await currentPlan(ownerId));
     if (checked.error) return bad(checked);
     agent.modelPolicy = checked.value;
   }
@@ -113,7 +116,7 @@ export async function buildAgentPatch(ownerId, current, body) {
     // Re-saving the policy the agent already has is always fine, so a downgraded
     // plan never blocks editing an unrelated field that happens to be re-sent.
     const unchanged = body.modelPolicy === current.modelPolicy;
-    const checked = validateModelPolicy(body.modelPolicy, unchanged ? 'key_pro' : await getUserPlan(ownerId));
+    const checked = validateModelPolicy(body.modelPolicy, unchanged ? 'key_pro' : await currentPlan(ownerId));
     if (checked.error) return bad(checked);
     next.modelPolicy = checked.value;
   }
