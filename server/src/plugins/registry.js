@@ -1,9 +1,10 @@
 import { listPlugins, registerPlugin } from '../workspace/capabilities.js';
+import cad from './cad/index.js';
 import code from './code/index.js';
 
 // The plug-ins whose capabilities agents can use. A vertical adds one import
 // and one entry here; nothing else in the engine changes.
-const BUILT_IN = [code];
+const BUILT_IN = [code, cad];
 
 // Safe to call more than once (the engine and tests both call it): a plug-in
 // that is already registered is skipped rather than refused.

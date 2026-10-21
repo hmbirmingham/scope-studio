@@ -64,7 +64,9 @@ after(async () => {
 describe('code plug-in registration', () => {
   test('registers through the built-in registry, once', () => {
     registerBuiltInPlugins();
-    assert.deepEqual(listPlugins(), ['code']);
+    // The verticals register beside it; the code plug-in is there once.
+    assert.equal(listPlugins().filter((name) => name === 'code').length, 1);
+    assert.equal(listPlugins()[0], 'code');
     assert.equal(cap('code.search').permission, 'read_graph');
     assert.equal(cap('code.read').permission, 'read_graph');
     assert.equal(cap('code.edit').permission, 'edit_files');
