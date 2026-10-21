@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { randomUUID } from 'node:crypto';
-import { existsSync, mkdirSync, readFileSync, readdirSync, writeFileSync } from 'node:fs';
+import { existsSync, lstatSync, mkdirSync, readFileSync, readdirSync, statSync, writeFileSync } from 'node:fs';
 import { createServer as createHttpServer } from 'node:http';
 import { createServer as createTcpServer } from 'node:net';
 import { homedir } from 'node:os';
@@ -282,6 +282,63 @@ print("forks refused", blocked)
     const { result } = await runNode('setInterval(() => {}, 1000)', { signal: controller.signal, timeoutMs: 20_000 });
     assert.equal(result.ok, false);
     assert.equal(result.limit, 'aborted');
+  });
+});
+
+// As root the sandbox directory is handed to an unprivileged uid before each
+// run. The directory belongs to the sandboxed code, which can leave symlinks
+// to any host path in it for the next run to trip over.
+describe('handing the sandbox directory over between runs', { skip: (!linux || process.geteuid?.() !== 0) && 'only root hands files over, on Linux' }, () => {
+  function victim() {
+    const dir = tempDir('victim');
+    const file = join(dir, 'host-secret');
+    writeFileSync(file, 'host only', { mode: 0o600 });
+    const inner = join(dir, 'inner');
+    mkdirSync(inner, { mode: 0o700 });
+    writeFileSync(join(inner, 'nested-secret'), 'host only', { mode: 0o600 });
+    return { dir, file, inner, nested: join(inner, 'nested-secret') };
+  }
+  const owner = (path) => {
+    const stat = statSync(path);
+    return { uid: stat.uid, gid: stat.gid, mode: stat.mode & 0o7777 };
+  };
+
+  test('a symlink left by one run never changes the owner of the host file it points at', async () => {
+    const host = victim();
+    const cwd = scratchDir();
+    const before = [host.dir, host.file, host.inner, host.nested].map(owner);
+    const plant = await runNode(`
+      import { symlinkSync } from 'node:fs';
+      symlinkSync(${JSON.stringify(host.file)}, 'file-link');
+      symlinkSync(${JSON.stringify(host.dir)}, 'dir-link');
+      symlinkSync(${JSON.stringify(host.inner)}, 'inner-link');
+      console.log('planted');
+    `, { cwd });
+    assert.equal(plant.result.ok, true, plant.result.output);
+    assert.equal(lstatSync(join(cwd, 'file-link')).isSymbolicLink(), true);
+
+    // Any later run in the same directory: the engine hands it over again.
+    const second = await runNode(`
+      import { readFileSync } from 'node:fs';
+      try { console.log(readFileSync('file-link', 'utf8')); } catch (e) { console.log('unreadable ' + e.code); }
+    `, { cwd });
+    assert.equal(second.result.ok, true, second.result.output);
+    assert.doesNotMatch(second.result.output, /host only/);
+    assert.deepEqual([host.dir, host.file, host.inner, host.nested].map(owner), before);
+    assert.equal(owner(host.file).uid, 0);
+    // The link itself is the sandbox's, and was handed over, not followed.
+    assert.equal(lstatSync(join(cwd, 'file-link')).uid, 65534);
+  });
+
+  test('files the engine wrote are handed over so the code can change them', async () => {
+    const cwd = scratchDir();
+    writeFileSync(join(cwd, 'engine-wrote.txt'), 'before', { mode: 0o644 });
+    const { result } = await runNode(`
+      import { writeFileSync } from 'node:fs';
+      writeFileSync('engine-wrote.txt', 'after');
+    `, { cwd });
+    assert.equal(result.ok, true, result.output);
+    assert.equal(readFileSync(join(cwd, 'engine-wrote.txt'), 'utf8'), 'after');
   });
 });
 

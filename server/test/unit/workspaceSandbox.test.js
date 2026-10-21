@@ -6,6 +6,7 @@ import { after, describe, test } from 'node:test';
 import {
   assertSafeSandboxDir,
   buildBwrapArgs,
+  buildChownArgs,
   createSandboxRunner,
   darwinProfile,
   dataDir,
@@ -165,5 +166,63 @@ describe('refusing without a sandbox', () => {
   test('macOS without sandbox-exec refuses', async () => {
     const runner = createSandboxRunner({ platform: 'darwin', find: () => null });
     await assert.rejects(runner.run(request), { code: 'sandbox_unavailable' });
+  });
+
+  test('Linux as root without find or chown refuses, since files could not be handed over safely', async () => {
+    for (const tool of ['find', 'chown']) {
+      const runner = createSandboxRunner({ platform: 'linux', find: (name) => (name === tool ? null : `/usr/bin/${name}`), euid: 0 });
+      assert.match((await runner.status()).reason, new RegExp(tool));
+    }
+  });
+
+  test('a failed probe is retried after a while; a successful one is kept', async () => {
+    let clock = 0;
+    let bwrap = '/usr/bin/false';
+    let probes = 0;
+    const find = (name) => {
+      if (name === 'bwrap') probes++;
+      return name === 'bwrap' ? bwrap : `/usr/bin/${name}`;
+    };
+    const runner = createSandboxRunner({ platform: 'linux', find, euid: 1000, now: () => clock, retryFailedMs: 1_000 });
+    assert.equal((await runner.status()).available, false);
+    assert.equal((await runner.status()).available, false);
+    assert.equal(probes, 1, 'a failure is not re-probed straight away');
+    bwrap = '/usr/bin/true';
+    clock = 1_000;
+    assert.equal((await runner.status()).available, true);
+    assert.equal(probes, 2);
+    clock = 10_000_000;
+    bwrap = '/usr/bin/false';
+    assert.equal((await runner.status()).available, true);
+    assert.equal(probes, 2, 'a success is kept');
+  });
+});
+
+describe('handing the sandbox directory to the unprivileged uid', () => {
+  const system = [{ type: 'bind', path: '/usr' }, { type: 'symlink', path: '/bin', target: 'usr/bin' }];
+  const argv = buildChownArgs({ system, dir: '/data/sandboxes/r1/worktree', find: '/usr/bin/find', chown: '/usr/bin/chown', id: 65534 });
+  const command = argv.slice(argv.indexOf('--') + 1);
+
+  test('runs in a sandbox where only that directory and the read-only system exist', () => {
+    assert.deepEqual(argv.slice(0, 7), ['--unshare-ipc', '--unshare-pid', '--unshare-net', '--unshare-uts', '--unshare-cgroup-try', '--die-with-parent', '--new-session']);
+    const binds = [];
+    for (let i = 0; i < argv.indexOf('--'); i++) if (argv[i] === '--bind' || argv[i] === '--ro-bind') binds.push([argv[i], argv[i + 1]]);
+    assert.deepEqual(binds, [['--ro-bind', '/usr'], ['--bind', '/data/sandboxes/r1/worktree']]);
+    assert.ok(argv.indexOf('--remount-ro') > argv.indexOf('--bind'));
+    assert.ok(argv.includes('--clearenv'));
+  });
+
+  test('keeps only the capabilities a chown needs', () => {
+    const before = argv.slice(0, argv.indexOf('--'));
+    assert.deepEqual(before.slice(before.indexOf('--cap-drop'), before.indexOf('--cap-drop') + 2), ['--cap-drop', 'ALL']);
+    const added = before.flatMap((arg, i) => (arg === '--cap-add' ? [before[i + 1]] : []));
+    assert.deepEqual(added.sort(), ['CAP_CHOWN', 'CAP_DAC_OVERRIDE', 'CAP_DAC_READ_SEARCH', 'CAP_FOWNER']);
+  });
+
+  test('never follows a link and changes a link itself, not its target', () => {
+    assert.deepEqual(command.slice(0, 3), ['/usr/bin/find', '-P', '/data/sandboxes/r1/worktree']);
+    assert.ok(!command.includes('-L') && !command.includes('-H') && !command.includes('-follow'));
+    assert.deepEqual(command.slice(-6), ['-exec', '/usr/bin/chown', '-h', '65534:65534', '{}', '+']);
+    assert.ok(!command.includes('-R'));
   });
 });

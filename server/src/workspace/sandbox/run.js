@@ -1,6 +1,5 @@
 import { execFile } from 'node:child_process';
 import { constants, accessSync, lstatSync, readlinkSync, realpathSync, statSync } from 'node:fs';
-import { chown, lstat, readdir } from 'node:fs/promises';
 import { homedir } from 'node:os';
 import { basename, delimiter, dirname, isAbsolute, join } from 'node:path';
 import { isInside, realpathLoose } from './paths.js';
@@ -247,12 +246,45 @@ export function darwinProfile({ writable, readOnly = [], hidden = [] }) {
   return `${lines.join('\n')}\n`;
 }
 
-async function chownTree(path, id) {
-  const stat = await lstat(path);
-  await chown(path, id, id).catch(() => {});
-  if (stat.isDirectory() && !stat.isSymbolicLink()) {
-    for (const entry of await readdir(path)) await chownTree(join(path, entry), id);
+// When the engine runs as root the sandboxed process runs as `nobody`, so
+// the files the engine put in the sandbox directory (the project copy, an
+// edited file, the code to run) have to be handed to that uid first. The
+// directory is the sandboxed code's own: it can hold symlinks to any host
+// path, and a host-side chown follows them. So the handover runs inside a
+// sandbox of its own, where only that directory and the read-only system
+// directories exist: a planted link points at nothing writable there. find
+// never follows links (-P is its default) and chown -h changes a link itself,
+// not its target. Only entries not already owned by the uid are touched, so
+// the second run over a large tree (node_modules) is cheap.
+export function buildChownArgs({ system, dir, find, chown, id }) {
+  // No user namespace: inside one, the unprivileged uid would not be mapped
+  // and root could not give files to it.
+  const argv = ['--unshare-ipc', '--unshare-pid', '--unshare-net', '--unshare-uts', '--unshare-cgroup-try', '--die-with-parent', '--new-session'];
+  for (const entry of system) {
+    if (entry.type === 'symlink') argv.push('--symlink', entry.target, entry.path);
+    else argv.push('--ro-bind', entry.path, entry.path);
   }
+  for (const parent of ancestors(dir)) argv.push('--perms', '0755', '--dir', parent);
+  argv.push(
+    '--bind', dir, dir,
+    '--remount-ro', '/',
+    '--chdir', '/',
+    '--clearenv',
+    '--setenv', 'PATH', '/usr/bin:/bin',
+    '--setenv', 'LANG', 'C.UTF-8',
+    // Root keeps every capability in bubblewrap unless told otherwise; the
+    // handover needs only these.
+    '--cap-drop', 'ALL',
+    '--cap-add', 'CAP_CHOWN',
+    '--cap-add', 'CAP_DAC_OVERRIDE',
+    '--cap-add', 'CAP_DAC_READ_SEARCH',
+    '--cap-add', 'CAP_FOWNER',
+    '--',
+    find, '-P', dir,
+    '(', '!', '-uid', String(id), '-o', '!', '-gid', String(id), ')',
+    '-exec', chown, '-h', `${id}:${id}`, '{}', '+'
+  );
+  return argv;
 }
 
 function realDir(path, label) {
@@ -329,13 +361,26 @@ export function createSandboxRunner({
   find = findExecutable,
   euid = typeof process.geteuid === 'function' ? process.geteuid() : null,
   home = homedir(),
+  now = Date.now,
+  retryFailedMs = 30_000,
 } = {}) {
   let probe = null;
+  let probeOk = false;
+  let probedAt = 0;
 
   function linuxTools() {
-    const tools = { bwrap: find('bwrap'), prlimit: find('prlimit'), setpriv: euid === 0 ? find('setpriv') : null };
+    const root = euid === 0;
+    const tools = {
+      bwrap: find('bwrap'),
+      prlimit: find('prlimit'),
+      // Only root drops to another uid, and so only root hands files over.
+      setpriv: root ? find('setpriv') : null,
+      find: root ? find('find') : null,
+      chown: root ? find('chown') : null,
+    };
+    const rootOnly = new Set(['setpriv', 'find', 'chown']);
     const missing = Object.entries(tools)
-      .filter(([name, path]) => !path && (name !== 'setpriv' || euid === 0))
+      .filter(([name, path]) => !path && (!rootOnly.has(name) || root))
       .map(([name]) => name);
     return { tools, missing };
   }
@@ -451,11 +496,23 @@ export function createSandboxRunner({
     });
   }
 
-  // Whether a sandbox can be made here, checked once by actually starting
-  // one: bubblewrap can be installed and still be unusable (user namespaces
-  // disabled by sysctl or AppArmor).
+  async function handOver(tools, dir, signal) {
+    const argv = buildChownArgs({ system: systemEntries(), dir, find: tools.find, chown: tools.chown, id: UNPRIVILEGED_ID });
+    const result = await execFileResult(tools.bwrap, argv, { timeoutMs: 120_000, maxOutput: 8192, env: {}, signal });
+    if (result.exitCode !== 0) {
+      throw new SandboxError('sandbox_unavailable', `could not prepare the sandbox directory: ${`${result.stdout}${result.stderr}`.trim().slice(0, 300)}`);
+    }
+  }
+
+  // Whether a sandbox can be made here, checked by actually starting one:
+  // bubblewrap can be installed and still be unusable (user namespaces
+  // disabled by sysctl or AppArmor). A success is kept for the life of the
+  // process; a failure only for a short while, so a transient failure (a
+  // busy machine timing out the probe) does not turn sandboxing off until a
+  // restart.
   async function status() {
-    if (probe) return probe;
+    if (probe && (probeOk || now() - probedAt < retryFailedMs)) return probe;
+    probedAt = now();
     probe = (async () => {
       if (platform === 'linux') {
         const { tools, missing } = linuxTools();
@@ -486,7 +543,9 @@ export function createSandboxRunner({
       }
       return { available: false, mechanism: null, reason: `no sandbox mechanism on ${platform}` };
     })();
-    return probe;
+    const state = await probe;
+    probeOk = state.available;
+    return state;
   }
 
   async function run(options = {}) {
@@ -499,7 +558,7 @@ export function createSandboxRunner({
     if (state.mechanism === 'bwrap') {
       const { tools } = linuxTools();
       // The unprivileged uid must be able to write the sandbox directory.
-      if (euid === 0) for (const path of plan.writable) await chownTree(path, UNPRIVILEGED_ID);
+      if (euid === 0) for (const path of plan.writable) await handOver(tools, path, plan.signal);
       file = tools.bwrap;
       argv = linuxArgv(plan, tools);
     } else {
