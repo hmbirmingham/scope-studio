@@ -1,6 +1,8 @@
 // Run budgets: tokens, dollars, wall clock and a step count. The agent sets
-// them; a run may override any of them (a quick check with a tighter limit, a
-// long sweep with a looser one). A run stops at the first limit it reaches.
+// them; a run may tighten any of them (a quick check with a smaller limit) but
+// never loosen one: the agent's budget is the user's ceiling, and whoever can
+// start a run (a task, a schedule) must not be able to lift it. A run stops at
+// the first limit it reaches.
 
 // Without a step limit a confused model could loop until another limit hit,
 // so every run has one even when the user set none.
@@ -13,12 +15,16 @@ function positive(value) {
   return value != null && Number.isFinite(number) && number > 0 ? number : null;
 }
 
+// Each limit is the smaller of the agent's and the run's; a limit only one
+// of them sets is that one. The default step limit counts as the agent's, so
+// a run cannot raise it either.
 export function effectiveBudget(agentBudget = {}, runBudget = {}) {
   const budget = {};
   for (const limit of LIMITS) {
-    budget[limit] = positive(runBudget?.[limit]) ?? positive(agentBudget?.[limit]);
+    const ceiling = positive(agentBudget?.[limit]) ?? (limit === 'maxSteps' ? DEFAULT_MAX_STEPS : null);
+    const requested = positive(runBudget?.[limit]);
+    budget[limit] = ceiling == null ? requested : requested == null ? ceiling : Math.min(ceiling, requested);
   }
-  budget.maxSteps ??= DEFAULT_MAX_STEPS;
   return budget;
 }
 

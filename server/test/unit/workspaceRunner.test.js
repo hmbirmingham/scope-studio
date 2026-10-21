@@ -80,6 +80,15 @@ describe('run budgets', () => {
     assert.equal(effectiveBudget(undefined, undefined).maxSteps, DEFAULT_MAX_STEPS);
   });
 
+  test('a run budget may tighten the agent budget but never loosen it', () => {
+    const agent = { maxTokens: 1000, maxUsd: 1, maxWallMs: 60_000, maxSteps: 10 };
+    assert.deepEqual(effectiveBudget(agent, { maxTokens: 5000, maxUsd: 0.25, maxWallMs: 120_000, maxSteps: 3 }), { maxTokens: 1000, maxUsd: 0.25, maxWallMs: 60_000, maxSteps: 3 });
+    assert.deepEqual(effectiveBudget(agent, { maxSteps: 500 }), agent);
+    // A limit the agent leaves open can be set by the run; the default step
+    // limit is the agent's, so a run cannot raise it.
+    assert.deepEqual(effectiveBudget({}, { maxTokens: 50, maxSteps: 500 }), { maxTokens: 50, maxUsd: null, maxWallMs: null, maxSteps: DEFAULT_MAX_STEPS });
+  });
+
   test('stops at the first limit reached', () => {
     const budget = { maxTokens: 100, maxUsd: 0.1, maxWallMs: 1000, maxSteps: 3 };
     assert.equal(exceededLimit(budget, { tokens: 99, usd: 0.09, wallMs: 999, steps: 2 }), null);
