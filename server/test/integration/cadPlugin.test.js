@@ -11,6 +11,7 @@ import { roleTemplate } from '../../src/workspace/roles.js';
 import { capabilitiesForTags, getCapability, getVerifier, listPlugins, resetRegistry } from '../../src/workspace/capabilities.js';
 import { createSandbox, createScratchSandbox, removeSandbox } from '../../src/workspace/sandbox/index.js';
 import { cadQueryForTests } from '../fixtures/cad/replay.js';
+import { BRACKET_SCRIPT, DRILL_SCRIPT, FAILING_SCRIPT, NETWORK_SCRIPT, NO_RESULT_SCRIPT } from '../fixtures/cad/scripts.js';
 import { box } from '../fixtures/cad/shapes.js';
 import { makeRepo, removeTempDirs, tempDir, useDataDir } from './workspaceSandboxFixtures.js';
 
@@ -23,18 +24,6 @@ import { makeRepo, removeTempDirs, tempDir, useDataDir } from './workspaceSandbo
 
 const FIXTURES = join(import.meta.dirname, '..', 'fixtures', 'cad');
 const fixture = (name) => readFileSync(join(FIXTURES, name));
-
-// CadQuery scripts the tests run. Their text is part of the recording key.
-export const BRACKET_SCRIPT = [
-  'spacing = 50',
-  'plate = cq.Workplane("XY").box(80, 20, 5, centered=False)',
-  'result = plate.faces(">Z").workplane(origin=(0, 0, 5)).pushPoints([(15, 10), (15 + spacing, 10)]).hole(5)',
-  '',
-].join('\n');
-const DRILL_SCRIPT = 'result = cq.importers.importStep(project_path("cube.step")).faces(">Z").workplane(origin=(5, 5, 10)).hole(4)\n';
-const FAILING_SCRIPT = 'raise ValueError("the fillet radius is larger than the edge")\n';
-const NO_RESULT_SCRIPT = 'part = cq.Workplane("XY").box(1, 1, 1)\n';
-const NETWORK_SCRIPT = 'import socket\nsocket.create_connection(("192.0.2.1", 80), timeout=2)\nresult = cq.Workplane("XY").box(1, 1, 1)\n';
 
 let data;
 let project;
