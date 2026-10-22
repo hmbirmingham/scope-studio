@@ -19,6 +19,9 @@ const HARD_PATTERNS = [
   /\b(explain why|root cause|what caused|reason for)\b/i,
   // Changing or building code.
   /\b(refactor|rewrite|implement|redesign|architect|migrate|optimi[sz]e|debug|fix (the|this|a)|add (a|an) (feature|test|endpoint))\b/i,
+  // A request that opens on a change verb asks for work, not a lookup: "fix
+  // solve_2cmt so…", "add a unit test that…", "make the limit per coach".
+  /^\s*(please\s+)?(fix|add|make|change|update|rename|remove|convert)\b/i,
   // Reviewing and planning.
   /\b(review|audit|evaluate|assess|critique|plan for|design (a|an|the))\b/i,
 ];

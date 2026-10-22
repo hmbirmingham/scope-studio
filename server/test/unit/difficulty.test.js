@@ -21,6 +21,20 @@ describe('questionDifficulty', () => {
     }
   });
 
+  test('a request that opens on a change verb is hard', () => {
+    for (const q of [
+      'Fix that bug in dispose_engine.',
+      'fix solve_2cmt so a short bolus cannot be stepped over',
+      'Add a unit test that checks apply_profile drops touching_colony',
+      'make the rate limit per coach instead of global',
+      'please rename quantify to count_colonies',
+    ]) assert.equal(hardWording(q), 'wording', q);
+    // The same words inside a lookup are not a request for work.
+    for (const q of ['what is the fix-up script in tools for', 'where do we add the auth header', 'which file makes the thumbnails']) {
+      assert.equal(hardWording(q), null, q);
+    }
+  });
+
   test('long and multi-part questions are hard', () => {
     assert.equal(hardWording(Array.from({ length: 36 }, (_, i) => `word${i}`).join(' ')), 'length');
     assert.equal(hardWording('where is it set? and where is it read?'), 'multi_part');
