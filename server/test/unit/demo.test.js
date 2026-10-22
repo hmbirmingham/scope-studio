@@ -1,4 +1,6 @@
 import assert from 'node:assert/strict';
+import { execFile } from 'node:child_process';
+import { fileURLToPath } from 'node:url';
 import { describe, test } from 'node:test';
 import { createGraphPlugin } from '../../src/plugins/graph/index.js';
 import {
@@ -14,7 +16,8 @@ import {
   missingModels,
   safeDatabaseName,
 } from '../../src/demo/preflight.js';
-import { localSigninAllowed } from '../../src/routes/auth.js';
+import { LOCAL_DEMO_EMAIL, localModeConfigError, localSigninAllowed } from '../../src/config/localMode.js';
+import { DEMO_EMAIL } from '../../src/demo/content.js';
 import { demoReply } from '../demoModel.js';
 
 // The demo launcher's checks, the graph plug-in's one capability, and the
@@ -126,30 +129,88 @@ describe('graph.write_artifact', () => {
 });
 
 describe('local sign-in guard', () => {
-  const env = { SCOPE_LOCAL_USER: 'student@scope-demo.local', NODE_ENV: 'development' };
-  const request = ({ address = '127.0.0.1', host = 'localhost:5173', header = '1' } = {}) => ({
-    socket: { remoteAddress: address },
-    get: (name) => ({ host, 'x-scope-local-signin': header })[name.toLowerCase()],
+  const env = { SCOPE_LOCAL_USER: 'student@scope-demo.local', NODE_ENV: 'development', SCOPE_HOST: '127.0.0.1' };
+  const request = ({ address = '127.0.0.1', bound = '127.0.0.1', host = 'localhost:5173', header = '1', ...headers } = {}) => ({
+    socket: { remoteAddress: address, server: { address: () => (bound ? { address: bound, port: 3001 } : null) } },
+    get: (name) => ({ host, 'x-scope-local-signin': header, ...headers })[name.toLowerCase()] ?? undefined,
   });
 
-  test('allows this machine’s own browser', () => {
+  test('allows this machine’s own browser, from its own origin', () => {
     assert.equal(localSigninAllowed(request(), env), true);
-    assert.equal(localSigninAllowed(request({ address: '::1', host: '[::1]:5173' }), env), true);
+    assert.equal(localSigninAllowed(request({ address: '::1', bound: '::1', host: '[::1]:5173' }), env), true);
     assert.equal(localSigninAllowed(request({ address: '::ffff:127.0.0.1', host: '127.0.0.1:3001' }), env), true);
+    assert.equal(localSigninAllowed(request({ origin: 'http://localhost:5173' }), env), true);
+    assert.equal(localSigninAllowed(request({ origin: 'http://127.0.0.1:5173' }), env), true);
+    assert.equal(localSigninAllowed(request({ origin: 'http://[::1]:5173' }), env), true);
   });
 
-  test('refuses when local mode is off or the engine is in production', () => {
-    assert.equal(localSigninAllowed(request(), {}), false);
-    assert.equal(localSigninAllowed(request(), { ...env, NODE_ENV: 'production' }), false);
+  test('(1) needs NODE_ENV=development exactly, not merely “not production”', () => {
+    for (const NODE_ENV of [undefined, '', 'test', 'production', 'Development', 'dev']) {
+      assert.equal(localSigninAllowed(request(), { ...env, NODE_ENV }), false, String(NODE_ENV));
+      assert.match(localModeConfigError({ ...env, NODE_ENV }), /NODE_ENV=development/);
+    }
+    assert.equal(localModeConfigError(env), null);
+    assert.equal(localModeConfigError({}), null, 'no local mode, nothing to refuse');
   });
 
-  test('refuses another machine, another host name, or a request without the header', () => {
+  test('(2) needs the engine bound to loopback, by configuration and in fact', () => {
+    for (const SCOPE_HOST of [undefined, '', '0.0.0.0', '::', '192.168.1.5']) {
+      assert.equal(localSigninAllowed(request(), { ...env, SCOPE_HOST }), false, String(SCOPE_HOST));
+      assert.match(localModeConfigError({ ...env, SCOPE_HOST }), /SCOPE_HOST/);
+    }
+    for (const SCOPE_HOST of ['127.0.0.1', '::1', 'localhost']) assert.equal(localModeConfigError({ ...env, SCOPE_HOST }), null);
+    // Configured for loopback but actually listening everywhere: refused.
+    for (const bound of ['0.0.0.0', '::', '192.168.1.5', null]) {
+      assert.equal(localSigninAllowed(request({ bound }), env), false, String(bound));
+    }
+  });
+
+  test('(3) only ever signs in to the demo account', () => {
+    for (const SCOPE_LOCAL_USER of ['hynes@example.com', 'student@scope-demo.local.evil.com', 'admin@scope-demo.local']) {
+      assert.equal(localSigninAllowed(request(), { ...env, SCOPE_LOCAL_USER }), false, SCOPE_LOCAL_USER);
+      assert.match(localModeConfigError({ ...env, SCOPE_LOCAL_USER }), /only name the demo account/);
+    }
+    assert.equal(localModeConfigError({ ...env, SCOPE_LOCAL_USER: ' Student@Scope-Demo.local ' }), null);
+    assert.equal(LOCAL_DEMO_EMAIL, DEMO_EMAIL);
+  });
+
+  test('(4) refuses a request from any other origin', () => {
+    for (const origin of ['https://evil.example', 'http://evil.example:5173', 'null', 'http://192.168.1.5:5173', 'https://localhost:5173', 'not a url']) {
+      assert.equal(localSigninAllowed(request({ origin }), env), false, origin);
+    }
+  });
+
+  test('refuses another machine, a forwarded request, another host name, or a request without the header', () => {
     assert.equal(localSigninAllowed(request({ address: '192.168.1.20' }), env), false);
+    assert.equal(localSigninAllowed(request({ 'x-forwarded-for': '192.168.1.20' }), env), false);
+    assert.equal(localSigninAllowed(request({ forwarded: 'for=192.168.1.20' }), env), false);
+    assert.equal(localSigninAllowed(request({ 'x-real-ip': '192.168.1.20' }), env), false);
     assert.equal(localSigninAllowed(request({ host: 'evil.example:5173' }), env), false);
     assert.equal(localSigninAllowed(request({ host: '192.168.1.5:5173' }), env), false);
     assert.equal(localSigninAllowed(request({ host: null }), env), false);
     assert.equal(localSigninAllowed(request({ header: null }), env), false);
     assert.equal(localSigninAllowed(request({ header: 'true' }), env), false);
+    // Without the header it can be advertised, never granted.
+    assert.equal(localSigninAllowed(request({ header: null }), env, { header: false }), true);
+  });
+
+  test('the engine refuses to start with local mode not held to the demo on loopback', async () => {
+    const start = (extra) =>
+      new Promise((resolve) => {
+        execFile(process.execPath, [fileURLToPath(new URL('../../src/index.js', import.meta.url))], {
+          env: { ...process.env, PORT: '0', ...extra },
+          timeout: 15_000,
+        }, (err, stdout, stderr) => resolve({ code: err?.code ?? 0, stderr }));
+      });
+    const listening = await start({ ...env, SCOPE_HOST: '0.0.0.0' });
+    assert.equal(listening.code, 1);
+    assert.match(listening.stderr, /Refusing to start: SCOPE_LOCAL_USER needs SCOPE_HOST/);
+    const realAccount = await start({ ...env, SCOPE_LOCAL_USER: 'hynes@example.com' });
+    assert.equal(realAccount.code, 1);
+    assert.match(realAccount.stderr, /only name the demo account/);
+    const production = await start({ ...env, NODE_ENV: 'production' });
+    assert.equal(production.code, 1);
+    assert.match(production.stderr, /NODE_ENV=development/);
   });
 });
 

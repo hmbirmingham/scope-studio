@@ -241,7 +241,7 @@ async function main() {
     NODE_ENV: 'development',
     PORT: String(enginePort),
     // Only this machine can reach the engine; the app's proxy is on loopback.
-    HOST: '127.0.0.1',
+    SCOPE_HOST: '127.0.0.1',
     BASE_URL: `http://localhost:${enginePort}`,
     DATABASE_URL: databaseUrl,
     OLLAMA_URL: ollamaUrl,

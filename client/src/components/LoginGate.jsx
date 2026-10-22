@@ -10,9 +10,9 @@ export default function LoginGate({ children }) {
   const [error, setError] = useState(null);
 
   useEffect(() => {
-    // An engine started in local mode (the demo) signs this machine's own
-    // browser in without a password; any other engine answers 404 and the
-    // form below is shown as before.
+    // An engine started in local mode (the demo) says so when this browser is
+    // not signed in, and then signs it in to the demo account without a
+    // password; any other engine never says so, and the form below is shown.
     // The body is read before going on: the session is saved while the
     // response ends, and a request sent on its headers alone could beat it.
     const signInLocally = () =>
@@ -21,7 +21,11 @@ export default function LoginGate({ children }) {
         return response.ok;
       });
     fetch('/api/auth/session')
-      .then(async (response) => setState(response.ok || (await signInLocally()) ? 'in' : 'out'))
+      .then(async (response) => {
+        if (response.ok) return setState('in');
+        const body = await response.json().catch(() => ({}));
+        setState(body.localSignin === true && (await signInLocally()) ? 'in' : 'out');
+      })
       .catch(() => setState('out'));
   }, []);
 
