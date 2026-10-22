@@ -1,7 +1,7 @@
 # Scope Studio — Architecture Decision Record
-**Version:** 0.3 (benchmark built and run on the live corpus; §4 gains the definition term and loses nothing else; §8 records what the 20 queries measured; §9 items 1 and 3 settled)
+**Version:** 0.4 (new §9 records the agent workspace, the capability plug-ins and verticals, the OS sandbox, the ModelPort, the engine ↔ control link, the task benchmark and the local demo; §5 points to the launch pricing design note; the former §9 and §10 are now §10 and §11. v0.3 built the retrieval benchmark, added the definition term to §4 and settled items 1 and 3 of what is now §10.)
 **Author:** Hynes Birmingham, Fourier Studios
-**Last updated:** September 2026
+**Last updated:** October 2026
 **Status:** Canonical — update only when a fundamental decision changes
 
 This document records the core architectural decisions made during scoping,
@@ -22,6 +22,14 @@ the query to either a local 7B-class model or a cloud model.
 engineering query as pasting full context manually, with no drop in answer
 correctness, because it retrieves precisely what is relevant rather than
 everything that exists.
+
+The same graph is also the working memory of the **agent workspace** (§9):
+user-owned agents that run long tasks one small step at a time, each step
+reading a fixed-size slice of the graph, acting through one declared
+capability, verifying the result and writing what it learned back as nodes.
+**The second claim** follows from the first: because a step's context does
+not grow with the task, a local 8B model can run long engineering, research
+and code tasks, and the cloud is kept for the few steps that need it.
 
 ---
 
@@ -59,6 +67,18 @@ but is essential for correct answers.
   privacy: 'local' | 'cloud'
 }
 ```
+
+The type and source lists above are the original schema. Later migrations
+widened both: migration 020 adds the agent write-back types (`plan`, `step`,
+`finding`, `artifact`, `question`; `decision` already existed), source
+`agent` and the relationships `derived_from`, `produces`, `follows`,
+`answers`; migration 039 adds the verticals' vocabulary (KiCad `schematic`,
+`board`, `symbol`, `net`, `footprint`, `bom_row`; research `note`,
+`excerpt`; physics `derivation`, `computation`; CAD `part`, `assembly`),
+the sources `pdf`, `physics`, `cad` and the relationships `connects`,
+`implements`, `cites`, `contains`. The full lists are in
+[docs/architecture/agent-workspace.md](docs/architecture/agent-workspace.md)
+("Graph write-back", "Verticals").
 
 **Key design decision — `token_length` at ingestion:**
 Token length is computed once when a node is ingested, not at retrieval
@@ -391,6 +411,14 @@ call's key is chosen in one place (`billing/credential.js`):
 
 Local answers are unlimited on every plan.
 
+**Launch pricing is being changed, and the change is not implemented yet.**
+The decision (no tiers before an MVP; Free becomes the full local experience
+plus the user's own Anthropic key; one paid subscription with platform-paid
+cloud replaces Key Pro, Student and Engineer) and the exact pull request that
+would carry it out are in
+[docs/architecture/pricing-launch.md](docs/architecture/pricing-launch.md).
+Until it merges, the table above is what the code does.
+
 Budgets are derived, not set: price, less payment fees (Stripe Managed
 Payments as merchant of record, 3.5% on top of 2.9% + $0.30, which also covers
 sales tax, VAT and GST), times
@@ -598,7 +626,239 @@ and the fix is stable across a 2× range of weights.
 
 ---
 
-## 9. What the Literature Does Not Settle
+## 9. The Agent Workspace
+
+The contract for everything in this section (schema, `can()`, the capability
+registry, the ModelPort, events, the run lifecycle, HTTP shapes, reserved
+migration numbers) is
+[docs/architecture/agent-workspace.md](docs/architecture/agent-workspace.md).
+This section records the decisions and why they were made; the contract has
+the detail and is the document to change when an interface changes.
+
+### 9.1 Why the graph is the agent's memory
+
+A conventional agent keeps every step in its context window, so step 40 pays
+for steps 1 to 39 and a small local model cannot run the task at all. Here a
+step reads a packed slice of the graph (the §3 retrieval, boosted toward the
+run's plan and the nodes it wrote), acts once, verifies, and writes what it
+learned back as linked nodes. The slice has a fixed budget (1,500 tokens, 8
+nodes; `server/src/workspace/runner/slice.js`), so a step's prompt is the
+same size late in a task as early in it. §9.11 is where that is measured.
+
+### 9.2 Agents, roles and the permission check
+
+An **agent** is a user-owned, editable record: a role, a permission level
+(`manual`, `supervised`, `sandboxed`, `agentic`; new agents are
+`supervised`), per-capability overrides, read and write scopes, a model
+policy (`local_only`, `local_cloud`, `own_key`), a per-run budget and a state
+(`active`, `paused`, `killed`; `killed` is the kill switch). A **role** is a
+template copied into the agent: six built-in templates live in code
+(`server/src/workspace/roles.js`: Researcher, Builder, Debugger, Physicist,
+Hardware Engineer, CAD Designer) so they can improve without a migration, and
+a user's own roles are stored in `agent_roles`. A role names capability
+**tags**, never plug-ins.
+
+**`can(agent, capability, context)` → `allow | ask | deny`**
+(`server/src/workspace/permissions.js`) is the only place that decides what
+an agent may do, and every capability call in the runner asks it first. It
+applies hard denials first (agent not active, unknown capability, model-written
+code outside the OS sandbox, outside the read or write scope, network while
+offline, cloud on `local_only` or with private context), then the agent's
+override, then the level's default. Hard denials fail closed: a context field
+the caller leaves out never widens access. Retrieval for a step filters its
+candidates with `inReadScope`, so a slice never holds a node the agent may
+not read. *Why one function:* a rule changed there changes it everywhere, and
+the UI's capability grid asks the same function (`GET /api/agents/:id/can`).
+
+### 9.3 Tasks, runs and the runner
+
+A **task** is the work (instructions, agent, project, an optional five-field
+UTC cron `schedule`); a **run** is one execution, made of **steps**. Every
+step follows the same five stages and the runner never skips one: read the
+slice, act through exactly one capability, verify, write back (only after
+verification passes), checkpoint (step and position in one transaction, so a
+restart resumes at the next step and never repeats a finished one). The first
+step writes the plan; each later step starts with a **step chooser**, one
+model call that answers strict JSON naming a capability and its input, which
+is validated against the role and the capability's schema before `can()` is
+asked. Five failed steps in a row fail the run; a budget (tokens, dollars,
+wall clock, steps, default 50 steps) stops it with `budget_exceeded`. The
+runner is `server/src/workspace/runner/` (`execute.js`, `chooser.js`,
+`slice.js`, `writeBack.js`, `budget.js`).
+
+Write-back nodes **inherit privacy**: a node derived from any `local` node is
+`local` (`inheritPrivacy`, `server/src/workspace/nodeTypes.js`), so nothing an
+agent learned from a private note can reach a cloud model later.
+
+### 9.4 The durable queue and cron
+
+`agent_runs` is the queue (migrations 021, 025–027). A worker claims the
+oldest `queued` run, or a `running` run whose lease expired, with `FOR UPDATE
+SKIP LOCKED`, holds a lease it renews at each step boundary, and a run claimed
+more than three times without progress is failed rather than reclaimed
+forever. Every status change is conditional on the status it expects, so a
+pause or kill from the API is never overwritten by a worker that had not seen
+it; the full transition table is in the contract ("Run lifecycle across
+paths"). On shutdown a worker hands its run back at the next step boundary,
+waiting at most 10 s.
+
+The scheduler (`runner/scheduler.js`, every 30 s) enqueues a due task for the
+exact slot (`scheduled_for`, unique per task) and advances `next_run_at` in
+the same transaction, so two engines cannot enqueue one slot twice. Missed
+slots are not replayed: a laptop that slept through a night of hourly runs
+runs once on waking. Schedules are parsed by `server/src/workspace/cron.js`,
+which refuses a schedule that can never fire. The engine starts one worker
+and one scheduler in `server/src/index.js`; `WORKSPACE_WORKERS` sets how many
+runs execute at once.
+
+### 9.5 Approvals
+
+When `can()` answers `ask`, the worker records an `agent_approvals` row (at
+most one pending per step), parks the step and the run in
+`waiting_approval` and releases the run. Resolving the last pending approval
+(`POST /api/approvals/:id`) queues the run again; the worker re-decides the
+parked step before running it, so an override or kill made in the meantime
+still wins. The cloud is the one exception: a run asks **once** to use the
+cloud for its planning and hard steps and keeps working locally while that
+question is open (§9.7).
+
+### 9.6 Events and the live view
+
+`GET /api/workspace/events` is Server-Sent Events, for one run or all of the
+user's runs (`server/src/workspace/events.js`, `routes/workspace/events.js`).
+Event ids carry the engine's boot and one engine-wide sequence, so a client
+reconnecting with `Last-Event-ID` gets what it missed from a bounded replay
+buffer (5,000 events), and an id from an earlier boot replays everything still
+buffered. Events are the live view, not the record: after a restart the UI
+reloads the run and its steps over HTTP. Events stay on the machine; prompt
+and answer text never reach the control plane.
+
+The client (`client/src/workspace/`) registers three tabs beside the
+conversation, Agents, Activity and Approvals, and holds one `EventSource` for
+the page. Agents appear on the map as uncoloured circles that take their
+colour only on the nodes they are touching or just wrote.
+
+### 9.7 Models: the ModelPort
+
+Every model call in the runner goes through one interface with three
+adapters (`server/src/workspace/modelPort.js`): **local** (Ollama, offline,
+cost 0), **own_key** (Anthropic on the user's own key) and **platform** (the
+control plane's `POST /v1/cloud/messages` with the device token, §9.10).
+`selectAdapter` decides what the plan and the policy make possible (execution
+steps stay local; only planning and steps marked hard may go to the cloud);
+`can(agent, 'cloud_model', …)` decides what this agent is permitted. When the
+platform refuses (signed out, offline, allowance spent), the runner answers
+that call locally and records the adapter actually used; that is the one place
+it looks at an adapter's outcome. Every model call's cost is a row in
+`agent_run_costs`, which holds token counts and dollars and never prompt or
+answer text.
+
+Background runs have no `own_key` adapter: the user's key travels with each
+request and is never stored, so a run that outlives the request keeps its
+planning local.
+
+### 9.8 Capabilities, plug-ins and verticals
+
+A plug-in (`server/src/plugins/<name>/`) declares capabilities (a namespaced
+name, tags, the permission `can()` is asked about, an input schema, verifiers
+and `run(input, ctx)`) and verifiers. `registerPlugin`
+(`server/src/workspace/capabilities.js`) validates the declaration and
+refuses duplicates, so a bad plug-in fails at start-up rather than mid-run.
+`server/src/plugins/registry.js` lists the built-in plug-ins and the worker
+registers them when it is created. Because roles select by tag, a new
+vertical reaches every role that carries its tag without touching the role.
+A capability gets only what `ctx` gives it (owner, agent, run, step, project,
+local path, the run's sandbox, a ModelPort, an abort signal, `emit`).
+
+| Plug-in | Tag(s) | What it adds | Detail |
+|---|---|---|---|
+| `code` | `code`, `scripts`, `sandbox` | search, read, edit (sandbox copy only), run a declared script, run model-written code (OS sandbox only); verifiers typecheck, lint, build, tests | contract, "Sandbox" |
+| `graph` | `graph` | `graph.write_artifact`: one verified `artifact` note | contract, "Sandbox" (graph plug-in) |
+| `research` | `research`, `web` | Zotero / Better BibTeX ingest with PDF text; sweep, extraction table, related-work draft, web search (SearXNG when configured); verifiers that every citation resolves and every quotation is verbatim | contract, "Research" |
+| `physics` | `physics` | derive (with units and limiting cases), compute (model-written Python on Pint quantities with an independent cross-check), check; all Python in the OS sandbox | contract, "Physics" |
+| `cad` | `cad` | STL and STEP inspection, mass properties, interference; parametric edits with CadQuery in the OS sandbox | contract, "The CAD plug-in"; [solidworks-connector.md](docs/architecture/solidworks-connector.md) (designed, not built) |
+| `kicad` | `kicad` | schematic and board ingest, net and footprint queries, BOM, schematic review; ERC / DRC verifiers through `kicad-cli` in the OS sandbox | contract, "KiCad" |
+
+The conventions every vertical follows: ingest writes stable `external_id`s
+so re-ingest updates in place, and runs as a background job that never needs
+the network; anything that runs model-written code or an external tool on
+model input goes through the OS sandbox; a verifier whose tool is missing
+reports `unavailable`, never a pass it did not check. GitHub
+(`server/src/plugins/github/`) is an ingest source, not an agent capability.
+
+### 9.9 The OS sandbox
+
+A run that edits files, runs scripts or runs model-written code gets one
+private copy of the project (`server/src/workspace/sandbox/`, made by the
+runner in `runner/sandbox.js`): an independent clone of HEAD, not a `git
+worktree`, under the app data directory (`SCOPE_DATA_DIR`, else the
+platform's application-data folder), never inside the user's checkout. It is
+reused by every step of the run, recorded on the run's checkpoint so a resumed
+run finds it, and removed when the run ends. `runSandboxed` runs one process
+with a fixed argument list (never a shell) under **bubblewrap** on Linux (no
+network, read-only system, only named directories writable, clear
+environment, resource limits) or **sandbox-exec** on macOS; with neither it
+refuses with `sandbox_unavailable` and runs nothing. *Why a clone and not a
+worktree:* nothing in the copy shares the user's `.git`, and host-side git
+always names the copy's git directory explicitly, so code in the sandbox
+cannot change what git runs on the host.
+
+### 9.10 The engine ↔ control link
+
+The engine is local; accounts, plans, Stripe billing and the platform's
+Anthropic key live on the hosted control plane (`control/`,
+[control/API.md](control/API.md), [control/README.md](control/README.md)),
+which auto-deploys to Railway. The engine signs in through the browser with a
+loopback redirect and PKCE (`server/src/control/signin.js`), so the password
+never passes through the engine, and keeps the device token sealed with
+AES-256-GCM under a key derived from `SESSION_SECRET`
+(`server/src/control/tokenBox.js`, table `control_links`, migration 031).
+Every call to the control plane goes through `server/src/control/client.js`.
+The plan comes from `GET /v1/me`, cached per user for five minutes
+(`server/src/control/plan.js`); after a failed refresh the control plane is
+not asked again for 30 seconds. Signed out, offline or unconfigured
+(`CONTROL_URL` unset), the engine runs as Free: local only, never an error
+page. Platform-paid answers, for the conversation and for agent runs alike,
+stream from `POST /v1/cloud/messages`, which checks the plan and the ledger,
+picks the model and charges every answer; every attempt carries a fresh
+`requestId` (`server/src/control/platform.js`). The engine holds no platform
+key and no billing tables of its own.
+
+### 9.11 Measuring the edge: the task benchmark
+
+`npm run benchmark:tasks` (`server/src/benchmark/tasks/`) runs whole tasks,
+not chat turns, through four arms: Scope on the local model, Scope with a
+cloud planner, and the standard full-transcript tool loop on Sonnet and on
+Opus with the same tools. A task counts as completed only when its objective
+check passes (the fixture's own tests in the OS sandbox, a cited answer read
+against a key, a physical quantity within 0.5% of a hidden reference, a measured STL), never
+because a model said so. `--dry` (the default, run in CI) plays scripted
+model replies through every arm at $0, so it measures the harness and the
+economics, not model quality; `--live-local` and `--live` (a hard spending
+cap) are for that. The catalog has six code tasks, a research task, a physics
+task, a CAD task that runs where CadQuery is installed, and a KiCad task that
+is listed as a pending gate until a schematic-edit capability exists. Method,
+arms and the measured results are in the contract ("Measuring the edge"),
+and the figures quoted to users are in [docs/demo.md](docs/demo.md).
+
+### 9.12 The local demo
+
+`npm run demo` (`server/src/demo/`, [docs/demo.md](docs/demo.md)) checks the
+prerequisites and says exactly what to run for anything missing (it never
+downloads a model itself), creates and migrates its own `scope_demo`
+database, seeds a first-year physics project with an agent and its tasks
+(resetting the demo account's data each time), starts the engine on loopback,
+signed out and with agent networking off (`WORKSPACE_OFFLINE=1`), and builds
+and serves the app. *Local mode* signs the browser on the same machine in to
+the demo account without a password; it is held to the demo account,
+`NODE_ENV=development`, a loopback-only engine and same-machine requests
+(`server/src/config/localMode.js`), and the engine refuses to start if it is
+misconfigured. CI runs the demo end to end in a browser, with a scripted
+model in place of Ollama's chat (`client/playwright.demo.config.js`).
+
+---
+
+## 10. What the Literature Does Not Settle
 
 These items are experiments, not decisions. They should be tested empirically
 on the 20-query benchmark rather than assumed from prior work.
@@ -635,7 +895,7 @@ on the 20-query benchmark rather than assumed from prior work.
 
 ---
 
-## 10. What This Document Is Not
+## 11. What This Document Is Not
 
 This is not an API specification, a database migration plan, or a deployment
 guide. Those live in the sprint handoff documents and the README. This
