@@ -13,6 +13,7 @@ import controlRouter from './control/routes.js';
 import nodesRouter from './routes/nodes.js';
 import cadPluginRouter from './routes/plugins/cad.js';
 import githubPluginRouter from './routes/plugins/github.js';
+import kicadPluginRouter from './routes/plugins/kicad.js';
 import researchPluginRouter from './routes/plugins/research.js';
 import physicsPluginRouter from './routes/plugins/physics.js';
 import graphRouter from './routes/graph.js';
@@ -62,6 +63,7 @@ function createApp(env) {
   app.use('/api/nodes', nodesRouter);
   app.use('/api/plugins/cad', cadPluginRouter);
   app.use('/api/plugins/github', githubPluginRouter);
+  app.use('/api/plugins/kicad', kicadPluginRouter);
   app.use('/api/plugins/research', researchPluginRouter);
   app.use('/api/plugins/physics', physicsPluginRouter);
   app.use('/api/query', queryRouter);

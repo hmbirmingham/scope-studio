@@ -240,8 +240,8 @@ export const TASKS = [
     fixture: { kind: 'KiCad 8 project', description: 'a small sensor board with one ERC error' },
     check: { description: 'kicad-cli sch erc reports zero errors on the result, and the netlist differs from the original only on the ADC pin' },
     pending: {
-      reason: 'no KiCad plug-in is registered yet, so no agent can read or edit a schematic',
-      readyWhen: 'the KiCad plug-in registers schematic read/edit capabilities and a kicad.erc verifier that runs kicad-cli in the OS sandbox',
+      reason: 'the KiCad plug-in can read and review a schematic and has a kicad.erc verifier, but no capability edits a schematic yet, the harness has no kicad check yet, and the check needs kicad-cli 8+, which CI does not install',
+      readyWhen: 'a schematic edit capability carries kicad.erc, the harness runs a kicad check (kicad-cli sch erc in the OS sandbox on the arm’s result), and the runner that checks it has kicad-cli 8+',
     },
   },
   {

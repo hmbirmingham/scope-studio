@@ -447,6 +447,7 @@ that no longer parses stops the task (`next_run_at` NULL).
 | `/api/approvals` | Path A — the approvals inbox |
 | `/api/agent-runs` | Path B — start, list, inspect, cancel runs |
 | `/api/workspace/events` | Path B — the SSE stream |
+| `/api/plugins/kicad` | KiCad — ingest jobs and kicad-cli status |
 
 (`/api/runs` is the existing approval-gated script run and is unchanged.)
 
@@ -808,3 +809,57 @@ that fail to read keep theirs. Nodes are `local` unless the request says
 `cloud`. `GET /api/plugins/cad/status` reports whether CadQuery can run.
 
 A SolidWorks companion is designed, not built: `solidworks-connector.md`.
+
+### KiCad (`server/src/plugins/kicad/`)
+
+Reads KiCad 6+ `.kicad_sch` and `.kicad_pcb` files with its own small
+S-expression reader. Net resolution is pragmatic: wires join at their ends
+and at any connection point on them (crossing wires only through a
+junction), pins at one point join, power ports, global labels and hidden
+power-input pins join by name across the design, local labels by name on one
+sheet, and sheet pins join the child's hierarchical labels. Buses are not
+followed. Net names follow KiCad (`/LED_A` for a root-sheet local label,
+`Net-(R1-Pad2)` when nothing names a net). Points are indexed by row and
+column before they are matched to wires, and a design with more than 500,000
+connection points, or whose wires would need more than 5,000,000
+point-on-wire tests, is refused with `design_too_large`.
+
+Ingest: `POST /api/plugins/kicad/ingest { project, privacy? }` reads the
+folder bound to the project (`project_settings.local_path`) as a background
+job (`GET /api/plugins/kicad/jobs/:id`); privacy defaults to `local`. Each
+root schematic gives a `schematic` node with `symbol`, `net` and `bom_row`
+nodes `part_of` it; each board a `board` node with `footprint` and `net`
+nodes. Schematic nets `connect` symbols, board nets `connect` footprints, and
+a footprint `implements` its symbol (by the symbol path the footprint
+records, else by reference). External ids are
+`<project>|<kind>|<file>[|<name>]`; re-ingest updates in place, removes what
+is gone and rebuilds these links in one transaction, leaving links from other
+nodes (an agent's notes) alone. A file that fails to load keeps the nodes of
+its last good ingest (it is listed in the summary's `errors`), and nothing is
+pruned when the folder scan was truncated. `GET /api/plugins/kicad/status` says whether
+kicad-cli can run ERC and DRC.
+
+| Capability | Permission | Tags | Does |
+|---|---|---|---|
+| `kicad.net_query` | `read_graph` (source `kicad`) | `kicad` | pins and symbols on a net, or the nets a symbol touches |
+| `kicad.footprint_query` | `read_graph` (source `kicad`) | `kicad` | footprints by reference, value, layer or net, with placement and pad nets |
+| `kicad.bom` | `read_graph` (source `kicad`) | `kicad` | the BOM as a table, and a CSV artifact |
+| `kicad.schematic_review` | `read_graph` (source `kicad`) | `kicad` | unconnected pins, missing values and footprints, power nets with an IC pin and no capacitor to ground; findings per issue |
+
+Capabilities read the run's sandbox copy when there is one, else the project
+folder, and return the ingested nodes they are about as `touchedNodeIds`.
+The review finds every issue in code; `ctx.model` may only reword them, a
+reworded issue is kept only if it still names its part or net, and for a
+private design the model is asked only when the call cannot leave the
+machine (`ctx.model.offline`, or the agent's policy is `local_only`).
+
+Verifiers `kicad.erc` and `kicad.drc` run `kicad-cli sch erc` / `pcb drc`
+(KiCad 8+, JSON report) on a copy of the design's files in a scratch
+directory inside the OS sandbox, never on the host, and pass when the report
+has no error-severity violation. Without kicad-cli 8+ they return `{ ok:
+true, unavailable: true }`; without an OS sandbox `{ ok: false, unverified:
+true }`. They check at most 10 designs per step; when more exist, or the
+folder scan was truncated, a clean result is `{ ok: false, unverified: true }`
+with the number skipped, never a pass. They are for capabilities that change a design; the four read-only
+capabilities above carry none, since a design that fails ERC must not fail a
+read of it.
