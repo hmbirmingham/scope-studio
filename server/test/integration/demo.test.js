@@ -5,6 +5,8 @@ import { seedDemo } from '../../src/demo/seed.js';
 import { createEventBus } from '../../src/workspace/events.js';
 import { createWorker } from '../../src/workspace/runner/index.js';
 import { roleTemplate } from '../../src/workspace/roles.js';
+import { capabilitiesForTags } from '../../src/workspace/capabilities.js';
+import { registerBuiltInPlugins } from '../../src/plugins/registry.js';
 import { sandboxStatus } from '../../src/workspace/sandbox/index.js';
 import { demoReply, LAB_TITLE, GUIDE_TITLE } from '../demoModel.js';
 import { createFakeModelPort } from '../fakeModelPort.js';
@@ -66,6 +68,7 @@ describe('student demo', () => {
 
   describe('seed', () => {
     test('writes the student project, the agent and its tasks', async () => {
+      registerBuiltInPlugins();
       const seeded = await seedDemo({ embed: false });
       assert.equal(seeded.user.email, DEMO_EMAIL);
       const { rows: nodes } = await server.pool.query('SELECT type, privacy, project, source, external_id, content FROM nodes WHERE owner_id = $1', [seeded.user.id]);
@@ -82,7 +85,10 @@ describe('student demo', () => {
       const { rows: [agent] } = await server.pool.query('SELECT * FROM agents WHERE owner_id = $1', [seeded.user.id]);
       assert.equal(agent.name, 'Lab Partner');
       assert.equal(agent.role.template, 'physicist');
-      assert.deepEqual(agent.role.tags, ['graph', 'physics', 'sandbox']);
+      // The Physicist, offered exactly the two capabilities the lab check uses.
+      assert.deepEqual(agent.role.tags, ['graph', 'sandbox']);
+      assert.equal(agent.role.title, 'Physicist');
+      assert.deepEqual(capabilitiesForTags(agent.role.tags).map((capability) => capability.name).sort(), ['code.run_generated', 'graph.write_artifact']);
       assert.equal(agent.level, 'supervised');
       assert.equal(agent.model_policy, 'local_only');
       assert.deepEqual(agent.scopes, { read: { projects: [DEMO_PROJECT], sources: ['*'] }, write: { projects: [DEMO_PROJECT] } });

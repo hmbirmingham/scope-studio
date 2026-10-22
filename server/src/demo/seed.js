@@ -7,7 +7,7 @@ import { createUser, findUserByEmail } from '../models/userStore.js';
 import { buildNewAgent } from '../workspace/agents/agentInput.js';
 import { createAgent } from '../workspace/agents/agentStore.js';
 import { createTask } from '../workspace/agents/taskStore.js';
-import { validateTask } from '../workspace/agents/validation.js';
+import { validateRoleFields, validateTask } from '../workspace/agents/validation.js';
 import { DEMO_AGENT, DEMO_EMAIL, DEMO_NODES, DEMO_PROJECT, DEMO_RELATIONSHIPS, DEMO_TASKS, EXTERNAL_PREFIX } from './content.js';
 
 // Seeds the student demo (docs/demo.md) through the engine's own stores, so
@@ -95,7 +95,10 @@ export async function seedDemo({ email = DEMO_EMAIL, embed = true } = {}) {
     scopes: { read: { projects: [DEMO_PROJECT], sources: ['*'] }, write: { projects: [DEMO_PROJECT] } },
   });
   if (built.rejection) throw new Error(`demo agent refused: ${built.rejection.message}`);
-  const agent = await createAgent(user.id, built.agent);
+  // Still the Physicist (template, persona, description), with the demo's tags.
+  const tags = validateRoleFields({ tags: DEMO_AGENT.tags }, { partial: true });
+  if (tags.error) throw new Error(`demo agent refused: ${tags.message}`);
+  const agent = await createAgent(user.id, { ...built.agent, role: { ...built.agent.role, ...tags.value } });
 
   const tasks = [];
   for (const task of DEMO_TASKS) {

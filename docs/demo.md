@@ -109,7 +109,13 @@ model is warm and you have seen its output.
 **Lab Partner**, an agent made from the built-in Physicist role: Supervised
 (it reads the map and writes notes freely, and asks before anything else),
 Local only (every model call goes to Ollama on this machine), allowed to read
-and write only this project.
+and write only this project. Its capability tags are the Physicist's without
+`physics`: it can run code in the sandbox and save to the map, and nothing
+else. The physics plug-in's capabilities need Python with NumPy, SciPy and
+Pint in the sandbox, and a real 8B model offered them spent three failed steps
+on `physics.check` before going back to the task. To show them, install that
+toolchain and tick **physics** under Capability tags in the agent's **Edit**
+dialog; rehearse it first.
 
 **Tasks**: *Check my lab report against the data* and *Make a study guide
 from my lecture notes* (one-off), and *Weekly study guide* (Sundays 18:00

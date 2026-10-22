@@ -151,6 +151,13 @@ export const DEMO_RELATIONSHIPS = [
 export const DEMO_AGENT = {
   name: 'Lab Partner',
   template: 'physicist',
+  // The Physicist template's tags without `physics`. The physics plug-in's
+  // capabilities run Python with NumPy, SciPy and Pint in the sandbox, which a
+  // student's laptop usually lacks, and a real 8B model offered them spent
+  // three failed steps on physics.check before going back to the plan. With
+  // `graph` and `sandbox` it sees exactly what the lab check needs. The tag
+  // can be ticked back on in the agent builder (docs/demo.md).
+  tags: ['graph', 'sandbox'],
   level: 'supervised',
   modelPolicy: 'local_only',
   color: '#3e63dd',
