@@ -5,6 +5,7 @@ import {
   SUPERSEDE_DEMOTION,
   TASK_TYPE_BOOST,
   boostMultiplier,
+  byScore,
   DEFINITION_BOOST,
   definitionMatch,
   fuseAndScore,
@@ -66,6 +67,35 @@ describe('recencyBoost', () => {
     const repo = recencyBoost(node({ type: 'repo', created_at: hoursAgo(48) }), NOW);
     const conversation = recencyBoost(node({ type: 'conversation', created_at: hoursAgo(48) }), NOW);
     assert.ok(repo > conversation);
+  });
+});
+
+describe('recency across every node type', () => {
+  // Every type the nodes_type_check constraint accepts (migrations 020, 039).
+  const TYPES = ['repo', 'file', 'decision', 'spec', 'paper', 'datasheet', 'conversation',
+    'plan', 'step', 'finding', 'artifact', 'question',
+    'schematic', 'board', 'symbol', 'net', 'footprint', 'bom_row', 'note', 'excerpt',
+    'derivation', 'computation', 'part', 'assembly'];
+
+  test('every node type decays to a finite score, so it can be ranked', () => {
+    for (const type of TYPES) {
+      const boost = recencyBoost(node({ type, created_at: hoursAgo(10) }), NOW);
+      assert.ok(Number.isFinite(boost) && boost > 0 && boost < 1, type);
+    }
+  });
+
+  test('a type the table has never heard of ages like a file instead of scoring NaN', () => {
+    assert.equal(recencyBoost(node({ type: 'hologram', created_at: hoursAgo(10) }), NOW),
+      recencyBoost(node({ type: 'file', created_at: hoursAgo(10) }), NOW));
+  });
+
+  test('vertical nodes take their place in the fused ranking', () => {
+    const config = resolveConfig('local_7b');
+    const lexical = [node({ id: 'net', type: 'net' }), node({ id: 'file', type: 'file' }), node({ id: 'part', type: 'part' })]
+      .map((n) => ({ node: n }));
+    const scored = fuseAndScore({ dense: [], lexical, now: NOW, config });
+    assert.deepEqual(scored.map((entry) => entry.node.id), ['net', 'file', 'part']);
+    assert.ok(scored.every((entry) => Number.isFinite(entry.score)));
   });
 });
 
@@ -188,5 +218,31 @@ describe('boostMultiplier', () => {
     assert.equal(kicad.applied.source, 0.2);
     assert.equal(zotero.applied.source, 0.1);
     assert.equal(mismatch.applied.source, 0);
+  });
+});
+
+describe('deterministic ranking', () => {
+  test('equal scores are ordered by node id, whatever order they arrive in', () => {
+    const tied = ['c', 'a', 'd', 'b'].map((id) => ({ node: { id }, score: 1 }));
+    assert.deepEqual([...tied].sort(byScore).map((e) => e.node.id), ['a', 'b', 'c', 'd']);
+    assert.deepEqual([...tied].reverse().sort(byScore).map((e) => e.node.id), ['a', 'b', 'c', 'd']);
+  });
+
+  test('the score still comes first', () => {
+    const entries = [{ node: { id: 'a' }, score: 1 }, { node: { id: 'b' }, score: 2 }];
+    assert.deepEqual(entries.sort(byScore).map((e) => e.node.id), ['b', 'a']);
+  });
+
+  test('fuseAndScore ranks tied candidates by id', () => {
+    const config = resolveConfig('local_7b', { features: { recency_decay: false } });
+    // Same dense rank in two calls is impossible, so tie them across lists:
+    // x is dense #1 and lexical #2, y is dense #2 and lexical #1.
+    const x = node({ id: 'x' });
+    const y = node({ id: 'y' });
+    const run = (dense, lexical) =>
+      fuseAndScore({ dense: dense.map((n) => ({ node: n, similarity: 0.9 })), lexical: lexical.map((n) => ({ node: n })), now: NOW, config })
+        .map((entry) => entry.node.id);
+    assert.deepEqual(run([x, y], [y, x]), ['x', 'y']);
+    assert.deepEqual(run([y, x], [x, y]), ['x', 'y']);
   });
 });

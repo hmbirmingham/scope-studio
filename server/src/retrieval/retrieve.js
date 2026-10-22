@@ -2,7 +2,7 @@ import { getPool } from '../db/pool.js';
 import { embedQuery } from '../lib/embeddings.js';
 import { logQueryMetrics, logContextNodes, markFollowUp } from '../models/metricsStore.js';
 import {
-  DECAY_LAMBDA,
+  decayLambda,
   DENSE_CANDIDATES,
   EXPANSION_DECAY,
   EXPANSION_SEEDS,
@@ -10,6 +10,7 @@ import {
   LEXICAL_MIN_MATCH,
   RARE_TERM_MAX_DF,
   SUPERSEDE_DEMOTION,
+  byScore,
   fuseAndScore,
   resolveConfig,
 } from './score.js';
@@ -29,7 +30,18 @@ const STOPWORDS = new Set([
 ]);
 
 // Edge semantics per ADR §2.3: traversal is forward only (seed is the source).
-const EDGE_WEIGHTS = { depends_on: 1.0, references: 0.7, part_of: 0.7, caused_by: 1.0, supersedes: 1.0 };
+// The workspace and vertical edges (migrations 020, 039) follow the same rule:
+// an edge that carries the answer's substance (a computation's derivation, the
+// finding a question asked for) is full weight; structure is 0.7.
+export const EDGE_WEIGHTS = {
+  depends_on: 1.0, references: 0.7, part_of: 0.7, caused_by: 1.0, supersedes: 1.0,
+  derived_from: 1.0, answers: 1.0, produces: 0.7, follows: 0.5,
+  connects: 0.7, implements: 0.7, cites: 0.7, contains: 0.7,
+};
+// An edge type added after this table would otherwise give its target a NaN
+// score, which sorts anywhere. test/unit/scoreVocabulary.test.js fails when a
+// migration adds one without a weight; this keeps production ranking sane meanwhile.
+export const DEFAULT_EDGE_WEIGHT = 0.5;
 const WHY_PATTERN = /^\s*(why|how come|what('s| is| was) the reason)\b/i;
 const WHY_CAUSED_BY_BOOST = 1.5;
 
@@ -93,12 +105,17 @@ async function cachedEmbedQuery(query, { compute = true } = {}) {
   return null;
 }
 
+// Two characters that mix a letter and a digit: a reference designator (C2,
+// U1, J1), which the index keeps as one lexeme. Short words are noise, but
+// these name exactly one part.
+const SHORT_IDENTIFIER = /^(?=.*[a-z])(?=.*[0-9])[a-z0-9]{2}$/;
+
 // Mirrors the index side (migration 008): identifiers split on non-alphanumerics.
-function toLexicalTerms(query) {
+export function toLexicalTerms(query) {
   const terms = query
     .toLowerCase()
     .split(/[^a-z0-9]+/)
-    .filter((term) => term.length >= 3 && !STOPWORDS.has(term));
+    .filter((term) => (term.length >= 3 || SHORT_IDENTIFIER.test(term)) && !STOPWORDS.has(term));
   return [...new Set(terms)];
 }
 
@@ -113,7 +130,11 @@ async function denseCandidates(pool, ownerId, vector, project, cloudOnly) {
      WHERE embedding IS NOT NULL AND owner_id = $3
        AND ($4::text IS NULL OR project = $4)
        AND ($5::boolean IS NOT TRUE OR privacy <> 'local')
-     ORDER BY embedding <=> $1::vector
+     -- id breaks exact distance ties, so the same rows survive the LIMIT.
+     -- pgvector still serves this from the HNSW index: the planner adds an
+     -- Incremental Sort on id over the index scan (checked with EXPLAIN on
+     -- PostgreSQL 18 / pgvector 0.8).
+     ORDER BY embedding <=> $1::vector, id
      LIMIT $2`,
     [`[${vector.join(',')}]`, DENSE_CANDIDATES, ownerId, project ?? null, cloudOnly]
   );
@@ -153,7 +174,8 @@ async function lexicalCandidates(pool, ownerId, query, project, cloudOnly) {
          OR ((SELECT tsquery FROM rare) IS NOT NULL
              AND content_tsv @@ to_tsquery('simple', (SELECT tsquery FROM rare)))
        )
-     ORDER BY rank DESC
+     -- id breaks rank ties, so the same rows survive the LIMIT every time.
+     ORDER BY rank DESC, id
      LIMIT $2`,
     [terms.join(' | '), LEXICAL_CANDIDATES, terms, minMatch, ownerId, RARE_TERM_MAX_DF, project ?? null, cloudOnly]
   );
@@ -180,7 +202,7 @@ async function expandFromSeeds(pool, ownerId, scored, { query, config, project, 
   const whyQuery = WHY_PATTERN.test(query);
   const byId = new Map(scored.map((entry) => [entry.node.id, entry]));
   for (const { source_id, weight, relationship, ...node } of rows) {
-    let edge = EDGE_WEIGHTS[relationship];
+    let edge = EDGE_WEIGHTS[relationship] ?? DEFAULT_EDGE_WEIGHT;
     if (relationship === 'caused_by' && whyQuery) edge *= WHY_CAUSED_BY_BOOST;
     const demotion = config.features.supersede_demotion && node.superseded ? SUPERSEDE_DEMOTION : 1;
     const score = seedScore.get(source_id) * Number(weight) * edge * EXPANSION_DECAY * demotion;
@@ -193,7 +215,7 @@ async function expandFromSeeds(pool, ownerId, scored, { query, config, project, 
       existing.via = { from: source_id, relationship };
     }
   }
-  return [...byId.values()].sort((a, b) => b.score - a.score);
+  return [...byId.values()].sort(byScore);
 }
 
 function packIntoBudget(candidates, config) {
@@ -324,7 +346,7 @@ export async function recordRetrieval({ queryId, ownerId, sessionId, query, metr
         nodeId: entry.node.id,
         position,
         score: entry.score,
-        decayLambda: DECAY_LAMBDA[entry.node.type],
+        decayLambda: decayLambda(entry.node.type),
       })),
       client
     );

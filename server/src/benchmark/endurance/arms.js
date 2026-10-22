@@ -20,7 +20,7 @@ import {
   saveConversation,
 } from '../../routing/conversation.js';
 import { SYSTEM_PROMPTS, buildFollowUp, buildMessages } from '../../routing/prompt.js';
-import { CLOUD_TIER, decideRoute, provisionalTier } from '../../routing/route.js';
+import { CLOUD_TIER, provisionalTier, routeAndPack, sendsPrivate } from '../../routing/route.js';
 import {
   DRY,
   estimateTokens,
@@ -91,19 +91,19 @@ export async function planScopeTurn({ ownerId, query, project, conversationId, c
     gathered = await gather(asked);
   }
 
-  let packed = packForTier(gathered.candidates, provisional, undefined);
   const difficulty = questionDifficulty(text);
-  const route = decideRoute({
-    selected: packed.selected,
+  const { route, packed } = routeAndPack({
+    pack: (packTier) => packForTier(gathered.candidates, packTier, undefined),
+    provisional,
     preferredTier: undefined,
     localAvailable,
     cloudAvailable,
     hard: Boolean(difficulty),
   });
-  if (route.tier !== provisional) packed = packForTier(gathered.candidates, route.tier, undefined);
 
   const config = resolveConfig(route.tier, undefined);
-  const continued = continuation(conversation, { selected: packed.selected, tier: route.tier, project });
+  let continued = continuation(conversation, { selected: packed.selected, tier: route.tier, project });
+  if (continued && sendsPrivate(route, [...continued.entry.sources, ...continued.added])) continued = null;
   let messages;
   let sources;
   let contextTokens;

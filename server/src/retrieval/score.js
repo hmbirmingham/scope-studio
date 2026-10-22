@@ -76,14 +76,47 @@ export const DECAY_LAMBDA = {
   datasheet: 0.01,
   paper: 0.01,
   repo: 0.005,
+  // Run working memory (migration 020): a plan or step is stale once the run
+  // moves on; a finding is a conclusion and ages like a decision.
+  plan: 0.08,
+  step: 0.08,
+  artifact: 0.08,
+  question: 0.08,
+  finding: 0.03,
+  // The verticals (migration 039). Design files change like source files;
+  // notes like decisions; excerpts and derivations like papers.
+  schematic: 0.08,
+  board: 0.08,
+  symbol: 0.08,
+  net: 0.08,
+  footprint: 0.08,
+  bom_row: 0.08,
+  part: 0.08,
+  assembly: 0.08,
+  note: 0.03,
+  computation: 0.03,
+  excerpt: 0.01,
+  derivation: 0.01,
 };
 
+// A node type added after this table would otherwise decay by NaN, and a NaN
+// score sorts anywhere: the node lands at an arbitrary rank. Age it like a file.
+export const DEFAULT_DECAY_LAMBDA = DECAY_LAMBDA.file;
+
+export function decayLambda(type) {
+  return DECAY_LAMBDA[type] ?? DEFAULT_DECAY_LAMBDA;
+}
+
+// The vertical types sit with the task whose questions they answer: KiCad and
+// CAD nodes are hardware; notes, excerpts, derivations and a run's findings
+// are the research record. Without them a hardware question boosted the
+// datasheet over the schematic that answers it.
 export const TASK_NODE_TYPES = {
   codebase: ['file', 'repo'],
   firmware: ['file', 'datasheet'],
-  hardware: ['datasheet', 'spec'],
+  hardware: ['datasheet', 'spec', 'schematic', 'board', 'symbol', 'net', 'footprint', 'bom_row', 'part', 'assembly'],
   data_pipeline: ['file', 'repo'],
-  research: ['paper', 'decision', 'spec'],
+  research: ['paper', 'decision', 'spec', 'note', 'excerpt', 'derivation', 'computation', 'finding', 'question'],
   cross_project: ['repo'],
 };
 
@@ -116,7 +149,7 @@ export function definitionMatch(node, terms) {
 }
 
 const SOURCE_TYPE_BOOSTS = [
-  { task: 'hardware', sources: ['kicad'], boost: 0.2 },
+  { task: 'hardware', sources: ['kicad', 'cad'], boost: 0.2 },
   { task: 'research', sources: ['zotero', 'overleaf'], boost: 0.1 },
 ];
 
@@ -125,7 +158,7 @@ const SOURCE_TYPE_BOOSTS = [
 export function recencyBoost(node, now) {
   const anchor = node.last_confirmed_useful ?? node.created_at;
   const hours = Math.max(0, (now - new Date(anchor)) / 3_600_000);
-  return Math.exp(-DECAY_LAMBDA[node.type] * hours);
+  return Math.exp(-decayLambda(node.type) * hours);
 }
 
 function taskTypeBoost(node, task) {
@@ -163,6 +196,13 @@ export function boostMultiplier(node, { project, task, now, features, terms = []
   return { multiplier, applied };
 }
 
+// Highest score first; equal scores fall back to node id, so the same corpus
+// and query always rank the same way. Without it, ties (and the candidate
+// lists Postgres cuts at LIMIT) came back in whatever order the engine chose.
+export function byScore(a, b) {
+  return b.score - a.score || (a.node.id < b.node.id ? -1 : a.node.id > b.node.id ? 1 : 0);
+}
+
 export function fuseAndScore({ dense, lexical, project, task, now, config, terms = [] }) {
   const byId = new Map();
   const k = config.rrf_k;
@@ -194,5 +234,5 @@ export function fuseAndScore({ dense, lexical, project, task, now, config, terms
     });
     scored.push({ ...entry, boosts: applied, score: entry.rrf * multiplier });
   }
-  return scored.sort((a, b) => b.score - a.score);
+  return scored.sort(byScore);
 }
