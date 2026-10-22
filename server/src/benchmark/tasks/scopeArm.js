@@ -168,8 +168,9 @@ export async function runScopeTask({ task, arm, workspace, ownerId, db, mode = '
     project,
     answer: last?.summary ?? null,
     wallMs,
-    // Every step the runner executed, the plan included.
-    steps: steps.length,
+    // Every step the runner executed, the plan and the closing "done"
+    // included. Not comparable with a baseline's tool calls; `actions` is.
+    runnerSteps: steps.length,
     stepRecord: steps.map((step) => ({ index: step.index, kind: step.kind, capability: step.capability, status: step.status, error: step.error })),
     calls: log.calls,
     ledger: {

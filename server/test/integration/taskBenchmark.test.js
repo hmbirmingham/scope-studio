@@ -2,8 +2,10 @@ import assert from 'node:assert/strict';
 import { readFileSync, readdirSync, statSync } from 'node:fs';
 import { join, relative } from 'node:path';
 import { after, before, describe, test } from 'node:test';
-import { FIXTURES_DIR, TASKS } from '../../src/benchmark/tasks/catalog.js';
+import { FIXTURES_DIR, TASKS, fixturePath } from '../../src/benchmark/tasks/catalog.js';
+import { answerCheck } from '../../src/benchmark/tasks/research.js';
 import { formatTable, runTaskBenchmark, toJson } from '../../src/benchmark/tasks/run.js';
+import { createWorkspace, objectiveCheck } from '../../src/benchmark/tasks/workspace.js';
 import { contextGrowth } from '../../src/benchmark/endurance/economics.js';
 import { SLICE_NODES, SLICE_TOKENS } from '../../src/workspace/runner/slice.js';
 import { sandboxStatus } from '../../src/workspace/sandbox/index.js';
@@ -71,6 +73,15 @@ describe('dry task benchmark', { skip }, () => {
     );
     assert.ok(paginate.stepRecord.every((step) => step.status === 'done'));
     assert.equal(paginate.actions, actions.length);
+    // The same scripted work is the same number of actions on every arm; the
+    // runner's own steps (plan and closing step) are counted apart, and a
+    // baseline has none.
+    assert.equal(paginate.runnerSteps, actions.length + 2);
+    for (const name of ['baseline_sonnet', 'baseline_opus']) {
+      const baseline = rows(name).find((row) => row.task === 'code-paginate-off-by-one');
+      assert.equal(baseline.actions, actions.length, name);
+      assert.equal(baseline.runnerSteps, null, name);
+    }
     // The runner's own cost ledger agrees with what the benchmark counted.
     for (const row of [...rows('scope_local'), ...rows('scope_local_cloud')]) {
       assert.equal(row.ledger.calls, row.modelCalls);
@@ -190,4 +201,61 @@ describe('dry task benchmark', { skip }, () => {
       assert.equal(row.check.testsTampered, true, row.arm);
     }
   });
+});
+
+// A check that passes on the untouched fixture would count a task as done
+// that nobody did. Every ready task's check is run on its pristine fixture
+// (for a check that reads an answer, on no answer at all) and must fail, and
+// fail for the reason the task exists, not because the check broke.
+describe('every pristine fixture fails its own check', { skip }, () => {
+  let workspace;
+  before(() => {
+    workspace = createWorkspace();
+  });
+  after(() => workspace?.remove());
+
+  const ready = TASKS.filter((entry) => entry.status === 'ready');
+
+  test('the catalog has a pristine check for every ready kind', () => {
+    assert.deepEqual([...new Set(ready.map((entry) => entry.kind))].sort(), ['cad', 'code', 'physics', 'research']);
+  });
+
+  for (const entry of ready.filter((candidate) => candidate.kind === 'code')) {
+    test(`${entry.id}: the fixture's own tests fail before the fix`, async () => {
+      const result = await objectiveCheck(entry, { resultDir: fixturePath(entry), workspace, label: 'pristine' });
+      assert.equal(result.completed, false, result.output);
+      assert.equal(result.timedOut, false, 'it fails, it does not hang');
+      assert.equal(result.testsTampered, false);
+      assert.ok(result.exitCode !== 0 && result.exitCode !== null, `exit ${result.exitCode}`);
+      // A test of the fixture's ran and failed (node --test marks it), so the
+      // check did run the tests rather than failing to start them.
+      assert.match(result.output, /✖ |not ok /, result.output);
+    });
+  }
+
+  for (const entry of ready.filter((candidate) => candidate.kind === 'cad')) {
+    test(`${entry.id}: the original part is a valid solid that misses the new dimensions`, async () => {
+      const result = await objectiveCheck(entry, { resultDir: fixturePath(entry), workspace, label: 'pristine' });
+      assert.equal(result.completed, false, result.output);
+      assert.match(result.output, /valid solid/, 'the part is read and measured, not refused');
+      assert.match(result.output, /holes\.spacing/, result.output);
+    });
+  }
+
+  for (const entry of ready.filter((candidate) => candidate.kind === 'physics')) {
+    test(`${entry.id}: with no verified computation there is no answer`, async () => {
+      const result = await objectiveCheck(entry, { resultDir: fixturePath(entry), answers: [], workspace, label: 'pristine' });
+      assert.equal(result.completed, false);
+      assert.match(result.output, /no verified physics\.compute result/);
+    });
+  }
+
+  for (const entry of ready.filter((candidate) => candidate.kind === 'research')) {
+    test(`${entry.id}: with no answer the check fails`, async () => {
+      // No citation is checked when there is no answer, so no database is read.
+      const result = await answerCheck(entry, { answer: null, ownerId: null, project: null, db: null });
+      assert.equal(result.completed, false);
+      assert.match(result.output, /there is no answer/);
+    });
+  }
 });

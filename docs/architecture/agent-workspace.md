@@ -178,6 +178,18 @@ The runner (`server/src/workspace/runner/`) implements this as follows.
   as a `finding` produced by that final step, so later runs read the
   conclusion. `hard` marks the step hard for the model calls its capability
   makes through `ctx.model`.
+- The chooser's reply is the step's act, so code a step writes is inside it.
+  Its output limit is 600 tokens, or 1,500 when the role offers a capability
+  that declares `writesCode: true` (it picks the capability in the same
+  reply). The plan's limit is 800. The model router clamps every call's
+  output limit (the plan, the chooser, and a capability's own call through
+  `ctx.model`, with its own limit or none) to what the run's `maxTokens` has
+  left, and every call is counted in the ledger as it was used. The local
+  and own-key adapters pass that limit on; the platform adapter does not,
+  since the control plane sets its own ceiling. Local calls ask for an
+  8,192-token context, as chat does. A chooser reply cut off at its limit
+  (the adapter's stop reason says so, or it used the whole limit) fails the
+  step with `chooser_output_limit`, not as a format error.
 - The slice has a fixed budget (1,500 tokens, 8 nodes). The run's plan and its
   most recent notes compete for it with boosted scores, so the next step reads
   what the last one learned. They are the run's own memory, so they are
@@ -219,7 +231,10 @@ export default {
 };
 ```
 
-A capability may also declare `source` (the plug-in data it reads), which the
+A capability may also declare `writesCode: true` when its input carries code
+the model writes (`code.edit`, `code.run_generated`, `physics.compute`,
+`cad.parametric_edit`), which gives the step chooser its larger output
+limit, and `source` (the plug-in data it reads), which the
 runner passes to `can()`; without it a `read_graph` capability is allowed only
 for an agent whose read sources are `['*']`. `findings`, `decisions`,
 `questions` and `artifacts` in the result (each a string or
@@ -336,11 +351,6 @@ port.stream({ messages, maxTokens, signal, purpose })
 
 - **local**: Ollama on this machine. Always available offline. Cost 0.
 - **own_key**: Anthropic directly with the user's Key Pro key.
-- The plan a run is routed under is the control plane's, read with
-  `currentPlan(ownerId)` (cached `/v1/me`): signed out, offline or unreachable
-  is Free, so the run stays local. The worker makes the platform adapter per
-  run, for the run's owner: an adapter entry may be a function of the run
-  (`resolvePort` in `runner/models.js`).
 - **platform**: the control plane's `POST /v1/cloud/messages` with the device
   token (Wave 2, path F). A fresh `requestId` on every attempt, retries
   included. `platformAdapter({ ownerId, sources })` reads the owner's token
@@ -348,13 +358,16 @@ port.stream({ messages, maxTokens, signal, purpose })
   plan's hard-question model. `maxTokens` is not sent: the control plane sets
   the ceiling. Without a token, or when the control plane refuses, it throws
   `code: 'platform_unavailable'` (with `reason`: `signed_out`, `offline`,
-  `allowance_exhausted`, …) before yielding anything.
+  `allowance_exhausted`, …) before yielding anything. The worker makes it per
+  run, for the run's owner, so a run never speaks with another user's token:
+  an adapter entry may be a function of the run (`resolvePort` in
+  `runner/models.js`).
 
-The `plan` passed to `selectAdapter` is the control plane's, from
-`currentPlan(ownerId)` / `controlState(ownerId)` in
+The `plan` passed to `selectAdapter` (for a run as for chat) is the control
+plane's, from `currentPlan(ownerId)` / `controlState(ownerId)` in
 `server/src/control/plan.js`: `GET /v1/me`, cached per local user for five
 minutes. Signed out, offline or unconfigured (`CONTROL_URL` unset, even with
-a cached answer), it is `free`. After a failed refresh the control plane is
+a cached answer), it is `free`, so the run stays local. After a failed refresh the control plane is
 not asked again for 30 seconds; a plan confirmed within the five minutes is
 still served meanwhile. The same plan decides whether an agent may have
 `modelPolicy: 'own_key'`. The engine keeps no billing tables of its own.
@@ -576,10 +589,17 @@ Arms:
 | `scope_local_cloud` | The same with `local_cloud` on the Engineer plan's rules (`cloud_model` overridden to `allow`): planning goes to the platform model, steps stay local. |
 | `baseline_sonnet`, `baseline_opus` | The standard full-transcript tool loop: the same tools (the code plug-in's capabilities, in an OS-sandboxed copy), one call per turn, every turn re-sending the whole conversation, with cache breakpoints on the previous and the new turn. |
 
-Per task and arm the report records completion, cost, wall clock, steps,
-model calls and tokens (uncached input, cache writes, cache reads and output
+Per task and arm the report records completion, cost, wall clock, actions
+(the capability calls the arm attempted: a Scope run's steps that used a
+capability, a baseline's tool calls; the one count comparable across arms),
+the Scope runner's own steps apart from them (its plan and closing step
+included; none for a baseline, whose turns are its model calls), model calls
+and tokens (uncached input, cache writes, cache reads and output
 separately), and every call's prompt size, from which it derives each arm's
-context curve and its growth in tokens per step. Totals give the cost per
+context curve and its growth in tokens per step. Each ready task's check is
+tested to fail before any work is done: the code and CAD checks on the
+untouched fixture's content, the research and physics checks on an empty
+answer. Totals give the cost per
 completed task and how many times more it costs on each baseline.
 
 `--dry` (the default, run in CI after the server tests) plays one scripted

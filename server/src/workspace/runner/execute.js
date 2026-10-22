@@ -3,9 +3,9 @@ import { currentPlan } from '../../control/plan.js';
 import { capabilitiesForTags, getCapability, getVerifier } from '../capabilities.js';
 import { decide } from '../permissions.js';
 import { effectiveBudget, exceededLimit, wallRemaining } from './budget.js';
-import { chooserMessages, parseChoice, planMessages, validateInput } from './chooser.js';
+import { chooserMessages, chooserOutputLimit, parseChoice, planMessages, validateInput } from './chooser.js';
 import { stepTotals } from './ledger.js';
-import { createModelRouter } from './models.js';
+import { createModelRouter, wasCutOff } from './models.js';
 import { createRunSandbox, removeRunSandbox } from './sandbox.js';
 import { packSlice } from './slice.js';
 import {
@@ -35,7 +35,6 @@ export const MAX_CONSECUTIVE_FAILURES = 5;
 // How many of the run's own node ids the checkpoint remembers for the slice.
 const CHECKPOINT_NODES = 50;
 const PLAN_MAX_TOKENS = 800;
-const CHOOSER_MAX_TOKENS = 600;
 const OUTPUT_EVENT_CHARS = 2000;
 const CAPABILITY_EVENTS = new Set(['step.output', 'node.touched']);
 
@@ -177,6 +176,8 @@ async function executeSteps(claimed, deps) {
     online,
     adapters,
     publish,
+    // Every model call's output limit is clamped to what this has left.
+    budget: () => budget,
     db,
     onCall: ({ stepId, adapter, fallbackFrom }) => {
       if (!stepId) return;
@@ -209,16 +210,20 @@ async function executeSteps(claimed, deps) {
   // wall-clock limit aborts it too.
   function watch(controller) {
     const timers = [];
+    const killedBy = (control) =>
+      !control || control.status === 'killed' ? 'killed' : control.agent_state === 'killed' ? 'agent_killed' : null;
     const heartbeat = setInterval(async () => {
       if (isAbandoned()) return clearInterval(heartbeat);
       try {
         const control = await readControl(run.id, db);
-        if (!control || control.status === 'killed') {
-          controller.abort(new Stop('killed'));
-        } else if (control.agent_state === 'killed') {
-          controller.abort(new Stop('agent_killed'));
+        const killed = killedBy(control);
+        if (killed) {
+          controller.abort(new Stop(killed));
         } else if (control.status === 'running' && !(await renewLease(run.id, { workerId, leaseMs }, db))) {
-          controller.abort(new Stop('lost'));
+          // The run changed between the read and the renewal. A kill that
+          // landed in that gap is a kill, not a lost lease: read it again so
+          // the step is marked as killed rather than left for someone else.
+          controller.abort(new Stop(killedBy(await readControl(run.id, db)) ?? 'lost'));
         }
       } catch {
         // A missed heartbeat is retried on the next tick; the lease is long
@@ -649,13 +654,23 @@ async function executeSteps(claimed, deps) {
       privateContext: slice.privateContext,
       stepId: step.id,
       messages: chooserMessages({ agent, goal: run.instructions, slice: slice.nodes, capabilities, stepIndex: index }),
-      maxTokens: CHOOSER_MAX_TOKENS,
+      maxTokens: chooserOutputLimit(capabilities),
       format: 'json',
       signal,
     });
     await stage();
     const parsed = parseChoice(reply.text);
-    if (!parsed.ok) return failStep(step, { reason: parsed.error, sources: slice.nodes });
+    if (!parsed.ok) {
+      // A reply cut off at its limit is not the model failing the format,
+      // and the step record says which it was.
+      // The limit is the one the call was given (the router may have
+      // lowered it to the run's remaining budget).
+      const outputLimit = reply.maxTokens ?? null;
+      const reason = wasCutOff(reply, outputLimit)
+        ? `chooser_output_limit: the reply stopped at its ${outputLimit ?? 'output'}-token limit (${parsed.error})`
+        : parsed.error;
+      return failStep(step, { reason, sources: slice.nodes, detail: { outputLimit } });
+    }
     const choice = parsed.choice;
 
     if (choice.done && !choice.capability) {
