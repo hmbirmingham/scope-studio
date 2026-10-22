@@ -89,9 +89,12 @@ The code it wrote computed slope 4.035 s²/m, g = 9.783 m/s² and 1.794 s at
 0.80 m, the same as the reference analysis. Its list of fixes caught the slope,
 g, the uncertainty and that the 0.80 m point belongs in the fit, but did not
 say the report's 0.80 m row was copied from the 0.60 m one, so know the
-answers in step 6 of the talk track. Across four real runs the wording and
-the number of steps varied; one earlier run re-ran the code after saving
-(the task wording now prevents that). A CPU without a GPU is this slow: run
+answers in step 6 of the talk track. Six real runs went into preparing this:
+earlier task wordings led the model to put code in its plan, to run past
+the step's output limit, and to re-run the code after saving, and offering it
+the physics capabilities sent it into three failed `physics.check` steps. The
+current task and agent completed cleanly in both runs made with them (11 min
+and 8 min 37 s here). A CPU without a GPU is this slow: run
 the demo on Apple silicon, and do one full run beforehand so the model is
 warm and you have seen its output.
 
