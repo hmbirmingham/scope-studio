@@ -16,10 +16,12 @@ import {
 import { TIER_CONFIGS, resolveConfig } from '../retrieval/score.js';
 import { projectAmbiguity } from '../routing/ambiguity.js';
 import {
+  carriesRunOutput,
   continuation,
   coveringDraft,
   draftKey,
   getConversation,
+  messagesFor,
   readsAsFollowUp,
   retrievalQuery,
   saveConversation,
@@ -282,6 +284,11 @@ async function planTurn(ownerId, sessionId, { query, project, tier, overrides, c
     contextTokens = packed.tokens;
   }
 
+  // The thread keeps script output for a later local turn; what is sent
+  // depends on where it goes (messagesFor). Only a continued conversation can
+  // hold output, as runs are appended to stored conversations.
+  const runOutput = continued && carriesRunOutput(messages) ? (route.decision === 'local' ? 'included' : 'withheld') : null;
+
   const metrics = await summarizeRetrieval({
     ownerId,
     tier: route.tier,
@@ -296,7 +303,10 @@ async function planTurn(ownerId, sessionId, { query, project, tier, overrides, c
     route,
     config,
     gathered,
-    messages,
+    // `messages` is exactly what this turn sends; `thread` is what the
+    // conversation keeps, local-only script output included.
+    messages: messagesFor(route.decision, messages),
+    thread: messages,
     sources,
     contextBlock,
     contextTokens,
@@ -316,6 +326,10 @@ async function planTurn(ownerId, sessionId, { query, project, tier, overrides, c
       // Why Auto judged the question hard, when it did: wording, length, or
       // multi_part.
       difficulty,
+      // 'withheld' when a cloud turn continues a thread holding script output
+      // it did not send, 'included' when the local model read it, else null.
+      // Kept apart from `reason`: the output never changes the route.
+      runOutput,
     },
   };
 }
@@ -618,7 +632,7 @@ router.post('/', async (req, res) => {
       tier: route.tier,
       project: req.body.project ?? null,
       sources,
-      messages: [...plan.messages, { role: 'assistant', content: answer }],
+      messages: [...plan.thread, { role: 'assistant', content: answer }],
       contextTokens: plan.contextTokens,
       lastQuestion: plan.text,
     });

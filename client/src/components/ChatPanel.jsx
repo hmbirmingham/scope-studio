@@ -1,6 +1,7 @@
 import { useState } from 'react';
 import AnswerText from './AnswerText';
 import Disclosure from './Disclosure';
+import { routingNote } from './routingNote.js';
 
 const TIERS = [
   { value: null, label: 'Auto' },
@@ -78,12 +79,11 @@ function WebSources({ searches, web, omittedPrivate, finished = false }) {
 function Sources({ nodes, metrics, routing }) {
   if (!nodes || nodes.length === 0) return null;
   const saved = metrics?.efficiencyRatio != null ? `${Math.round((1 - metrics.efficiencyRatio) * 100)}% fewer tokens` : null;
-  const note = routing?.contextReused ? 'same context' : routing?.prefilled ? 'prefilled' : null;
 
   return (
     <Disclosure
       summary={`Read ${nodes.length} ${nodes.length === 1 ? 'source' : 'sources'}`}
-      detail={[saved, note].filter(Boolean).join(' · ')}
+      detail={[saved, ...routingNote(routing)].filter(Boolean).join(' · ')}
     >
       <SourceList nodes={nodes} />
     </Disclosure>

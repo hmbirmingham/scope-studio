@@ -133,6 +133,7 @@ describe('chat routing and streaming', () => {
       prefilled: false,
       nodesAdded: 1,
       difficulty: null,
+      runOutput: null,
       model: `ollama/${localChatModel()}`,
     });
     assert.equal(context.nodes[0].id, ids.quantify);

@@ -337,6 +337,16 @@ tier and the benchmark to calibrate them. With Ollama down, retrieval runs
 lexical-only (the query embedding also needs Ollama), so the router can still
 decide.
 
+**Script output is local-only context.** An approved script's output is
+appended to its conversation so a follow-up can be about it, but the script
+runs as the user and can print any file on the machine, private nodes'
+sources included. So the output is never sent to the cloud, whatever the
+project's nodes: a cloud turn continuing that conversation sends a fixed
+stand-in (command and exit code only, the same every turn so the cached
+prefix holds) and reports `routing.runOutput: 'withheld'`; only a local turn
+reads the output itself. The route is unchanged: the user's tier choice still
+stands, and the answer says it did not see the output.
+
 **Static prefix, as implemented.** The static prefix is the system prompt,
 byte-identical on every request; nodes follow relevance-descending, question
 last. Ordering nodes for cache reuse instead would give up the

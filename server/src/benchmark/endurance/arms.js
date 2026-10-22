@@ -16,6 +16,7 @@ import { questionDifficulty } from '../../routing/difficulty.js';
 import {
   continuation,
   getConversation,
+  messagesFor,
   readsAsFollowUp,
   retrievalQuery,
   saveConversation,
@@ -156,7 +157,12 @@ export async function planScopeTurn({ ownerId, query, project, conversationId, c
     contextTokens = packed.tokens;
   }
 
-  return { text, model, status, route, config, gathered, messages, sources, contextTokens, difficulty, reused: Boolean(continued) };
+  // Sent as the route sends it: a thread's local-only messages never reach
+  // the cloud (routing/conversation.js messagesFor).
+  return {
+    text, model, status, route, config, gathered, messages: messagesFor(route.decision, messages), sources, contextTokens, difficulty,
+    reused: Boolean(continued),
+  };
 }
 
 async function runLocal({ model, messages }) {

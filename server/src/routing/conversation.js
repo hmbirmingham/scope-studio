@@ -118,15 +118,51 @@ export function resetConversations() {
 
 // A script's output belongs in the thread: appending it keeps the cached
 // prefix intact and lets the next question be about what just happened.
+// It is also local-only context, unconditionally. The script runs as the user,
+// outside any sandbox, so its output can hold any file on this machine: a
+// private node's source, one in another project, or one never ingested at all.
+// Nothing about the run's project can tell, at send time, whether the output
+// holds private text, so the message is marked and the cloud never reads it
+// (messagesFor).
 export function rememberRunOutput(id, ownerId, run) {
   const entry = getConversation(id, ownerId);
   if (!entry) return;
+  const command = `npm run ${run.script}`;
   entry.messages = [
     ...entry.messages,
     {
       role: 'user',
-      content: `<command-output command="npm run ${run.script}" exit="${run.exitCode}">\n${run.output}\n</command-output>`,
+      content: `<command-output command="${command}" exit="${run.exitCode}">\n${run.output}\n</command-output>`,
+      localOnly: { command, exitCode: run.exitCode },
     },
   ];
   entry.updatedAt = Date.now();
+}
+
+// What stands in for withheld output on a cloud request. It names only what
+// the thread already showed the cloud (the script it proposed) and the exit
+// code, and it is the same on every turn, so the cloud's cached prefix holds
+// from one follow-up to the next.
+function withheld({ command, exitCode }) {
+  return (
+    `<command-output command="${command}" exit="${exitCode}" withheld="true">\n` +
+    'The output stayed on this machine: script output can contain private files, so it is never sent to the cloud. ' +
+    'If the question needs it, say so: the user can ask with the local model, or paste the part that is safe to share.\n' +
+    '</command-output>'
+  );
+}
+
+export function carriesRunOutput(messages) {
+  return messages.some((message) => message.localOnly);
+}
+
+// The messages a model is actually sent. The local model reads the thread as
+// stored; any other destination gets each local-only message replaced by its
+// stand-in. Every request is built through here, so no route, override or
+// fallback can send script output to the cloud. The marker itself is never
+// sent anywhere.
+export function messagesFor(decision, messages) {
+  return messages.map(({ localOnly, ...message }) =>
+    !localOnly || decision === 'local' ? message : { ...message, content: withheld(localOnly) }
+  );
 }
