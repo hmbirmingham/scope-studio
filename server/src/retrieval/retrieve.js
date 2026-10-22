@@ -93,12 +93,17 @@ async function cachedEmbedQuery(query, { compute = true } = {}) {
   return null;
 }
 
+// Two characters that mix a letter and a digit: a reference designator (C2,
+// U1, J1), which the index keeps as one lexeme. Short words are noise, but
+// these name exactly one part.
+const SHORT_IDENTIFIER = /^(?=.*[a-z])(?=.*[0-9])[a-z0-9]{2}$/;
+
 // Mirrors the index side (migration 008): identifiers split on non-alphanumerics.
-function toLexicalTerms(query) {
+export function toLexicalTerms(query) {
   const terms = query
     .toLowerCase()
     .split(/[^a-z0-9]+/)
-    .filter((term) => term.length >= 3 && !STOPWORDS.has(term));
+    .filter((term) => (term.length >= 3 || SHORT_IDENTIFIER.test(term)) && !STOPWORDS.has(term));
   return [...new Set(terms)];
 }
 
