@@ -185,6 +185,7 @@ jobs:
   # The screenshots of each step are kept for review.
   demo:
     runs-on: ubuntu-latest
+    timeout-minutes: 20
     services:
       postgres:
         image: pgvector/pgvector:pg18

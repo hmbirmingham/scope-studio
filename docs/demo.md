@@ -51,8 +51,11 @@ Ctrl-C stops everything. Options: `DEMO_DATABASE_URL` (default
 
 The app opens straight onto the map: in this local mode the engine signs the
 browser on the same machine in to the demo account, so there is no sign-in
-screen. (Only a browser on this machine, talking to this engine over
-loopback, is signed in this way, and never in production.)
+screen. Local mode only ever signs in to the demo account
+(`student@scope-demo.local`), only with `NODE_ENV=development`, only on an
+engine listening on loopback (the engine refuses to start otherwise), and only
+for a request from this machine's own browser on `localhost`. Never put
+`SCOPE_LOCAL_USER` in a `.env` file or expose the app with `vite --host`.
 
 ### Which model
 
@@ -190,9 +193,11 @@ keeps going, click **Stop run**; the list of fixes is already saved.
 - **Private notes stay private.** A node marked local only is never sent to a
   cloud model, and anything derived from it inherits that mark, so it can't
   leak later either (`inheritPrivacy`, docs/architecture/agent-workspace.md).
-- **Your own Anthropic key, if you want it.** For the hard questions you can
-  bring your own key; it travels with each request and is never stored by
-  the engine. It is optional.
+- **Your own Anthropic key: optional, and not part of this demo.** Nothing
+  shown here needs a key or an account. Using your own key for the hard
+  questions is a paid-plan feature today, not part of the free setup; the key
+  travels with each request and is never stored by the engine. Launch pricing
+  is being reworked, so don't promise anything about it.
 - **Agents that ask.** Every action goes through one permission check. A
   supervised agent asks before running code, editing files or using the
   network, and model-written code only ever runs in an OS sandbox.
@@ -213,8 +218,8 @@ keeps going, click **Stop run**; the list of fixes is already saved.
   quality; on short tasks the two context curves differ little, and the
   saving comes mostly from where the tokens run (locally, at $0).
 
-Pricing beyond "free locally, your own key optional" is being reworked; don't
-quote plans or prices.
+Say "free on your laptop" and stop there: launch pricing, including what the
+own-key option will cost, is being reworked, so don't quote plans or prices.
 
 ## Troubleshooting
 
