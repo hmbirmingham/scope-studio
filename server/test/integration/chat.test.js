@@ -290,6 +290,11 @@ describe('chat routing and streaming', () => {
 
   test('prepare returns the nodes it would read and prefills the exact prompt the answer uses', async () => {
     const query = 'what does quantify_colonies return';
+    // An earlier test asked the same question, and its row is in the table
+    // already, so rows are counted from here on rather than in total.
+    const logged = async () =>
+      (await server.pool.query('SELECT query_id FROM query_metrics WHERE query_text = $1', [query])).rows.map((row) => row.query_id);
+    const before = await logged();
     const { status, data } = await api('POST', '/api/chat/prepare', { query });
     assert.equal(status, 200);
     assert.equal(data.routing.decision, 'local');
@@ -308,8 +313,12 @@ describe('chat routing and streaming', () => {
     assert.deepEqual(real.messages, warm.messages, 'the warm-up prefilled exactly the prompt the answer uses');
     assert.equal(real.options.num_predict, undefined);
 
-    const { rows } = await server.pool.query('SELECT count(*)::int AS c FROM query_metrics WHERE query_text = $1', [query]);
-    assert.equal(rows[0].c, 1, 'a draft being prepared is not logged as a query');
+    // The answer's row is written after its last token, off the response
+    // path, so it is waited for; only then is the count settled. Exactly one
+    // new row, and it is the answer's: the draft was never logged.
+    await metricsRow(lines.at(-1).queryId);
+    const added = (await logged()).filter((id) => !before.includes(id));
+    assert.deepEqual(added, [lines.at(-1).queryId], 'a draft being prepared is not logged as a query');
   });
 
   test('a follow-up appends to the same context block instead of rebuilding it', async () => {
