@@ -26,12 +26,13 @@ import {
   saveDraft,
 } from '../routing/conversation.js';
 import { buildFollowUp, buildMessages, composeMessages } from '../routing/prompt.js';
-import { CLOUD_TIER, provisionalTier, routeAndPack, sendsPrivate } from '../routing/route.js';
+import { CLOUD_TIER, decideRoute, provisionalTier, routeAndPack, sendsPrivate } from '../routing/route.js';
 import { parseEdits, presentProposal, recordProposals } from '../editing/proposals.js';
 import { declaredScripts, parseRuns, presentRun, recordRuns } from '../editing/commands.js';
 import { autoOpens, openNow, parseActions, presentAction, recordActions } from '../editing/actions.js';
 import { displayControlAllowed } from './actions.js';
 import { getProjectSettings } from '../models/projectSettings.js';
+import { currentPrivacy } from '../models/nodeStore.js';
 import { beginGeneration, endGeneration, warmCache } from '../routing/warm.js';
 import { expireMe } from '../control/linkStore.js';
 import { controlState, deviceToken } from '../control/plan.js';
@@ -177,6 +178,25 @@ async function* generate({ decision, model, effort, messages, apiKey, cacheMarke
   }
 }
 
+// What a turn can reuse from before: the conversation it continues, or else
+// a draft prefilled for this session, with each node's privacy as it is now
+// rather than as it was when the context was read. `carried` is the nodes the
+// reused context would resend. A node deleted since cannot be checked, so the
+// context holding it is not reused and the turn starts a fresh one.
+async function reusableContext(ownerId, { conversation, draft, selected, tier, project }) {
+  const continued = continuation(conversation, { selected, tier, project });
+  const prefilled = continued ? null : coveringDraft(draft, { selected, tier });
+  const kept = continued?.entry.sources ?? prefilled?.sources;
+  if (!kept) return { continued: null, prefilled: null, carried: [] };
+
+  const now = await currentPrivacy(ownerId, kept.map(({ node }) => node.id));
+  if (kept.some(({ node }) => !now.has(node.id))) return { continued: null, prefilled: null, carried: [] };
+  const carried = kept.map((entry) => ({ ...entry, node: { ...entry.node, privacy: now.get(entry.node.id) } }));
+  return continued
+    ? { continued: { ...continued, entry: { ...continued.entry, sources: carried } }, prefilled: null, carried }
+    : { continued: null, prefilled: { ...prefilled, sources: carried }, carried };
+}
+
 async function planTurn(ownerId, sessionId, { query, project, tier, overrides, conversationId, cloudOnly = false }, { cloudAvailable }) {
   const text = query.trim();
   const model = localChatModel();
@@ -213,22 +233,35 @@ async function planTurn(ownerId, sessionId, { query, project, tier, overrides, c
   const decideStart = performance.now();
   // Only Auto weighs difficulty; a chosen tier is the user's call.
   const difficulty = tier ? null : questionDifficulty(text);
-  const { route, packed } = routeAndPack({
+  const routeInputs = { preferredTier: tier, localAvailable, cloudAvailable, hard: Boolean(difficulty) };
+  let { route, packed } = routeAndPack({
     pack: (packTier) => packForTier(gathered.candidates, packTier, overrides),
     provisional,
-    preferredTier: tier,
-    localAvailable,
-    cloudAvailable,
-    hard: Boolean(difficulty),
+    ...routeInputs,
   });
+
+  // A continued conversation or a prefilled draft resends context assembled
+  // on an earlier turn, and its nodes are snapshots from then: a node the
+  // user has made private since still reads as public in them. So the nodes
+  // it would carry are read again first (reusableContext). One that is now
+  // private is in this turn's context exactly as a retrieved one would be,
+  // so it decides local the same way, or refuses when local cannot serve;
+  // the conversation is not quietly restarted in the cloud without it.
+  const reusableFor = (forTier) =>
+    reusableContext(ownerId, { conversation, draft: draftKey(ownerId, sessionId), selected: packed.selected, tier: forTier, project });
+  let reuse = await reusableFor(route.tier);
+  if (sendsPrivate(route, reuse.carried)) {
+    route = decideRoute({ ...routeInputs, selected: [...packed.selected, ...reuse.carried] });
+    packed = packForTier(gathered.candidates, route.tier, overrides);
+    reuse = await reusableFor(route.tier);
+  }
   const routingDecisionMs = Math.round(probeMs + performance.now() - decideStart);
 
   const config = resolveConfig(route.tier, overrides);
-  // A continued conversation or a prefilled draft resends context assembled
-  // earlier; neither may carry a private node to the cloud.
-  let continued = continuation(conversation, { selected: packed.selected, tier: route.tier, project });
+  // The last guard: neither kind of reused context may carry a private node
+  // to the cloud, whatever decided the route.
+  let { continued, prefilled } = reuse;
   if (continued && sendsPrivate(route, [...continued.entry.sources, ...continued.added])) continued = null;
-  let prefilled = continued ? null : coveringDraft(draftKey(ownerId, sessionId), { selected: packed.selected, tier: route.tier });
   if (prefilled && sendsPrivate(route, prefilled.sources)) prefilled = null;
   let messages;
   let sources;
