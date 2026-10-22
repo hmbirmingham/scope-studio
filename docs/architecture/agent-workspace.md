@@ -583,7 +583,8 @@ the Scope runner's own steps apart from them (its plan and closing step
 included; none for a baseline, whose turns are its model calls), model calls
 and tokens (uncached input, cache writes, cache reads and output
 separately), and every call's prompt size, from which it derives each arm's
-context curve and its growth in tokens per step. Totals give the cost per
+context curve and its growth in tokens per step. Every ready task's check is
+tested to fail on its untouched fixture. Totals give the cost per
 completed task and how many times more it costs on each baseline.
 
 `--dry` (the default, run in CI after the server tests) plays one scripted
