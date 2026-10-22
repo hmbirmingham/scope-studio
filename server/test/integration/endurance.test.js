@@ -10,7 +10,7 @@ import { parseNdjson } from '../../src/lib/ollama.js';
 import { upsertNodeByExternalId } from '../../src/models/nodeStore.js';
 import { resetConversations } from '../../src/routing/conversation.js';
 import { resetWarmState } from '../../src/routing/warm.js';
-import { createScopeArm } from '../../src/benchmark/endurance/arms.js';
+import { WITHHELD_PRIVATE_NODE, createScopeArm } from '../../src/benchmark/endurance/arms.js';
 import { DRY, SpendCap } from '../../src/benchmark/endurance/economics.js';
 import { EXIT_UPSTREAM_ERROR, emitReport, runEndurance, withDryServices } from '../../src/benchmark/session.js';
 import { FAKE_ANTHROPIC_KEY, startFakeAnthropic } from '../fakeAnthropic.js';
@@ -21,6 +21,9 @@ import { ensureCentroids, registeredSession, startServer } from '../helpers.js';
 const realOllama = process.env.OLLAMA_URL || 'http://localhost:11434';
 // Obviously fake: it only ever reaches the stand-in Anthropic server below.
 const PLATFORM = 'sk-ant-test-not-a-real-key';
+// What only the private file says; none of it may reach a live cloud request.
+const PRIVATE_TEXT = ['STEPS_PER_MM', 'for the unreleased stage', 'stage_motor.c', 'acme/stage'];
+const sentText = (requests) => JSON.stringify(requests.map(({ system, messages }) => ({ system, messages })));
 
 // A small working day over a tiny corpus: a lookup, a follow-up that leans on
 // it, a hard question, and a question that touches a private file.
@@ -205,7 +208,13 @@ describe('endurance benchmark', () => {
     assert.ok(sonnet.at(-1).inputTokens + sonnet.at(-1).cacheReadTokens + sonnet.at(-1).cacheWriteTokens >
       sonnet[0].inputTokens + sonnet[0].cacheReadTokens + sonnet[0].cacheWriteTokens, 'the whole transcript is re-sent');
     assert.ok(result.arms.baseline_opus.totalCostUsd > result.arms.baseline_sonnet.totalCostUsd);
-    assert.ok(result.arms.baseline_sonnet.turns.some((row) => row.privateNodesSent > 0), 'the cloud app sends the private file');
+    // A dry run simulates the naive paste in full, to the local stand-in only.
+    assert.ok(result.arms.baseline_sonnet.turns.some((row) => row.privateNodesWouldSend > 0), 'a cloud app would send the private file');
+    assert.ok(result.arms.baseline_sonnet.privateNodesWouldSend > 0);
+    assert.equal(result.arms.baseline_sonnet.privateNodesWithheld, 0, 'a dry run withholds nothing');
+    assert.equal(result.arms.scope.privateNodesWouldSend, 0);
+    assert.match(sentText(anthropic.state.requests), /STEPS_PER_MM/, 'the stand-in saw the full paste');
+    assert.match(report.baseline.privateNodes, /pasted in full to the local stand-in/);
 
     const scope = result.arms.scope.turns;
     assert.ok(scope.filter((row) => row.decision === 'local').every((row) => row.costUsd === 0));
@@ -231,6 +240,32 @@ describe('endurance benchmark', () => {
     assert.equal(accessAfter, accessBefore, 'no access counts bumped');
     assert.ok(anthropic.state.authHeaders.length > 0);
     assert.ok(anthropic.state.authHeaders.every((key) => key === FAKE_ANTHROPIC_KEY), "a dry run sends only the stand-in's test key");
+  });
+
+  test('a live run never sends a private node to the cloud, and still counts what a cloud app would have sent', async () => {
+    // Live mode against the stand-in: the code path a real Anthropic call takes.
+    const report = await runEndurance({ scenarios: [scenario()], mode: 'live', platformKey: PLATFORM });
+    const requests = anthropic.state.requests;
+    assert.ok(requests.length >= TURNS.length * 2, 'both baselines answered every turn in the cloud');
+    const sent = sentText(requests);
+    for (const text of PRIVATE_TEXT) assert.ok(!sent.includes(text), `no live request contains "${text}"`);
+    assert.ok(sent.includes(WITHHELD_PRIVATE_NODE), 'the private file is replaced by the placeholder');
+    assert.ok(sent.includes('normalize_plate'), 'cloud files are still pasted');
+
+    const [result] = report.scenarios;
+    for (const name of ['baseline_sonnet', 'baseline_opus']) {
+      const arm = result.arms[name];
+      assert.equal(arm.turnsRun, TURNS.length, name);
+      assert.ok(arm.privateNodesWouldSend > 0, `${name} reports what a cloud app would have sent`);
+      assert.equal(arm.privateNodesWithheld, arm.privateNodesWouldSend, `${name} withheld every one`);
+      const row = arm.turns.find((r) => r.privateNodesWouldSend > 0);
+      assert.equal(row.privateNodesWithheld, row.privateNodesWouldSend);
+    }
+    assert.equal(result.arms.scope.privateNodesWouldSend, 0);
+    assert.match(report.baseline.privateNodes, /withheld from every real request/);
+    const printed = [];
+    emitReport(report, { print: (text) => printed.push(text), note: () => {} });
+    assert.match(printed[0], /baseline_sonnet: \d+ private file\(s\) a cloud app would have sent, \d+ withheld from the live requests; Scope sent none/);
   });
 
   test('an upstream error partway stops only the arm it hit and keeps every turn already run', async () => {

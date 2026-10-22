@@ -70,6 +70,29 @@ function assertDryEndpoint() {
   }
 }
 
+// What a live baseline sends in place of a private node. A private node never
+// leaves the machine, not even to measure what a cloud app would have done
+// with it, so a live request carries this instead of its text (and without its
+// project, which names the private work too). The count of what a naive app
+// would have pasted is still reported, as privateNodesWouldSend.
+export const WITHHELD_PRIVATE_NODE = '[a private file was withheld here: private files never leave this machine]';
+
+export function isPrivate(node) {
+  return node?.privacy === 'local';
+}
+
+function withheld(entry) {
+  return { ...entry, node: { id: entry.node.id, type: entry.node.type, project: null, privacy: 'local', content: WITHHELD_PRIVATE_NODE } };
+}
+
+// The last check before any cloud request the benchmark builds from graph
+// nodes: a private node among them means a bug upstream, and the request is
+// refused rather than sent.
+function assertNoPrivateSources(entries, where) {
+  const leaked = entries.filter(({ node }) => isPrivate(node));
+  if (leaked.length) throw new Error(`${where} would send ${leaked.length} private node(s) to the cloud; refusing`);
+}
+
 // The route's planTurn for an Auto question (no tier chosen, no web search,
 // no draft): retrieval under the provisional tier, the routing decision from
 // what was selected, a re-pack if the tier changed, and the exact messages —
@@ -250,6 +273,9 @@ export function createScopeArm({ scenario, ownerId, mode, cap, platformKey }) {
         const maxTokens = credential.economy ? ECONOMY_MAX_TOKENS : MAX_TOKENS;
         if (!cap.allows(worstCaseUsd(model, promptTokens(sent), maxTokens))) return { stopped: cap.stopped };
         if (!live) assertDryEndpoint();
+        // The route already keeps a private node off a cloud turn; this is
+        // the benchmark refusing to be the one place that forgets.
+        assertNoPrivateSources(planned.sources, 'the Scope arm');
         const cloud = await runCloud({
           apiKey: credential.apiKey, model, effort: credential.effort, messages: planned.messages, cacheMarker, economy: credential.economy,
         });
@@ -317,6 +343,14 @@ export function withTranscriptBreakpoints(messages) {
 // transcript prefix, so re-reading it costs the cache rate. It is given the
 // same retrieval as Scope, the same system prompt and the plan's effort, so
 // what differs is only how much context is carried and on which model.
+//
+// A naive cloud app would paste private files too, and each row counts them
+// (privateNodesWouldSend): that is the privacy half of the comparison. Only a
+// dry run, whose requests go to a local stand-in, simulates that paste in
+// full. A live run makes a real cloud call, so every private node in it is
+// replaced by WITHHELD_PRIVATE_NODE before the request is built (counted as
+// privateNodesWithheld); its cost is then a little below what the naive app
+// would pay, which only flatters the baseline.
 export function createBaselineArm({ name, model, scenario, ownerId, mode, cap, platformKey }) {
   const live = mode === 'live';
   const config = resolveConfig(CLOUD_TIER, undefined);
@@ -364,9 +398,13 @@ export function createBaselineArm({ name, model, scenario, ownerId, mode, cap, p
         tokens += entry.node.token_length;
       }
       const question = buildFollowUp(text, config);
+      const wouldSend = fresh.filter(({ node }) => isPrivate(node)).length;
+      // What goes into the request, and so into the transcript every later
+      // turn re-sends: in a live run, never a private node's text.
+      const sources = live ? fresh.map((entry) => (isPrivate(entry.node) ? withheld(entry) : entry)) : fresh;
       const pending = {
         role: 'user',
-        content: buildFollowUp(text, config, { sources: fresh, startIndex: numbered }),
+        content: buildFollowUp(text, config, { sources, startIndex: numbered }),
         question,
         nodeIds: fresh.map(({ node }) => node.id),
       };
@@ -409,8 +447,9 @@ export function createBaselineArm({ name, model, scenario, ownerId, mode, cap, p
           compacted,
           nodesPasted: fresh.length,
           // A cloud app sends whatever is pasted, private or not; Scope would
-          // have kept these on the local model.
-          privateNodesSent: fresh.filter(({ node }) => node.privacy === 'local').length,
+          // have kept these on the local model. A live run withholds them.
+          privateNodesWouldSend: wouldSend,
+          privateNodesWithheld: live ? wouldSend : 0,
           model: `anthropic/${model}`,
           inputTokens: usage?.input_tokens ?? 0,
           outputTokens: usage?.output_tokens ?? 0,

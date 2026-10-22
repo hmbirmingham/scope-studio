@@ -1,5 +1,6 @@
 import { randomUUID } from 'node:crypto';
 import { join } from 'node:path';
+import { getPool } from '../../db/pool.js';
 import { costUsd, streamChat as streamAnthropic } from '../../lib/anthropic.js';
 import { registerBuiltInPlugins } from '../../plugins/registry.js';
 import { capabilitiesForTags } from '../../workspace/capabilities.js';
@@ -58,6 +59,23 @@ export function baselineSystem(capabilities, kind = 'code', roleName = ROLE_FOR_
     'When the task is done, reply {"done": true, "summary": "<what was achieved>"}.',
     `Tools:\n${capabilities.map((capability) => JSON.stringify(toolSpec(capability))).join('\n')}`,
   ].join('\n');
+}
+
+// What a live baseline is sent in place of a tool result once the arm's
+// project holds a private node. Its tools read only that project, so the
+// result may carry private text, and private nodes never leave the machine.
+export const WITHHELD_RESULT = '[this result was withheld: it may contain private files, which never leave this machine]';
+
+// Whether the project the baseline's tools read holds any private node. The
+// benchmark ingests its fixtures as cloud, so this is true only when something
+// private got there: an earlier run, or a capability that marked what it wrote
+// private.
+async function projectHoldsPrivate(db, ownerId, project) {
+  const { rowCount } = await db.query(
+    "SELECT 1 FROM nodes WHERE owner_id = $1 AND project = $2 AND privacy = 'local' LIMIT 1",
+    [ownerId, project]
+  );
+  return rowCount > 0;
 }
 
 function clipResult(text) {
@@ -136,7 +154,11 @@ export async function runBaselineTask({ task, arm, workspace, mode = 'dry', cap,
     // under an agent's read scope, so the baseline acts as the benchmark's
     // account, scoped to the arm's project.
     const physics = task.kind === 'physics';
+    // The baseline's context is the task, its cloud problem and tool results
+    // a live run has checked hold nothing private, so it says so: a physics
+    // node is then private exactly when one it was built on is.
     ctx = {
+      ...(physics ? { privateContext: false } : {}),
       ownerId: physics ? ownerId : null,
       agent: physics
         ? { state: 'active', level: 'sandboxed', overrides: {}, role: roleTemplate(roleName), scopes: { read: { projects: [project], sources: ['*'] }, write: { projects: [project] } } }
@@ -165,6 +187,12 @@ export async function runBaselineTask({ task, arm, workspace, mode = 'dry', cap,
   let stopped = null;
   let toolCalls = 0;
   let invalidReplies = 0;
+  let privateResultsWithheld = 0;
+  // Only a live run calls the real cloud, so only it withholds; a dry run's
+  // replies are scripted and go nowhere. A code task's tools read files, not
+  // the graph (ctx.ownerId is null), so there is nothing private to find.
+  const guarded = mode !== 'dry' && Boolean(ctx.ownerId);
+  const pool = guarded ? db ?? getPool() : null;
   const started = performance.now();
   let resultDir = null;
   try {
@@ -203,8 +231,12 @@ export async function runBaselineTask({ task, arm, workspace, mode = 'dry', cap,
         break;
       }
       const capability = byName.get(choice.capability);
-      const result = capability ? await callTool(capability, choice.input, ctx, answers) : `error: unknown tool ${choice.capability}`;
+      let result = capability ? await callTool(capability, choice.input, ctx, answers) : `error: unknown tool ${choice.capability}`;
       toolCalls += 1;
+      if (guarded && (await projectHoldsPrivate(pool, ctx.ownerId, project))) {
+        result = WITHHELD_RESULT;
+        privateResultsWithheld += 1;
+      }
       transcript.push({ role: 'user', content: `Result of ${choice.capability}:\n${result}` });
     }
     if (box) resultDir = snapshotTree(box.worktree, join(workspace.dir('results', task.id), arm.name));
@@ -225,6 +257,7 @@ export async function runBaselineTask({ task, arm, workspace, mode = 'dry', cap,
     // Tool calls, the baseline's actions; its turns are its model calls.
     toolCalls,
     invalidReplies,
+    privateResultsWithheld,
     calls: log.calls,
     stopped,
   };
