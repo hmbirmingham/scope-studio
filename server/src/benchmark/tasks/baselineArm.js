@@ -62,8 +62,9 @@ export function baselineSystem(capabilities, kind = 'code', roleName = ROLE_FOR_
 }
 
 // What a live baseline is sent in place of a tool result once the arm's
-// project holds a private node. Its tools read only that project, so the
-// result may carry private text, and private nodes never leave the machine.
+// project holds a private node. Its tools read only that project, so any
+// result, earlier ones included, may carry private text, and private nodes
+// never leave the machine.
 export const WITHHELD_RESULT = '[this result was withheld: it may contain private files, which never leave this machine]';
 
 // Whether the project the baseline's tools read holds any private node. The
@@ -197,6 +198,16 @@ export async function runBaselineTask({ task, arm, workspace, mode = 'dry', cap,
   let resultDir = null;
   try {
     for (let turn = 0; turn < maxTurns; turn += 1) {
+      // Checked before every request, not only after a tool call: a node
+      // can become private at any time, and every earlier result is re-sent.
+      if (guarded && (await projectHoldsPrivate(pool, ctx.ownerId, project))) {
+        for (const entry of transcript) {
+          if (entry.toolResult && entry.content !== WITHHELD_RESULT) {
+            entry.content = WITHHELD_RESULT;
+            privateResultsWithheld += 1;
+          }
+        }
+      }
       const messages = withTranscriptBreakpoints(transcript);
       const t0 = performance.now();
       const reply = await modelTurn({ mode, model: arm.model, system, messages, script, cache, cap, apiKey, stream });
@@ -231,13 +242,9 @@ export async function runBaselineTask({ task, arm, workspace, mode = 'dry', cap,
         break;
       }
       const capability = byName.get(choice.capability);
-      let result = capability ? await callTool(capability, choice.input, ctx, answers) : `error: unknown tool ${choice.capability}`;
+      const result = capability ? await callTool(capability, choice.input, ctx, answers) : `error: unknown tool ${choice.capability}`;
       toolCalls += 1;
-      if (guarded && (await projectHoldsPrivate(pool, ctx.ownerId, project))) {
-        result = WITHHELD_RESULT;
-        privateResultsWithheld += 1;
-      }
-      transcript.push({ role: 'user', content: `Result of ${choice.capability}:\n${result}` });
+      transcript.push({ role: 'user', content: `Result of ${choice.capability}:\n${result}`, toolResult: true });
     }
     if (box) resultDir = snapshotTree(box.worktree, join(workspace.dir('results', task.id), arm.name));
   } finally {

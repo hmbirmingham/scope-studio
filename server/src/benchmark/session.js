@@ -42,7 +42,9 @@ import { DEFAULT_SESSIONS_DIR, loadScenarios } from './endurance/scenarios.js';
 // Private files: each baseline row counts the private nodes a paste-everything
 // app would have sent (privateNodesWouldSend). A dry run pastes them in full
 // to the local stand-in; a live run withholds their text from every real
-// request (privateNodesWithheld), since a private node never leaves the machine.
+// request (privateNodesWithheld), since a private node never leaves the machine,
+// and leaves every turn whose request carried a withheld node out of the
+// quality comparison, since its answer was given without that file.
 
 const here = dirname(fileURLToPath(import.meta.url));
 export const RESULTS_DIR = join(here, '../../benchmarks/results');
@@ -117,6 +119,7 @@ function armSummary(rows, budgetUsd, dry) {
     // Scope never sends a private node to the cloud, so its rows carry no count.
     privateNodesWouldSend: rows.reduce((total, row) => total + (row.privateNodesWouldSend ?? 0), 0),
     privateNodesWithheld: rows.reduce((total, row) => total + (row.privateNodesWithheld ?? 0), 0),
+    turnsExcludedFromQuality: rows.filter((row) => row.excludedFromQuality).length,
     blockedTurns: rows.filter((row) => row.blocked).length,
     meanLatencyMs: mean(rows.map((row) => row.latencyMs)),
     byKind: Object.fromEntries(
@@ -342,7 +345,8 @@ export async function runEndurance({
       caching: 'breakpoints on the previous and the new user turn; every turn assumed inside the cache lifetime',
       privateNodes: dry
         ? 'pasted in full to the local stand-in, as a cloud app would send them; counted as privateNodesWouldSend'
-        : 'counted as privateNodesWouldSend, but their text is withheld from every real request (privateNodesWithheld): private nodes never leave this machine',
+        : 'counted as privateNodesWouldSend, but their text is withheld from every real request (privateNodesWithheld): private nodes never leave this machine. ' +
+          'A turn whose request carried a withheld node has no quality or citation coverage and is excluded from the quality comparison (turnsExcludedFromQuality).',
     },
     maxUsd: ceiling,
     spentUsd: cap.spentUsd,
@@ -393,8 +397,10 @@ export function formatMarkdown(report) {
   const privacy = [];
   for (const result of report.scenarios) {
     for (const [name, arm] of Object.entries(result.arms ?? {})) {
-      if (arm.privateNodesWouldSend > 0) privacy.push(`- ${result.id} ${name}: ${arm.privateNodesWouldSend} private file(s) a cloud app would have sent` +
-        `${arm.privateNodesWithheld > 0 ? `, ${arm.privateNodesWithheld} withheld from the live requests` : ''}; Scope sent none`);
+      if (arm.privateNodesWouldSend > 0 || arm.privateNodesWithheld > 0) {
+        privacy.push(`- ${result.id} ${name}: ${arm.privateNodesWouldSend} private file(s) a cloud app would have sent` +
+          `${arm.privateNodesWithheld > 0 ? `, ${arm.privateNodesWithheld} withheld from the live requests, ${arm.turnsExcludedFromQuality} turn(s) excluded from the quality comparison` : ''}; Scope sent none`);
+      }
     }
   }
   if (privacy.length) lines.push('', 'Private files:', ...privacy);

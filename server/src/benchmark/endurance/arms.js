@@ -9,6 +9,7 @@ import {
 import { ECONOMY_MAX_TOKENS, canAutoCloud, canChooseCloud, cloudEffortFor } from '../../billing/plans.js';
 import { simulatePlatformCredential } from './platformRules.js';
 import { localChatModel, localModelStatus, streamChat as streamLocal } from '../../lib/ollama.js';
+import { getPool } from '../../db/pool.js';
 import { gatherCandidates, packForTier } from '../../retrieval/retrieve.js';
 import { resolveConfig } from '../../retrieval/score.js';
 import { questionDifficulty } from '../../routing/difficulty.js';
@@ -88,9 +89,23 @@ function withheld(entry) {
 // The last check before any cloud request the benchmark builds from graph
 // nodes: a private node among them means a bug upstream, and the request is
 // refused rather than sent.
-function assertNoPrivateSources(entries, where) {
+export function assertNoPrivateSources(entries, where) {
   const leaked = entries.filter(({ node }) => isPrivate(node));
   if (leaked.length) throw new Error(`${where} would send ${leaked.length} private node(s) to the cloud; refusing`);
+}
+
+// The same check against the nodes as they are now, not as they were read:
+// a conversation carries node snapshots, and a node may have been marked
+// private since. Used before a live request.
+export async function assertNoPrivateSourcesNow(ownerId, entries, where, db = getPool()) {
+  assertNoPrivateSources(entries, where);
+  const ids = entries.map(({ node }) => node.id).filter(Boolean);
+  if (!ids.length) return;
+  const { rowCount } = await db.query(
+    "SELECT 1 FROM nodes WHERE owner_id = $1 AND id = ANY($2::uuid[]) AND privacy = 'local'",
+    [ownerId, ids]
+  );
+  if (rowCount) throw new Error(`${where} would send ${rowCount} private node(s) to the cloud; refusing`);
 }
 
 // The route's planTurn for an Auto question (no tier chosen, no web search,
@@ -275,7 +290,8 @@ export function createScopeArm({ scenario, ownerId, mode, cap, platformKey }) {
         if (!live) assertDryEndpoint();
         // The route already keeps a private node off a cloud turn; this is
         // the benchmark refusing to be the one place that forgets.
-        assertNoPrivateSources(planned.sources, 'the Scope arm');
+        if (live) await assertNoPrivateSourcesNow(ownerId, planned.sources, 'the Scope arm');
+        else assertNoPrivateSources(planned.sources, 'the Scope arm');
         const cloud = await runCloud({
           apiKey: credential.apiKey, model, effort: credential.effort, messages: planned.messages, cacheMarker, economy: credential.economy,
         });
@@ -347,20 +363,52 @@ export function withTranscriptBreakpoints(messages) {
 // A naive cloud app would paste private files too, and each row counts them
 // (privateNodesWouldSend): that is the privacy half of the comparison. Only a
 // dry run, whose requests go to a local stand-in, simulates that paste in
-// full. A live run makes a real cloud call, so every private node in it is
-// replaced by WITHHELD_PRIVATE_NODE before the request is built (counted as
-// privateNodesWithheld); its cost is then a little below what the naive app
-// would pay, which only flatters the baseline.
+// full. A live run makes a real cloud call, so before every request the
+// privacy of everything pasted so far is read again, and every private node,
+// new or already in the transcript, is sent as WITHHELD_PRIVATE_NODE instead
+// (privateNodesWithheld counts each node once, on the turn it was first
+// withheld). That changes the comparison in both directions: the request is
+// a little cheaper than the naive app's, and the answer may be worse for
+// lacking the file. So a live turn whose request carried a withheld node has
+// no quality or citation coverage, and is left out of the quality comparison;
+// citation coverage is only ever computed from the nodes actually sent.
 export function createBaselineArm({ name, model, scenario, ownerId, mode, cap, platformKey }) {
   const live = mode === 'live';
   const config = resolveConfig(CLOUD_TIER, undefined);
   const system = SYSTEM_PROMPTS[config.prompt_structure];
   const effort = cloudEffortFor(scenario.plan);
   const cache = new Set();
+  // Each user entry keeps what it was built from, so it can be rebuilt when
+  // a node it carries has become private since it was first sent.
   const transcript = [];
   const pasted = new Map();
+  // Ids of pasted nodes that are private now, as last read (live only).
+  const withheldIds = new Set();
   let numbered = 0;
   let lastQuestion = null;
+
+  const sendable = (entry) => (live && (isPrivate(entry.node) || withheldIds.has(entry.node.id)) ? withheld(entry) : entry);
+  function render(entry) {
+    if (entry.role !== 'user') return entry.content;
+    if (!entry.sources.length) return entry.question;
+    return buildFollowUp(entry.text, config, { sources: entry.sources.map(sendable), startIndex: entry.startIndex });
+  }
+
+  // Reads again which pasted nodes are private: a node may have been marked
+  // private since it was pasted, and the transcript re-sends it every turn.
+  async function refreshPrivacy(ids) {
+    if (!live || ids.length === 0) return 0;
+    const { rows } = await getPool().query(
+      "SELECT id FROM nodes WHERE owner_id = $1 AND id = ANY($2::uuid[]) AND privacy = 'local'",
+      [ownerId, ids]
+    );
+    let added = 0;
+    for (const { id } of rows) {
+      if (!withheldIds.has(id)) added += 1;
+      withheldIds.add(id);
+    }
+    return added;
+  }
 
   // Drops the oldest pasted context until the request fits the window. The
   // questions and answers stay; the nodes they carried may be pasted again.
@@ -369,10 +417,10 @@ export function createBaselineArm({ name, model, scenario, ownerId, mode, cap, p
     const size = () => promptTokens({ system, messages: [...transcript, pending] });
     for (const entry of transcript) {
       if (size() <= BASELINE_WINDOW_TOKENS) break;
-      if (entry.role !== 'user' || !entry.nodeIds?.length) continue;
+      if (entry.role !== 'user' || !entry.sources.length) continue;
+      for (const { node } of entry.sources) pasted.delete(node.id);
+      entry.sources = [];
       entry.content = entry.question;
-      for (const id of entry.nodeIds) pasted.delete(id);
-      entry.nodeIds = [];
       dropped = true;
     }
     return dropped;
@@ -397,19 +445,32 @@ export function createBaselineArm({ name, model, scenario, ownerId, mode, cap, p
         fresh.push(entry);
         tokens += entry.node.token_length;
       }
-      const question = buildFollowUp(text, config);
       const wouldSend = fresh.filter(({ node }) => isPrivate(node)).length;
-      // What goes into the request, and so into the transcript every later
-      // turn re-sends: in a live run, never a private node's text.
-      const sources = live ? fresh.map((entry) => (isPrivate(entry.node) ? withheld(entry) : entry)) : fresh;
+      const known = new Set(withheldIds);
+      await refreshPrivacy([...pasted.keys()]);
+      // Every node this turn withholds for the first time: fresh private
+      // ones, and earlier ones that have become private since they were sent.
+      let newlyWithheld = 0;
+      if (live) {
+        for (const { node } of fresh) {
+          if (isPrivate(node)) withheldIds.add(node.id);
+        }
+        newlyWithheld = [...withheldIds].filter((id) => !known.has(id)).length;
+      }
+
       const pending = {
         role: 'user',
-        content: buildFollowUp(text, config, { sources, startIndex: numbered }),
-        question,
-        nodeIds: fresh.map(({ node }) => node.id),
+        text,
+        question: buildFollowUp(text, config),
+        sources: fresh,
+        startIndex: numbered,
       };
       numbered += fresh.length;
       for (const { node } of fresh) pasted.set(node.id, node);
+      // The transcript as it will be sent: in a live run, never a private
+      // node's text, however long ago it was pasted.
+      for (const entry of transcript) entry.content = render(entry);
+      pending.content = render(pending);
       const compacted = compact(pending);
 
       const messages = withTranscriptBreakpoints([...transcript, pending]);
@@ -432,9 +493,13 @@ export function createBaselineArm({ name, model, scenario, ownerId, mode, cap, p
 
       transcript.push(pending, { role: 'assistant', content: cloud.answer });
       lastQuestion = text;
-      const visible = [...pasted.values()];
+      // What the model actually had in front of it: citation coverage is
+      // computed from these, never from a node it was not sent.
+      const inRequest = [...pasted.values()];
+      const visible = live ? inRequest.filter((node) => !isPrivate(node) && !withheldIds.has(node.id)) : inRequest;
+      const withheldInRequest = inRequest.length - visible.length;
 
-      return turnRow({
+      const row = turnRow({
         arm: name, index, turn, live, answer: cloud.answer, nodes: visible,
         base: {
           decision: 'cloud',
@@ -449,7 +514,8 @@ export function createBaselineArm({ name, model, scenario, ownerId, mode, cap, p
           // A cloud app sends whatever is pasted, private or not; Scope would
           // have kept these on the local model. A live run withholds them.
           privateNodesWouldSend: wouldSend,
-          privateNodesWithheld: live ? wouldSend : 0,
+          privateNodesWithheld: newlyWithheld,
+          withheldInRequest,
           model: `anthropic/${model}`,
           inputTokens: usage?.input_tokens ?? 0,
           outputTokens: usage?.output_tokens ?? 0,
@@ -459,6 +525,10 @@ export function createBaselineArm({ name, model, scenario, ownerId, mode, cap, p
           latencyMs,
         },
       });
+      // The answer was given without a file the naive app would have had, so
+      // it says nothing about how the baseline compares on quality.
+      if (withheldInRequest > 0) Object.assign(row, { quality: null, citeCoverage: null, excludedFromQuality: 'private_nodes_withheld' });
+      return row;
     },
   };
 }

@@ -10,7 +10,13 @@ import { parseNdjson } from '../../src/lib/ollama.js';
 import { upsertNodeByExternalId } from '../../src/models/nodeStore.js';
 import { resetConversations } from '../../src/routing/conversation.js';
 import { resetWarmState } from '../../src/routing/warm.js';
-import { WITHHELD_PRIVATE_NODE, createScopeArm } from '../../src/benchmark/endurance/arms.js';
+import {
+  WITHHELD_PRIVATE_NODE,
+  assertNoPrivateSources,
+  assertNoPrivateSourcesNow,
+  createBaselineArm,
+  createScopeArm,
+} from '../../src/benchmark/endurance/arms.js';
 import { DRY, SpendCap } from '../../src/benchmark/endurance/economics.js';
 import { EXIT_UPSTREAM_ERROR, emitReport, runEndurance, withDryServices } from '../../src/benchmark/session.js';
 import { FAKE_ANTHROPIC_KEY, startFakeAnthropic } from '../fakeAnthropic.js';
@@ -263,9 +269,78 @@ describe('endurance benchmark', () => {
     }
     assert.equal(result.arms.scope.privateNodesWouldSend, 0);
     assert.match(report.baseline.privateNodes, /withheld from every real request/);
+    assert.match(report.baseline.privateNodes, /excluded from the quality comparison/);
+
+    // A turn answered without a file the naive app would have had says
+    // nothing about quality: it has none, and the comparison skips it.
+    // Citation coverage counts only what was sent.
+    for (const name of ['baseline_sonnet', 'baseline_opus']) {
+      const arm = result.arms[name];
+      const excluded = arm.turns.filter((row) => row.withheldInRequest > 0);
+      assert.ok(excluded.length > 0, `${name} had turns with a withheld file`);
+      assert.equal(arm.turnsExcludedFromQuality, excluded.length);
+      for (const row of excluded) {
+        assert.equal(row.quality, null);
+        assert.equal(row.citeCoverage, null);
+        assert.equal(row.excludedFromQuality, 'private_nodes_withheld');
+      }
+      for (const row of arm.turns) {
+        assert.ok(!row.selected.some((node) => node.project === 'acme/stage'), 'the private file is never counted as seen');
+        if (!row.withheldInRequest) assert.equal(typeof row.quality, 'number');
+      }
+    }
     const printed = [];
     emitReport(report, { print: (text) => printed.push(text), note: () => {} });
-    assert.match(printed[0], /baseline_sonnet: \d+ private file\(s\) a cloud app would have sent, \d+ withheld from the live requests; Scope sent none/);
+    assert.match(printed[0], /baseline_sonnet: \d+ private file\(s\) a cloud app would have sent, \d+ withheld from the live requests, \d+ turn\(s\) excluded from the quality comparison; Scope sent none/);
+  });
+
+  test('a node that turns private mid-session is withheld from every later live request, transcript included', async () => {
+    const quantify = (await server.pool.query(
+      "SELECT id FROM nodes WHERE owner_id = $1 AND external_id = '1|0|quantify.py'", [ownerId]
+    )).rows[0].id;
+    const arm = createBaselineArm({
+      name: 'baseline_sonnet', model: 'claude-sonnet-5', scenario: scenario(), ownerId, mode: 'live', cap: new SpendCap(Infinity), platformKey: PLATFORM,
+    });
+    try {
+      const first = await arm.turn(TURNS[0], 0);
+      assert.match(sentText(anthropic.state.requests.slice(0, 1)), /illumination flattened/, 'pasted while it was a cloud file');
+      assert.equal(first.privateNodesWithheld, first.privateNodesWouldSend, 'only what was private from the start');
+      await server.pool.query("UPDATE nodes SET privacy = 'local' WHERE id = $1", [quantify]);
+
+      const second = await arm.turn(TURNS[1], 1);
+      const third = await arm.turn(TURNS[2], 2);
+      const later = sentText(anthropic.state.requests.slice(1));
+      assert.equal(anthropic.state.requests.length, 3);
+      assert.ok(!later.includes('illumination flattened'), 'never re-sent once private');
+      assert.ok(later.includes(WITHHELD_PRIVATE_NODE));
+      assert.equal(second.privateNodesWithheld, second.privateNodesWouldSend + 1, 'counted once, on the turn it was first withheld');
+      assert.equal(third.privateNodesWithheld, third.privateNodesWouldSend);
+      for (const row of [second, third]) {
+        assert.ok(row.withheldInRequest >= 1);
+        assert.equal(row.quality, null);
+        assert.equal(row.citeCoverage, null);
+        assert.ok(!row.selected.some((node) => node.id === quantify), 'not counted as seen');
+      }
+    } finally {
+      await server.pool.query("UPDATE nodes SET privacy = 'cloud' WHERE id = $1", [quantify]);
+    }
+  });
+
+  test('the Scope arm refuses a cloud request with a private node, judged by the node as it is now', async () => {
+    const { rows: [stage] } = await server.pool.query(
+      "SELECT id, type, privacy FROM nodes WHERE owner_id = $1 AND external_id = '2|0|firmware/stage_motor.c'", [ownerId]
+    );
+    const { rows: [led] } = await server.pool.query(
+      "SELECT id, type, privacy FROM nodes WHERE owner_id = $1 AND external_id = '1|0|led_pwm.c'", [ownerId]
+    );
+    assert.throws(() => assertNoPrivateSources([{ node: led }, { node: stage }], 'the Scope arm'), /would send 1 private node/);
+    assert.doesNotThrow(() => assertNoPrivateSources([{ node: led }], 'the Scope arm'));
+    await assertNoPrivateSourcesNow(ownerId, [{ node: led }], 'the Scope arm', server.pool);
+    // A snapshot taken while the file was cloud does not get it through.
+    await assert.rejects(
+      assertNoPrivateSourcesNow(ownerId, [{ node: { ...stage, privacy: 'cloud' } }], 'the Scope arm', server.pool),
+      /would send 1 private node/
+    );
   });
 
   test('an upstream error partway stops only the arm it hit and keeps every turn already run', async () => {

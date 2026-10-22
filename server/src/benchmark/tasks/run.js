@@ -297,6 +297,11 @@ export function formatTable(report) {
       lines.push(`- ${name}: a completed task costs ${ratio(comparison.baselineCostPerCompletedOverScope)} as much on the baseline`);
     }
   }
+  const withheld = report.tasks.filter((row) => row.privateResultsWithheld > 0);
+  if (withheld.length) {
+    lines.push('', 'Private nodes (never sent to the cloud; the withheld results were replaced by a placeholder):');
+    for (const row of withheld) lines.push(`- ${row.task} ${row.arm}: ${row.privateResultsWithheld} tool result(s) withheld`);
+  }
   if (report.pending.length) {
     lines.push('', 'Pending acceptance gates, and tasks whose tool is not installed here (listed, not run, not failures):');
     for (const entry of report.pending) lines.push(`- ${entry.id} (${entry.kind}): ${entry.reason}. Ready when ${entry.readyWhen}.`);

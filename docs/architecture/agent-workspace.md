@@ -609,14 +609,20 @@ real at $0 with no model or key. `--live-local` runs `scope_local` against
 the real local model. `--live` needs `PLATFORM_ANTHROPIC_API_KEY` and an
 explicit `--max-usd` of at most 5, and refuses otherwise. Private nodes never
 leave the machine in any benchmark mode that makes a real cloud call: in a
-`--live` run a baseline's tool result is replaced by a placeholder whenever
-the arm's project holds a private node (its tools read only that project),
-and the row counts them as `privateResultsWithheld`; the Scope arms rely on
-the runner's own privacy routing. The endurance benchmark's paste-everything
-baselines (`npm run endurance`) count the private files a cloud app would
-have pasted (`privateNodesWouldSend`); a dry run pastes them in full to the
-local stand-in, and a live run withholds their text from every request
-(`privateNodesWithheld`). The Scope arms claim
+`--live` run the arm's project is checked before every baseline request, and
+once it holds a private node every tool result in the transcript, earlier
+ones included, is replaced by a placeholder (its tools read only that
+project); the row counts them as `privateResultsWithheld`. The Scope arms
+rely on the runner's own privacy routing. The endurance benchmark's
+paste-everything baselines (`npm run endurance`) count the private files a
+cloud app would have pasted (`privateNodesWouldSend`); a dry run pastes them
+in full to the local stand-in. A live run reads the privacy of everything
+pasted again before every request and withholds the text of every private
+node, in the new turn and in the re-sent transcript (`privateNodesWithheld`).
+A live turn whose request carried a withheld node has no quality or citation
+coverage and is left out of the quality comparison
+(`turnsExcludedFromQuality`), and citation coverage is computed only from
+the nodes actually sent. The Scope arms claim
 only the run the harness created, so the benchmark is safe to point at a
 database with other runs queued; it uses a throwaway account and deletes it.
 
