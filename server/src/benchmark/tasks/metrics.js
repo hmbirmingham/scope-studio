@@ -75,6 +75,7 @@ export function taskRow({ task, arm, result }) {
     ...(result.stepRecord ? { stepRecord: result.stepRecord } : {}),
     ...(result.ledger ? { ledger: result.ledger } : {}),
     ...(result.stopped ? { stopped: result.stopped } : {}),
+    ...(result.privateResultsWithheld ? { privateResultsWithheld: result.privateResultsWithheld } : {}),
   };
 }
 
