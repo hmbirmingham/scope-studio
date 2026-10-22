@@ -21,7 +21,7 @@ You need [Homebrew](https://brew.sh). Five commands:
 
 ```sh
 brew install node postgresql@18 pgvector ollama
-brew services start postgresql@18 && brew services start ollama
+brew services start postgresql@18 && brew services start ollama && sleep 5
 ollama pull nomic-embed-text && ollama pull qwen3:8b
 git clone https://github.com/hmbirmingham/scope-studio.git && cd scope-studio && git checkout dev
 npm run demo
@@ -30,7 +30,9 @@ npm run demo
 `npm run demo` checks what it needs (and prints the exact command for anything
 missing), creates its own `scope_demo` database, seeds a first-year physics
 project with an agent and its tasks, starts the engine and the app, and opens
-http://localhost:5173. No account, no API key, nothing paid. On an 8 GB Mac use
+http://localhost:5173. No account, no API key, nothing paid. If `ollama pull`
+says it cannot connect, the Ollama service is still starting: wait a few
+seconds and run that line again. On an 8 GB Mac use
 `qwen3:4b` instead of `qwen3:8b` (`OLLAMA_CHAT_MODEL=qwen3:4b npm run demo`).
 [docs/demo.md](docs/demo.md) has the details, a five-minute talk track and
 troubleshooting.
@@ -78,8 +80,8 @@ troubleshooting.
   design saves.
 
 Using the cloud on your own Anthropic key, and paid cloud, depend on the plan.
-Launch pricing is being decided and is not final; the design note is in the
-doc map below.
+Launch pricing is decided in outline; details and implementation are pending.
+The design note is in the doc map below.
 
 ## Doc map
 
@@ -113,11 +115,13 @@ each one describes; nothing has a default secret.
 
 Every suite runs offline: Anthropic, Stripe, GitHub and the control plane are
 replaced by local fakes. The engine and control suites need Postgres 18 with
-pgvector and their own test databases; the engine's also needs Ollama with
-`nomic-embed-text`, and uses bubblewrap (Linux) or sandbox-exec (macOS) for
-the sandbox tests.
+pgvector; the engine's also needs Ollama with `nomic-embed-text`, and uses
+bubblewrap (Linux) or sandbox-exec (macOS) for the sandbox tests. Create the
+test databases first (the suites migrate them; the engine's suite also creates
+`scope_studio_test_control` for the control plane it runs, on first use):
 
 ```sh
+createdb scope_studio_test && createdb scope_control_test && createdb scope_demo_test
 # From the repository root. Engine (it runs the control plane in-process,
 # so control/ is installed first):
 cd control && npm install && cd ../server && npm install
@@ -140,7 +144,9 @@ DEMO_DATABASE_URL=postgresql://localhost:5432/scope_demo_test \
   npx playwright test -c playwright.demo.config.js   # the demo end to end, scripted model
 ```
 
-The test harnesses refuse a database that is not on localhost. CI
+The engine and control harnesses refuse a database whose host is not
+`localhost`, `127.0.0.1` or `postgres` (the CI service name); the demo test
+accepts only `localhost` or `127.0.0.1`. CI
 (`.github/workflows/ci.yml`) runs all of the above, plus the optional
 toolchains the verticals check against (pdftotext, NumPy / SciPy / Pint,
 CadQuery).

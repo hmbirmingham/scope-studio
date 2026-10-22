@@ -412,10 +412,11 @@ call's key is chosen in one place (`billing/credential.js`):
 Local answers are unlimited on every plan.
 
 **Launch pricing is being changed, and the change is not implemented yet.**
-The decision (no tiers before an MVP; Free becomes the full local experience
-plus the user's own Anthropic key; one paid subscription with platform-paid
-cloud replaces Key Pro, Student and Engineer) and the exact pull request that
-would carry it out are in
+The decision is: no tiers before an MVP; Free becomes the full local
+experience plus the user's own Anthropic key; one $20/month subscription
+replaces Key Pro, Student and Engineer, which are no longer sold. What that
+subscription includes (proposed: platform-paid, metered cloud answers) and
+the exact pull request that would carry it out are in
 [docs/architecture/pricing-launch.md](docs/architecture/pricing-launch.md).
 Until it merges, the table above is what the code does.
 

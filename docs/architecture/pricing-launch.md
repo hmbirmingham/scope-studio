@@ -1,4 +1,4 @@
-# Launch pricing: Free with your own key, and one Pro plan
+# Launch pricing: Free with your own key, and one $20 subscription
 
 **Status: design note. Nothing here is implemented.** It describes one
 reviewable pull request and the order to roll it out in. Until that pull
@@ -8,22 +8,32 @@ request merges, the plans in code are the four in
 
 ## The decision
 
-Hynes decided the launch pricing:
+Hynes decided three things, and only these:
 
-- **No tiers before an MVP.** One free plan and one paid plan, nothing else on
-  sale.
-- **Free** is the full local experience (map, retrieval, local answers, the
-  agent workspace, every plug-in) **plus bring-your-own Anthropic key**: with
-  a key, Cloud, web search and the hard questions on Auto run on the user's
-  own key, as Key Pro does today.
-- **Pro, $20 a month**, is the upgrade: cloud answers paid by the platform
-  through the control plane, metered like Student and Engineer are today.
-- Pro **replaces** Key Pro ($5), Student ($12) and Engineer ($25). They are no
-  longer sold.
+1. **No tiers before an MVP.**
+2. **Free** is the full local experience **plus bring-your-own Anthropic
+   key**.
+3. **One $20/month subscription** is the upgrade, **replacing Key Pro ($5),
+   Student ($12) and Engineer ($25)**. The replaced plans are no longer sold.
 
-The figures below that are not part of that decision (Pro's monthly answers,
-its models, what happens to existing subscribers) are **proposals** for Hynes
-to confirm, and are marked as such.
+## Proposals (not decided)
+
+Everything else in this note is a **proposal** for Hynes to confirm or
+change. The main ones, each used throughout the rest of the note:
+
+- **The name "Pro"** for the $20 subscription, and `pro` as its plan key.
+  Every mention of Pro below means "the $20 subscription, under its proposed
+  name".
+- **What the subscription buys: platform-paid cloud answers through the
+  control plane, metered** (a monthly answer count and a weekly dollar
+  allowance) the way Student and Engineer are today. The figures (270
+  answers, Sonnet with Opus for hard questions) are in section 1.
+- **What the own key does on Free:** Cloud and web search when the user
+  chooses them, and also the hard questions on Auto, as Key Pro does today.
+  The narrower alternative is to use the key only when the user picks Cloud
+  or web search.
+- What happens to existing subscribers (section 3), and the open questions at
+  the end.
 
 ## What changes, in one pull request
 
@@ -102,6 +112,7 @@ legacy Key Pro account and a Free account behave the same:
 | `server/src/workspace/agents/validation.js` | `validateModelPolicy`: `own_key` allowed when `planFor(plan).ownKey` (code `own_key_not_in_plan`). `agentInput.js` keeps passing the control plane's plan; it simply no longer refuses Free. |
 | `server/src/routes/billing.js` | `PAID_PLANS` becomes `SELLABLE_PLANS` imported from `plans.js`; the 400 says `plan must be pro`. |
 | `server/src/benchmark/endurance/platformRules.js` | Mirrors `credential.js` (same split). |
+| `server/src/benchmark/endurance/arms.js` | Line 196, `const meters = !canChooseCloud(plan) && canAutoCloud(plan);`, decides whether the arm meters platform answers. Pro has `chooseCloud: true`, so it would never be metered. Same fix as `monthlyCloudBudgetUsd`: `const meters = planFor(plan).platformPaid === true;`. |
 | `server/src/benchmark/endurance/scenarios.js`, `server/benchmarks/sessions/**/*.json` | `SCENARIO_PLANS = ['pro']`; the five session files that name `engineer` or `student` name `pro`. |
 | `server/src/benchmark/tasks/models.js`, `scopeArm.js` | `SCOPE_CLOUD_PLAN = 'pro'`. Same models as Engineer, so the dry benchmark's figures do not change. |
 
@@ -169,10 +180,11 @@ The changes, each additive:
 |---|---|
 | `control/src/db/migrations/007_plan_pro.sql` | Widen the check: `ALTER TABLE accounts DROP CONSTRAINT accounts_plan_check, ADD CONSTRAINT accounts_plan_check CHECK (plan IN ('free', 'key_pro', 'student', 'engineer', 'pro'));`. Nothing is removed, so a rollback of the code leaves a valid database. 007 is the next free number (007–008 were reserved for the engine ↔ control link and are unused). Migrations run under the advisory lock before the server listens (`npm start`), so the column accepts `pro` before any webhook can write it. |
 | `control/src/billing/stripe.js` | `PLAN_PRICE_ENV` gains `pro: 'STRIPE_PRICE_PRO'` and keeps the three legacy variables, so `planForPrice` still maps existing subscriptions. `SELLABLE_PLANS = ['pro']` decides what checkout accepts. `REQUIRED` becomes the core only (`STRIPE_MODE`, `STRIPE_SECRET_KEY`, `STRIPE_WEBHOOK_SECRET`, `BASE_URL`), plus at least one price variable; each price is optional on its own and `config.prices` holds only those set. Today's Railway variables therefore keep billing on, with Pro simply not purchasable yet. |
-| `control/src/routes/billing.js` | `POST /v1/billing/checkout` accepts only `SELLABLE_PLANS` (`400 invalid_plan` otherwise, as today) and answers `503 plan_unavailable` when the plan's price variable is unset. `GET /v1/billing` keeps `prices` for every plan in `PLANS` (an older app still renders its cards) and adds `sellable: ['pro']` filtered to plans whose price is configured. |
+| `control/src/routes/billing.js` | `POST /v1/billing/checkout` accepts only `SELLABLE_PLANS` (`400 invalid_plan` otherwise, as today) and answers `503 plan_unavailable` when the plan's price variable is unset. `GET /v1/billing` keeps `prices` for every paid plan in `PLANS`, legacy included (an older app still renders its cards) and adds `sellable: ['pro']` filtered to plans whose price is configured. |
 | `control/src/auth/capabilities.js` | `PLAN_PLUGINS.pro = SHIPPED_PLUGINS` (the `plansWithoutPlugins` test fails without it). `capabilities.chooseCloud` in `/v1/me` becomes `true` on Free, derived from `plans.js` as now. |
 | `control/src/auth/devMode.js` | `DEV_MODE_PLAN = 'pro'`. |
-| `control/src/routes/cloud.js` | `cloud_not_in_plan` sentence: "Cloud answers paid by Scope Studio are part of Pro." Refusal logic is unchanged: it is keyed on `platformPaid`, so Free (and Key Pro) are still refused and Pro is served. |
+| `control/src/routes/cloud.js` | `cloud_not_in_plan` sentence: "Cloud answers paid by Scope Studio are part of Pro." |
+| `control/src/billing/credential.js` | No change. The refusal logic is `platformCloudRefusal` (line 18), keyed on `canAutoCloud` and `platformPaid`, so Free (and Key Pro) are still refused and Pro is served. |
 | `control/src/pages/signin.js`, `control/src/notify/index.js` | Dev-mode copy says Pro instead of Engineer. |
 | `control/.env.example`, `control/README.md`, `control/API.md` | Document `STRIPE_PRICE_PRO` (optional; Pro is not sold without it), mark the three legacy price variables as "keep set until the last legacy subscription has ended: a webhook for a price with no variable maps to Free", update `/v1/billing`'s shape and the dev-mode plan. |
 
@@ -303,6 +315,10 @@ Client (`client/src`):
 
 ## Open questions for Hynes
 
+- The name of the $20 subscription ("Pro" is proposed) and what it buys
+  (proposed: platform-paid, metered cloud answers).
+- On Free, should the own key also serve Auto's hard questions (proposed),
+  or only the Cloud and web search the user picks?
 - Pro's answers and models: 270 a month with Opus for hard questions
   (proposed), or 360 on Sonnet throughout?
 - Past Pro's allowance, should Auto fall back to the user's own key when one
