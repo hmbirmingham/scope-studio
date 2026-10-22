@@ -346,11 +346,6 @@ port.stream({ messages, maxTokens, signal, purpose })
 
 - **local**: Ollama on this machine. Always available offline. Cost 0.
 - **own_key**: Anthropic directly with the user's Key Pro key.
-- The plan a run is routed under is the control plane's, read with
-  `currentPlan(ownerId)` (cached `/v1/me`): signed out, offline or unreachable
-  is Free, so the run stays local. The worker makes the platform adapter per
-  run, for the run's owner: an adapter entry may be a function of the run
-  (`resolvePort` in `runner/models.js`).
 - **platform**: the control plane's `POST /v1/cloud/messages` with the device
   token (Wave 2, path F). A fresh `requestId` on every attempt, retries
   included. `platformAdapter({ ownerId, sources })` reads the owner's token
@@ -358,13 +353,16 @@ port.stream({ messages, maxTokens, signal, purpose })
   plan's hard-question model. `maxTokens` is not sent: the control plane sets
   the ceiling. Without a token, or when the control plane refuses, it throws
   `code: 'platform_unavailable'` (with `reason`: `signed_out`, `offline`,
-  `allowance_exhausted`, …) before yielding anything.
+  `allowance_exhausted`, …) before yielding anything. The worker makes it per
+  run, for the run's owner, so a run never speaks with another user's token:
+  an adapter entry may be a function of the run (`resolvePort` in
+  `runner/models.js`).
 
-The `plan` passed to `selectAdapter` is the control plane's, from
-`currentPlan(ownerId)` / `controlState(ownerId)` in
+The `plan` passed to `selectAdapter` (for a run as for chat) is the control
+plane's, from `currentPlan(ownerId)` / `controlState(ownerId)` in
 `server/src/control/plan.js`: `GET /v1/me`, cached per local user for five
 minutes. Signed out, offline or unconfigured (`CONTROL_URL` unset, even with
-a cached answer), it is `free`. After a failed refresh the control plane is
+a cached answer), it is `free`, so the run stays local. After a failed refresh the control plane is
 not asked again for 30 seconds; a plan confirmed within the five minutes is
 still served meanwhile. The same plan decides whether an agent may have
 `modelPolicy: 'own_key'`. The engine keeps no billing tables of its own.
