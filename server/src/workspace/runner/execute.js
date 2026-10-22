@@ -210,16 +210,20 @@ async function executeSteps(claimed, deps) {
   // wall-clock limit aborts it too.
   function watch(controller) {
     const timers = [];
+    const killedBy = (control) =>
+      !control || control.status === 'killed' ? 'killed' : control.agent_state === 'killed' ? 'agent_killed' : null;
     const heartbeat = setInterval(async () => {
       if (isAbandoned()) return clearInterval(heartbeat);
       try {
         const control = await readControl(run.id, db);
-        if (!control || control.status === 'killed') {
-          controller.abort(new Stop('killed'));
-        } else if (control.agent_state === 'killed') {
-          controller.abort(new Stop('agent_killed'));
+        const killed = killedBy(control);
+        if (killed) {
+          controller.abort(new Stop(killed));
         } else if (control.status === 'running' && !(await renewLease(run.id, { workerId, leaseMs }, db))) {
-          controller.abort(new Stop('lost'));
+          // The run changed between the read and the renewal. A kill that
+          // landed in that gap is a kill, not a lost lease: read it again so
+          // the step is marked as killed rather than left for someone else.
+          controller.abort(new Stop(killedBy(await readControl(run.id, db)) ?? 'lost'));
         }
       } catch {
         // A missed heartbeat is retried on the next tick; the lease is long
