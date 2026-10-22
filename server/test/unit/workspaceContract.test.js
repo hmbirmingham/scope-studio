@@ -142,6 +142,7 @@ describe('capability registry', () => {
         { name: 'x.a', tags: ['x'], permission: 'read_graph', input: { type: 'object' }, run },
         { name: 'x.a', tags: ['x'], permission: 'read_graph', input: { type: 'object' }, run },
       ] },
+      { name: 'x', capabilities: [{ name: 'x.a', tags: ['x'], permission: 'run_generated_code', input: { type: 'object' }, writesCode: 'yes', run }] },
       { name: 'Bad Name' },
     ];
     for (const plugin of bad) assert.throws(() => registerPlugin(plugin));

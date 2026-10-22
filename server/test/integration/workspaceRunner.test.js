@@ -102,6 +102,19 @@ const fixturePlugin = {
       },
     },
     {
+      // Takes model-written code in its input, like code.run_generated, but
+      // only counts it: the runner's output limit is what is under test.
+      name: 'fixture.write_code',
+      tags: ['fixture_code'],
+      permission: 'read_graph',
+      source: 'fixture',
+      writesCode: true,
+      input: { type: 'object', required: ['code'], properties: { code: { type: 'string' } } },
+      async run(input) {
+        return { output: { characters: input.code.length, lines: input.code.split('\n').length } };
+      },
+    },
+    {
       name: 'fixture.think',
       tags: ['fixture'],
       permission: 'read_graph',
@@ -138,13 +151,13 @@ describe('agent runner', () => {
   let platform;
   const workers = [];
 
-  async function makeAgent({ level = 'agentic', overrides = {}, modelPolicy = 'local_only', budget = {}, sources = ['*'] } = {}) {
+  async function makeAgent({ level = 'agentic', overrides = {}, modelPolicy = 'local_only', budget = {}, sources = ['*'], tags = ['fixture'] } = {}) {
     const { rows } = await server.pool.query(
       `INSERT INTO agents (owner_id, name, role, level, overrides, scopes, model_policy, budget)
        VALUES ($1, 'Fixture agent', $2, $3, $4, $5, $6, $7) RETURNING id`,
       [
         ownerId,
-        { template: null, title: 'Counter', description: '', embodiment: 'You count lines carefully.', tags: ['fixture'] },
+        { template: null, title: 'Counter', description: '', embodiment: 'You count lines carefully.', tags },
         level,
         overrides,
         { read: { projects: [PROJECT], sources }, write: { projects: [PROJECT] } },
@@ -614,6 +627,75 @@ describe('agent runner', () => {
     assert.equal(invocations.list, 1);
     assert.deepEqual(events.filter((event) => event.type === 'budget.exceeded').map((event) => event.data), [{ limit: 'tokens' }]);
     assert.deepEqual(events.filter((event) => event.type === 'run.finished').map((event) => event.data), [{ status: 'budget_exceeded' }]);
+  });
+
+  test('a role that cannot write code keeps the chooser at 600 output tokens', async () => {
+    const agentId = await makeAgent();
+    const runId = await makeRun(agentId);
+    local.push(plan, choose('fixture.list_files'), done);
+    await worker().runNext();
+    assert.equal((await runRow(runId)).status, 'succeeded');
+    assert.deepEqual(local.calls.map((call) => [call.purpose, call.maxTokens]), [['plan', 800], ['step', 600], ['step', 600]]);
+  });
+
+  test('a step that may write code gets 1,500 output tokens, and a long reply is accounted in full', async () => {
+    const agentId = await makeAgent({ tags: ['fixture', 'fixture_code'] });
+    const runId = await makeRun(agentId, { instructions: 'Write the analysis script' });
+    // About 1,200 tokens of code: more than the old 600-token limit allowed.
+    const code = Array.from({ length: 120 }, (_, i) => `row_${i} = analyse(data[${i}], window=${i % 7}, scale=1.5)`).join('\n');
+    local = createFakeModelPort({
+      name: 'local',
+      usage: (request, text) => ({ input_tokens: 400, output_tokens: request.purpose === 'step' && text.includes('row_119') ? 1_240 : 30 }),
+    });
+    local.push(plan, choose('fixture.write_code', { code }), done);
+    await worker().runNext();
+
+    const run = await runRow(runId);
+    assert.equal(run.status, 'succeeded');
+    assert.deepEqual(local.calls.map((call) => [call.purpose, call.maxTokens]), [['plan', 800], ['step', 1500], ['step', 1500]]);
+    const rows = await steps(runId);
+    assert.equal(rows[1].status, 'done');
+    assert.equal(rows[1].output.lines, 120);
+    // The ledger records the long reply as it was, and the run's total is the
+    // ledger's sum: a larger limit changes nothing about how it is counted.
+    const { rows: costs } = await server.pool.query('SELECT step_id, input_tokens, output_tokens FROM agent_run_costs WHERE run_id = $1 ORDER BY created_at, id', [runId]);
+    assert.deepEqual(costs.map((cost) => cost.output_tokens), [30, 1_240, 30]);
+    assert.equal(run.tokens_used, costs.reduce((sum, cost) => sum + cost.input_tokens + cost.output_tokens, 0));
+    assert.equal(rows[1].tokens, 400 + 1_240);
+  });
+
+  test('the larger limit never asks for more output than the token budget has left', async () => {
+    const agentId = await makeAgent({ tags: ['fixture', 'fixture_code'], budget: { maxTokens: 1_000 } });
+    const runId = await makeRun(agentId);
+    local.push(plan, done);
+    await worker().runNext();
+    assert.equal((await runRow(runId)).status, 'succeeded');
+    // The plan spent 100 in and 20 out, so 880 tokens are left for the chooser.
+    assert.deepEqual(local.calls.map((call) => call.maxTokens), [800, 880]);
+  });
+
+  test('a chooser reply cut off at its limit fails the step and says so', async () => {
+    const agentId = await makeAgent({ tags: ['fixture', 'fixture_code'] });
+    const runId = await makeRun(agentId);
+    local = createFakeModelPort({
+      name: 'local',
+      usage: (request, text) => ({ input_tokens: 400, output_tokens: text.startsWith('{"capability"') ? request.maxTokens : 20 }),
+    });
+    local.push(plan, '{"capability": "fixture.write_code", "input": {"code": "row_0 = analyse(', done);
+    await worker().runNext();
+
+    assert.equal((await runRow(runId)).status, 'succeeded', 'the run goes on after the cut step');
+    const rows = await steps(runId);
+    assert.equal(rows[1].status, 'failed');
+    assert.match(rows[1].error, /^chooser_output_limit: the reply stopped at its 1500-token limit \(chooser_not_json\)/);
+    assert.equal(rows[1].detail.outputLimit, 1500);
+    // A malformed reply well inside the limit is reported as the model's.
+    const agentB = await makeAgent();
+    const runB = await makeRun(agentB);
+    local = createFakeModelPort({ name: 'local' });
+    local.push(plan, 'not json at all', done);
+    await worker().runNext();
+    assert.equal((await steps(runB))[1].error, 'chooser_not_json');
   });
 
   test('a wall-clock budget aborts a step that runs too long', async () => {

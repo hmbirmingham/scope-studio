@@ -2,8 +2,8 @@ import { getPool } from '../../db/pool.js';
 import { currentPlan } from '../../control/plan.js';
 import { capabilitiesForTags, getCapability, getVerifier } from '../capabilities.js';
 import { decide } from '../permissions.js';
-import { effectiveBudget, exceededLimit, wallRemaining } from './budget.js';
-import { chooserMessages, parseChoice, planMessages, validateInput } from './chooser.js';
+import { effectiveBudget, exceededLimit, outputCeiling, wallRemaining } from './budget.js';
+import { chooserMessages, chooserOutputLimit, parseChoice, planMessages, validateInput } from './chooser.js';
 import { stepTotals } from './ledger.js';
 import { createModelRouter } from './models.js';
 import { createRunSandbox, removeRunSandbox } from './sandbox.js';
@@ -35,7 +35,6 @@ export const MAX_CONSECUTIVE_FAILURES = 5;
 // How many of the run's own node ids the checkpoint remembers for the slice.
 const CHECKPOINT_NODES = 50;
 const PLAN_MAX_TOKENS = 800;
-const CHOOSER_MAX_TOKENS = 600;
 const OUTPUT_EVENT_CHARS = 2000;
 const CAPABILITY_EVENTS = new Set(['step.output', 'node.touched']);
 
@@ -119,6 +118,8 @@ async function executeSteps(claimed, deps) {
     checkpoint: { nodes: [], previousStepNodeId: null, failures: 0, lastSummary: null, ...(run.checkpoint ?? {}) },
     wallBase: Number(run.wall_ms),
     mark: Date.now(),
+    // The run's spend as of the last stage guard, for the output ceilings.
+    tokensUsed: Number(run.tokens_used) || 0,
   };
   const wallNow = () => state.wallBase + (Date.now() - state.mark);
 
@@ -195,6 +196,7 @@ async function executeSteps(claimed, deps) {
     if (isAbandoned()) throw new Abandoned();
     const control = await readControl(run.id, db);
     if (!control) throw new Stop('lost');
+    state.tokensUsed = Number(control.tokens_used) || 0;
     if (control.status === 'killed') throw new Stop('killed');
     if (control.agent_state === 'killed') throw new Stop('agent_killed');
     const pausedUnderUs = !boundary && control.status === 'paused' && (control.lease_owner === workerId || control.lease_owner == null);
@@ -480,7 +482,7 @@ async function executeSteps(claimed, deps) {
       privateContext: slice.privateContext,
       stepId: step.id,
       messages: planMessages({ agent, goal: run.instructions, slice: slice.nodes, capabilities }),
-      maxTokens: PLAN_MAX_TOKENS,
+      maxTokens: outputCeiling(PLAN_MAX_TOKENS, budget, state.tokensUsed),
       signal,
     });
     await stage();
@@ -643,19 +645,26 @@ async function executeSteps(claimed, deps) {
 
     // Act: the chooser picks one capability.
     const capabilities = capabilitiesForTags(agent.role?.tags ?? []);
+    const outputLimit = outputCeiling(chooserOutputLimit(capabilities), budget, state.tokensUsed);
     const reply = await models.complete({
       purpose: 'step',
       hard: false,
       privateContext: slice.privateContext,
       stepId: step.id,
       messages: chooserMessages({ agent, goal: run.instructions, slice: slice.nodes, capabilities, stepIndex: index }),
-      maxTokens: CHOOSER_MAX_TOKENS,
+      maxTokens: outputLimit,
       format: 'json',
       signal,
     });
     await stage();
     const parsed = parseChoice(reply.text);
-    if (!parsed.ok) return failStep(step, { reason: parsed.error, sources: slice.nodes });
+    if (!parsed.ok) {
+      // A reply cut off at its limit is not the model failing the format,
+      // and the step record says which it was.
+      const cut = Number(reply.usage?.output_tokens) >= outputLimit;
+      const reason = cut ? `chooser_output_limit: the reply stopped at its ${outputLimit}-token limit (${parsed.error})` : parsed.error;
+      return failStep(step, { reason, sources: slice.nodes, detail: { outputLimit } });
+    }
     const choice = parsed.choice;
 
     if (choice.done && !choice.capability) {

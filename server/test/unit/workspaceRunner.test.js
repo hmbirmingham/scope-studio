@@ -1,7 +1,21 @@
 import assert from 'node:assert/strict';
 import { describe, test } from 'node:test';
-import { DEFAULT_MAX_STEPS, budgetError, effectiveBudget, exceededLimit, wallRemaining } from '../../src/workspace/runner/budget.js';
-import { chooserMessages, extractJsonObject, parseChoice, validateInput } from '../../src/workspace/runner/chooser.js';
+import { DEFAULT_MAX_STEPS, budgetError, effectiveBudget, exceededLimit, outputCeiling, wallRemaining } from '../../src/workspace/runner/budget.js';
+import {
+  CHOOSER_MAX_TOKENS,
+  CODE_CHOOSER_MAX_TOKENS,
+  chooserMessages,
+  chooserOutputLimit,
+  extractJsonObject,
+  parseChoice,
+  validateInput,
+} from '../../src/workspace/runner/chooser.js';
+import code from '../../src/plugins/code/index.js';
+import cad from '../../src/plugins/cad/index.js';
+import graph from '../../src/plugins/graph/index.js';
+import kicad from '../../src/plugins/kicad/index.js';
+import physics from '../../src/plugins/physics/index.js';
+import research from '../../src/plugins/research/index.js';
 import { createModelRouter } from '../../src/workspace/runner/models.js';
 import { advance } from '../../src/workspace/runner/scheduler.js';
 import { stopWithin } from '../../src/workspace/runner/shutdown.js';
@@ -103,6 +117,13 @@ describe('run budgets', () => {
     assert.equal(wallRemaining({ maxWallMs: null }, 4000), null);
   });
 
+  test('a call never asks for more output than the run has tokens left', () => {
+    assert.equal(outputCeiling(1500, { maxTokens: null }, 10_000), 1500, 'no token budget, no clamp');
+    assert.equal(outputCeiling(1500, { maxTokens: 100_000 }, 2_000), 1500);
+    assert.equal(outputCeiling(1500, { maxTokens: 2_000 }, 1_200), 800);
+    assert.equal(outputCeiling(600, { maxTokens: 2_000 }, 1_999.5), 1, 'at least one token: the stage guard stops a spent run');
+  });
+
   test('validates a per-run override', () => {
     assert.equal(budgetError(undefined), null);
     assert.equal(budgetError({ maxTokens: 10, maxSteps: null }), null);
@@ -110,6 +131,28 @@ describe('run budgets', () => {
     assert.equal(budgetError({ maxTokens: 0 }), 'budget.maxTokens must be a positive number');
     assert.equal(budgetError({ maxTokens: 'lots' }), 'budget.maxTokens must be a positive number');
     assert.equal(budgetError({ forever: 1 }), 'budget.forever is not a budget limit');
+  });
+});
+
+describe('chooser output limit', () => {
+  const capability = (name, extra = {}) => ({ name, tags: ['t'], permission: 'read_graph', input: { type: 'object' }, ...extra });
+
+  test('a step that may write code gets the larger limit; any other keeps 600', () => {
+    assert.equal(CHOOSER_MAX_TOKENS, 600);
+    assert.ok(CODE_CHOOSER_MAX_TOKENS >= 2 * 569, 'room for well over the 567–569 tokens real code-writing steps used');
+    assert.equal(chooserOutputLimit([]), CHOOSER_MAX_TOKENS);
+    assert.equal(chooserOutputLimit([capability('a.read'), capability('a.save')]), CHOOSER_MAX_TOKENS);
+    assert.equal(chooserOutputLimit([capability('a.read'), capability('a.run', { writesCode: true })]), CODE_CHOOSER_MAX_TOKENS);
+    assert.equal(chooserOutputLimit([capability('a.run', { writesCode: 'true' })]), CHOOSER_MAX_TOKENS, 'only a declared boolean counts');
+  });
+
+  test('the built-in capabilities that take model-written code say so, and no other does', () => {
+    const writes = [code, graph, research, physics, cad, kicad]
+      .flatMap((plugin) => plugin.capabilities)
+      .filter((entry) => entry.writesCode === true)
+      .map((entry) => entry.name)
+      .sort();
+    assert.deepEqual(writes, ['cad.parametric_edit', 'code.edit', 'code.run_generated', 'physics.compute']);
   });
 });
 

@@ -320,6 +320,7 @@ export function createCodePlugin({ sandbox = defaultSandbox } = {}) {
         name: 'code.edit',
         tags: ['code'],
         permission: 'edit_files',
+        writesCode: true,
         input: {
           type: 'object',
           required: ['path', 'search', 'replace'],
@@ -344,6 +345,7 @@ export function createCodePlugin({ sandbox = defaultSandbox } = {}) {
         name: 'code.run_generated',
         tags: ['sandbox'],
         permission: 'run_generated_code',
+        writesCode: true,
         input: {
           type: 'object',
           required: ['language', 'code'],

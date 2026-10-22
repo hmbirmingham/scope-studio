@@ -53,3 +53,12 @@ export function exceededLimit(budget, { tokens = 0, usd = 0, wallMs = 0, steps =
 export function wallRemaining(budget, wallMs) {
   return budget.maxWallMs == null ? null : Math.max(0, budget.maxWallMs - wallMs);
 }
+
+// The output limit for one model call: the call's own limit, but never more
+// than the run's token budget has left. A call's input counts against the
+// budget too, so a run can still end over its limit by one prompt, as it
+// always could; a larger per-call limit never lets one reply run past it.
+export function outputCeiling(limit, budget, tokensUsed = 0) {
+  if (budget?.maxTokens == null) return limit;
+  return Math.max(1, Math.min(limit, Math.floor(budget.maxTokens - (Number(tokensUsed) || 0))));
+}

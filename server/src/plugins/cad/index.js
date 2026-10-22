@@ -492,6 +492,7 @@ export function createCadPlugin({ cadquery = defaultCadQuery } = {}) {
         name: 'cad.parametric_edit',
         tags: ['cad'],
         permission: 'run_generated_code',
+        writesCode: true,
         input: readInput(
           {
             script: { type: 'string', description: 'CadQuery Python (cq is imported) that assigns the part to `result`; project_path(name) gives a declared input file.' },

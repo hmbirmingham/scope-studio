@@ -2,7 +2,8 @@
 // is recorded, and nothing leaves the process. A reply is a string, an object
 // (sent as JSON), a function of the request returning either, or an Error
 // (thrown, e.g. one with code 'platform_unavailable'). When the queue is empty
-// `fallback` answers, so a long run need not script every step.
+// `fallback` answers, so a long run need not script every step. `usage` may
+// be a function of the request, to report what a particular call cost.
 export function createFakeModelPort({ name = 'local', responses = [], fallback = null, usage = { input_tokens: 100, output_tokens: 20 }, costUsd = 0, model = `fake-${name}`, delayMs = 0 } = {}) {
   const queue = [...responses];
   const calls = [];
@@ -41,7 +42,7 @@ export function createFakeModelPort({ name = 'local', responses = [], fallback =
       const cut = Math.floor(text.length / 2);
       if (text.slice(0, cut)) yield { text: text.slice(0, cut) };
       if (text.slice(cut)) yield { text: text.slice(cut) };
-      yield { done: true, usage, costUsd, model };
+      yield { done: true, usage: typeof usage === 'function' ? usage(request, text) : usage, costUsd, model };
     },
   };
 }

@@ -178,6 +178,13 @@ The runner (`server/src/workspace/runner/`) implements this as follows.
   as a `finding` produced by that final step, so later runs read the
   conclusion. `hard` marks the step hard for the model calls its capability
   makes through `ctx.model`.
+- The chooser's reply is the step's act, so code a step writes is inside it.
+  Its output limit is 600 tokens, or 1,500 when the role offers a capability
+  that declares `writesCode: true` (it picks the capability in the same
+  reply). The plan's limit is 800. No call asks for more output than the
+  run's `maxTokens` has left, and every call is counted in the ledger as it
+  was used. A reply cut off at its limit fails the step with
+  `chooser_output_limit`, not as a format error.
 - The slice has a fixed budget (1,500 tokens, 8 nodes). The run's plan and its
   most recent notes compete for it with boosted scores, so the next step reads
   what the last one learned. They are the run's own memory, so they are
@@ -219,7 +226,10 @@ export default {
 };
 ```
 
-A capability may also declare `source` (the plug-in data it reads), which the
+A capability may also declare `writesCode: true` when its input carries code
+the model writes (`code.edit`, `code.run_generated`, `physics.compute`,
+`cad.parametric_edit`), which gives the step chooser its larger output
+limit, and `source` (the plug-in data it reads), which the
 runner passes to `can()`; without it a `read_graph` capability is allowed only
 for an agent whose read sources are `['*']`. `findings`, `decisions`,
 `questions` and `artifacts` in the result (each a string or
