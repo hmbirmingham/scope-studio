@@ -13,7 +13,9 @@
     "centroids": "node src/db/build-centroids.js",
     "benchmark": "node src/benchmark/run.js",
     "endurance": "node src/benchmark/session.js",
-    "benchmark:tasks": "node src/benchmark/tasks/run.js"
+    "benchmark:tasks": "node src/benchmark/tasks/run.js",
+    "eval:retrieval": "node src/benchmark/retrievalEval.js",
+    "eval:difficulty": "node src/benchmark/difficultyEval.js"
   },
   "keywords": [],
   "author": "Hynes Birmingham",
