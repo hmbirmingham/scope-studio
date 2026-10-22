@@ -2,6 +2,7 @@ import { execFile } from 'node:child_process';
 import { cpSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, relative, sep } from 'node:path';
+import { checkCadResult } from '../../plugins/cad/check.js';
 import { runSandboxed, sandboxStatus } from '../../workspace/sandbox/index.js';
 import { fixturePath } from './catalog.js';
 
@@ -124,6 +125,12 @@ export async function osSandboxStatus() {
 // script exited 0; nothing a model reported is consulted.
 export async function objectiveCheck(task, { resultDir, answers = [], workspace, label, sandbox = { run: runSandboxed } }) {
   if (task.check?.kind === 'quantity') return quantityCheck(task, answers);
+  // A CAD task's check measures the part the run left; it reads the file
+  // and runs nothing from the result.
+  if (task.check?.kind === 'cad') {
+    const result = await checkCadResult({ dir: resultDir && existsSync(resultDir) ? resultDir : null, check: task.check });
+    return { completed: result.completed, exitCode: null, timedOut: false, testsTampered: false, output: result.output.slice(0, CHECK_OUTPUT_CHARS) };
+  }
   const dir = workspace.dir('checks', task.id, label);
   rmSync(dir, { recursive: true, force: true });
   if (resultDir && existsSync(resultDir)) snapshotTree(resultDir, dir);

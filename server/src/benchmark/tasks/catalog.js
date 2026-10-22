@@ -15,7 +15,7 @@ import { fileURLToPath } from 'node:url';
 const here = dirname(fileURLToPath(import.meta.url));
 export const FIXTURES_DIR = join(here, 'fixtures');
 // Kinds whose plug-in, verifiers and check exist; the rest are pending gates.
-export const RUNNABLE_KINDS = ['code', 'research', 'physics'];
+export const RUNNABLE_KINDS = ['code', 'research', 'physics', 'cad'];
 
 // The check puts these back from the pristine fixture before it runs, so a
 // result that "passes" by editing the tests or the test script does not.
@@ -47,6 +47,16 @@ const PROJECTILE = Object.freeze({
     "code": "k = (0.5 * rho * Cd * math.pi * r**2 / m).to('1/m').magnitude\ngg = g.to('m/s**2').magnitude\nspeed = v0.to('m/s').magnitude\nangle = theta.to('rad').magnitude\n\ndef f(state):\n    x, y, vx, vy = state\n    v = math.hypot(vx, vy)\n    return (vx, vy, -k * v * vx, -gg - k * v * vy)\n\ndef step(state, h):\n    a = f(state)\n    b = f([s + h / 2 * d for s, d in zip(state, a)])\n    c = f([s + h / 2 * d for s, d in zip(state, b)])\n    d4 = f([s + h * d for s, d in zip(state, c)])\n    return [s + h / 6 * (p + 2 * q + 2 * u + w) for s, p, q, u, w in zip(state, a, b, c, d4)]\n\nh = 1e-3\nstate = [0.0, 0.0, speed * math.cos(angle), speed * math.sin(angle)]\nwhile True:\n    nxt = step(state, h)\n    if nxt[1] < 0 and nxt[3] < 0:\n        frac = state[1] / (state[1] - nxt[1])\n        landing = state[0] + frac * (nxt[0] - state[0])\n        break\n    state = nxt\nresult = {'range': Q_(landing, 'm')}\n"
   }
 });
+
+// The CadQuery source of the CAD task's bracket with the new spacing: what a
+// dry run's scripted agent writes.
+export const BRACKET_50_SCRIPT = [
+  'length, width, thickness = 80, 20, 5',
+  'first, spacing, diameter = 15, 50, 5',
+  'plate = cq.Workplane("XY").box(length, width, thickness, centered=False)',
+  'result = plate.faces(">Z").workplane(origin=(0, 0, thickness)).pushPoints([(first, width / 2), (first + spacing, width / 2)]).hole(diameter)',
+  '',
+].join('\n');
 
 export const TASKS = [
   {
@@ -303,16 +313,51 @@ export const TASKS = [
     },
   },
   {
+    // The CAD vertical's task. The part is the check: the bracket the run
+    // leaves behind is measured, never what the agent says about it.
     id: 'cad-bracket-hole-spacing',
     kind: 'cad',
-    status: 'pending',
+    status: 'ready',
     title: 'Move a bracket’s mounting holes to a new spacing',
-    instructions: 'Change the bracket’s mounting hole spacing from 40 mm to 50 mm and keep 4 mm of material around each hole.',
-    fixture: { kind: 'parametric part', description: 'a bracket with two mounting holes' },
-    check: { description: 'the regenerated part measures 50 mm between hole centres and at least 4 mm of wall around each hole' },
-    pending: {
-      reason: 'no CAD plug-in is registered yet, so no agent can edit or measure a part',
-      readyWhen: 'the CAD plug-in registers parametric edit and measure capabilities and a cad.geometry verifier that measures the regenerated part',
+    role: 'cad_designer',
+    requires: ['cadquery'],
+    fixture: 'cad-bracket',
+    instructions:
+      'bracket.stl is an 80 × 20 × 5 mm mounting plate (millimetres) with two 5 mm through holes on its centre line, the first 15 mm from the left end and the second 40 mm from the first. ' +
+      'Change the hole spacing from 40 mm to 50 mm, keep at least 4 mm of material around each hole, and write the regenerated part back to bracket.stl.',
+    check: {
+      kind: 'cad',
+      file: 'bracket.stl',
+      units: 'mm',
+      dimensions: [
+        { measure: 'holes.count', value: 2 },
+        { measure: 'holes.spacing', value: 50, tolerance: 0.1 },
+        { measure: 'holes.minWall', min: 4 },
+        { measure: 'size.x', value: 80, tolerance: 0.05 },
+        { measure: 'size.y', value: 20, tolerance: 0.05 },
+        { measure: 'size.z', value: 5, tolerance: 0.05 },
+      ],
+      description: 'the regenerated bracket.stl is a valid solid with two holes 50 mm apart (±0.1) and at least 4 mm of wall around each, measured from the mesh',
+    },
+    dry: {
+      plan: '1. Measure the bracket and its holes.\n2. Regenerate it with CadQuery, holes 50 mm apart.\n3. Measure the result.',
+      actions: [
+        { capability: 'cad.inspect', input: { path: 'bracket.stl', section: { axis: 'z' } }, summary: 'Measure the current hole spacing and walls' },
+        {
+          capability: 'cad.parametric_edit',
+          input: {
+            script: BRACKET_50_SCRIPT,
+            output: 'bracket.stl',
+            expect: [
+              { measure: 'holes.spacing', value: 50, tolerance: 0.1 },
+              { measure: 'holes.minWall', min: 4 },
+            ],
+          },
+          summary: 'Regenerate the bracket with the holes 50 mm apart',
+        },
+        { capability: 'cad.inspect', input: { path: 'bracket.stl', section: { axis: 'z' } }, summary: 'Confirm the new spacing' },
+      ],
+      summary: 'bracket.stl now has its holes 50 mm apart with 7.5 mm of wall; verified by measurement.',
     },
   },
 ];
@@ -344,6 +389,12 @@ export function validateTask(task) {
     const check = task.check ?? {};
     if (check.kind !== 'quantity' || typeof check.capability !== 'string' || typeof check.output !== 'string' || typeof check.units !== 'string' || !Number.isFinite(check.reference) || !(check.rtol > 0)) {
       problems.push('a physics task checks a quantity: capability, output, units, reference and rtol');
+    }
+  } else if (task.kind === 'cad') {
+    // A CAD task's check measures a part the run leaves behind.
+    if (!dir || !existsSync(dir) || !statSync(dir).isDirectory()) problems.push(`fixture ${task.fixture} is missing`);
+    if (task.check?.kind !== 'cad' || typeof task.check?.file !== 'string' || !Array.isArray(task.check?.dimensions) || task.check.dimensions.length === 0) {
+      problems.push('a cad task names the file its check measures and the dimensions it must have');
     }
   }
   if (!Array.isArray(task.dry?.actions) || task.dry.actions.length === 0) problems.push('a ready task scripts its dry run');

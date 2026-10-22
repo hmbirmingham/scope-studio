@@ -23,8 +23,9 @@ import { prepareProject, snapshotTree } from './workspace.js';
 // The built-in role for the kind of task: Debugger, whose tags cover
 // reading, editing, the project's scripts and generated code; Researcher,
 // whose tags cover the research plug-in; Physicist, whose tags cover the
-// physics plug-in. A task may still name a role of its own (`task.role`).
-export const ROLE_FOR_KIND = Object.freeze({ code: 'debugger', research: 'researcher', physics: 'physicist' });
+// physics plug-in; CAD Designer, whose tags cover the CAD plug-in. A task
+// may still name a role of its own (`task.role`).
+export const ROLE_FOR_KIND = Object.freeze({ code: 'debugger', research: 'researcher', physics: 'physicist', cad: 'cad_designer' });
 
 export function roleFor(task) {
   return task?.role ?? ROLE_FOR_KIND[task?.kind] ?? ROLE_FOR_KIND.code;

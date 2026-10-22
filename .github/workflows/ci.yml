@@ -73,6 +73,25 @@ jobs:
       - name: Install the physics toolchain
         run: sudo python3 -m pip install --break-system-packages --quiet scipy pint
 
+      # CadQuery, for the CAD plug-in's STEP geometry, solid interference and
+      # parametric edits (always run in the bubblewrap sandbox). A copied
+      # venv keeps the interpreter and its packages under one prefix the
+      # sandbox can mount. The CAD tests replay recorded CadQuery answers
+      # without it, so a failed install costs coverage of the real tool, not
+      # the build.
+      - name: Cache CadQuery downloads
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/pip
+          key: pip-cadquery-2.8
+
+      - name: Install CadQuery
+        continue-on-error: true
+        run: |
+          python3 -m venv --copies "$RUNNER_TEMP/cadquery"
+          "$RUNNER_TEMP/cadquery/bin/pip" install --quiet 'cadquery==2.8.*'
+          echo "CADQUERY_PYTHON=$RUNNER_TEMP/cadquery/bin/python" >> "$GITHUB_ENV"
+
       - run: npm ci
         working-directory: server
 

@@ -45,6 +45,7 @@ const INTRO = {
   code: 'You work in a copy of a software project and fix the task you are given, one tool call per turn.',
   research: 'You answer the task you are given from the papers in a reference library, one tool call per turn.',
   physics: 'You solve the physics problem you are given with the tools below, one tool call per turn.',
+  cad: 'You work in a copy of a project and complete the task you are given, one tool call per turn.',
 };
 
 export function baselineSystem(capabilities, kind = 'code', roleName = ROLE_FOR_KIND[kind] ?? ROLE_FOR_KIND.code) {
