@@ -63,6 +63,16 @@ export async function updateNode(ownerId, id, { content, embedding, project, pri
   return rows[0] ?? null;
 }
 
+// The privacy each node has now, by id. Context kept from an earlier turn
+// carries node snapshots, and a node can be made private (or deleted) since:
+// anything about to resend them asks the database, not the snapshot. A node
+// that no longer exists is absent from the map.
+export async function currentPrivacy(ownerId, ids) {
+  if (ids.length === 0) return new Map();
+  const { rows } = await getPool().query('SELECT id, privacy FROM nodes WHERE owner_id = $1 AND id = ANY($2)', [ownerId, ids]);
+  return new Map(rows.map((row) => [row.id, row.privacy]));
+}
+
 export async function upsertNodeByExternalId({
   ownerId,
   type,
