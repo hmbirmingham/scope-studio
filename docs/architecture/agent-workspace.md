@@ -576,8 +576,12 @@ Arms:
 | `scope_local_cloud` | The same with `local_cloud` on the Engineer plan's rules (`cloud_model` overridden to `allow`): planning goes to the platform model, steps stay local. |
 | `baseline_sonnet`, `baseline_opus` | The standard full-transcript tool loop: the same tools (the code plug-in's capabilities, in an OS-sandboxed copy), one call per turn, every turn re-sending the whole conversation, with cache breakpoints on the previous and the new turn. |
 
-Per task and arm the report records completion, cost, wall clock, steps,
-model calls and tokens (uncached input, cache writes, cache reads and output
+Per task and arm the report records completion, cost, wall clock, actions
+(the capability calls the arm attempted: a Scope run's steps that used a
+capability, a baseline's tool calls; the one count comparable across arms),
+the Scope runner's own steps apart from them (its plan and closing step
+included; none for a baseline, whose turns are its model calls), model calls
+and tokens (uncached input, cache writes, cache reads and output
 separately), and every call's prompt size, from which it derives each arm's
 context curve and its growth in tokens per step. Totals give the cost per
 completed task and how many times more it costs on each baseline.

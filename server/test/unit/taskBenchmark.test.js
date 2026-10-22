@@ -7,9 +7,9 @@ import { contextGrowth, costPerCompleted, meanCurve, priceRequest } from '../../
 import { costUsd } from '../../src/lib/anthropic.js';
 import { baselineSystem } from '../../src/benchmark/tasks/baselineArm.js';
 import { FIXTURES_DIR, TASKS, fixturePath, selectTasks, validateTask } from '../../src/benchmark/tasks/catalog.js';
-import { armSummary, comparisons, stepPrompts, taskRow, tokenTotals } from '../../src/benchmark/tasks/metrics.js';
+import { armSummary, comparisons, stepPrompts, summarize, taskRow, tokenTotals } from '../../src/benchmark/tasks/metrics.js';
 import { createCallLog, createScript, scopeCloudModel, scriptedPort } from '../../src/benchmark/tasks/models.js';
-import { ARMS, liveRefusal, parseArgs, runTaskBenchmark } from '../../src/benchmark/tasks/run.js';
+import { ARMS, formatTable, liveRefusal, parseArgs, runTaskBenchmark } from '../../src/benchmark/tasks/run.js';
 
 // The task benchmark's arithmetic and bookkeeping, from plain data: pricing,
 // the context-growth measure, what counts as completed, and the refusals
@@ -80,10 +80,10 @@ describe('task economics', () => {
 
 describe('task metrics', () => {
   test('completed is the objective check, never the model saying so', () => {
-    const claimed = taskRow({ task, arm: ARMS.baseline_sonnet, result: { check: check(false), claimedDone: true, runStatus: 'claimed_done', wallMs: 5, steps: 3, calls: [call()] } });
+    const claimed = taskRow({ task, arm: ARMS.baseline_sonnet, result: { check: check(false), claimedDone: true, runStatus: 'claimed_done', wallMs: 5, toolCalls: 3, calls: [call()] } });
     assert.equal(claimed.completed, false);
     assert.equal(claimed.claimedDone, true);
-    const quiet = taskRow({ task, arm: ARMS.baseline_sonnet, result: { check: check(true), claimedDone: false, runStatus: 'turn_limit', wallMs: 5, steps: 3, calls: [call()] } });
+    const quiet = taskRow({ task, arm: ARMS.baseline_sonnet, result: { check: check(true), claimedDone: false, runStatus: 'turn_limit', wallMs: 5, toolCalls: 3, calls: [call()] } });
     assert.equal(quiet.completed, true, 'a fix the model never announced still counts');
   });
 
@@ -95,17 +95,52 @@ describe('task metrics', () => {
   test('the step curve leaves the planning call out', () => {
     const calls = [call({ purpose: 'plan', promptTokens: 900 }), call({ promptTokens: 400 }), call({ promptTokens: 450 })];
     assert.deepEqual(stepPrompts(calls), [400, 450]);
-    const row = taskRow({ task, arm: ARMS.scope_local, result: { check: check(true), claimedDone: true, runStatus: 'succeeded', wallMs: 1, steps: 3, calls, stepRecord: [{ capability: null }, { capability: 'code.read' }, { capability: null }] } });
+    const row = taskRow({ task, arm: ARMS.scope_local, result: { check: check(true), claimedDone: true, runStatus: 'succeeded', wallMs: 1, runnerSteps: 3, calls, stepRecord: [{ capability: null }, { capability: 'code.read' }, { capability: null }] } });
     assert.equal(row.context.firstStepPromptTokens, 400);
     assert.equal(row.context.maxStepPromptTokens, 450);
     assert.equal(row.actions, 1, 'actions count capability steps, not the plan or the final done');
+    assert.equal(row.runnerSteps, 3);
     assert.equal(row.modelCalls, 3);
+  });
+
+  test('a baseline’s tool calls are its actions, and it has no runner steps', () => {
+    const baseline = taskRow({ task, arm: ARMS.baseline_sonnet, result: { check: check(true), claimedDone: true, runStatus: 'claimed_done', wallMs: 5, toolCalls: 4, calls: [call(), call(), call(), call(), call()] } });
+    assert.equal(baseline.actions, 4);
+    assert.equal(baseline.runnerSteps, null);
+    assert.equal(baseline.modelCalls, 5, 'its turns are its model calls');
+    assert.ok(!('steps' in baseline), 'no column mixes the two');
+    // The same work on Scope: plan, four capability steps, done.
+    const record = [null, 'code.read', 'code.read', 'code.edit', 'code.run_script', null].map((capability, index) => ({ index, capability }));
+    const scope = taskRow({ task, arm: ARMS.scope_local, result: { check: check(true), claimedDone: true, runStatus: 'succeeded', wallMs: 5, runnerSteps: 6, stepRecord: record, calls: [] } });
+    assert.equal(scope.actions, baseline.actions, 'the same work is the same number of actions on either arm');
+    assert.equal(scope.runnerSteps, 6);
+  });
+
+  test('the report labels actions and runner steps apart, and shows no runner steps for a baseline', () => {
+    const rows = [
+      taskRow({ task, arm: ARMS.scope_local, result: { check: check(true), claimedDone: true, runStatus: 'succeeded', wallMs: 1000, runnerSteps: 4, stepRecord: [{ capability: null }, { capability: 'code.read' }, { capability: 'code.edit' }, { capability: null }], calls: [call()] } }),
+      taskRow({ task, arm: ARMS.baseline_sonnet, result: { check: check(true), claimedDone: true, runStatus: 'claimed_done', wallMs: 1000, toolCalls: 2, calls: [call(), call(), call()] } }),
+    ];
+    const arms = [ARMS.scope_local, ARMS.baseline_sonnet];
+    const totals = summarize(rows, arms.map((arm) => arm.name));
+    assert.equal(totals.scope_local.actions, 2);
+    assert.equal(totals.scope_local.runnerSteps, 4);
+    assert.equal(totals.baseline_sonnet.actions, 2);
+    assert.equal(totals.baseline_sonnet.runnerSteps, null);
+    const table = formatTable({ mode: 'dry', pricedUsd: 0, partial: false, tasks: rows, totals, comparisons: comparisons(totals, arms), pending: [], harnessErrors: [] });
+    const lines = table.split('\n');
+    assert.ok(lines.includes('| task | arm | done | $ | wall s | actions | runner steps | calls | in | cache write | cache read | out | step ctx first→last |'));
+    assert.ok(!/\| steps \|/.test(table), 'no unlabelled steps column');
+    assert.match(table, /\| code-x \| scope_local \| yes \| \$0\.0000 \| 1\.0 \| 2 \| 4 \| 1 \|/);
+    assert.match(table, /\| code-x \| baseline_sonnet \| yes \| \$0\.0000 \| 1\.0 \| 2 \| – \| 3 \|/);
+    assert.match(table, /\| baseline_sonnet \| 1\/1 \| \$0\.0000 \| \$0\.0000 \| 1\.0 \| 2 \| – \|/);
+    assert.match(table, /runner steps: every step the Scope runner executed/);
   });
 
   test('an arm summary prices each completed task and counts claims that failed', () => {
     const rows = [
-      taskRow({ task: { id: 'a', kind: 'code' }, arm: ARMS.baseline_sonnet, result: { check: check(true), claimedDone: true, runStatus: 'claimed_done', wallMs: 10, steps: 4, calls: [call({ costUsd: 0.02, adapter: 'cloud' })] } }),
-      taskRow({ task: { id: 'b', kind: 'code' }, arm: ARMS.baseline_sonnet, result: { check: check(false), claimedDone: true, runStatus: 'claimed_done', wallMs: 20, steps: 5, calls: [call({ costUsd: 0.04, adapter: 'cloud' })] } }),
+      taskRow({ task: { id: 'a', kind: 'code' }, arm: ARMS.baseline_sonnet, result: { check: check(true), claimedDone: true, runStatus: 'claimed_done', wallMs: 10, toolCalls: 4, calls: [call({ costUsd: 0.02, adapter: 'cloud' })] } }),
+      taskRow({ task: { id: 'b', kind: 'code' }, arm: ARMS.baseline_sonnet, result: { check: check(false), claimedDone: true, runStatus: 'claimed_done', wallMs: 20, toolCalls: 5, calls: [call({ costUsd: 0.04, adapter: 'cloud' })] } }),
     ];
     const summary = armSummary(rows);
     assert.equal(summary.completed, 1);
@@ -113,7 +148,8 @@ describe('task metrics', () => {
     assert.ok(Math.abs(summary.costUsd - 0.06) < 1e-12);
     assert.ok(Math.abs(summary.costPerCompletedUsd - 0.06) < 1e-12, 'a failed task’s spend is charged to the completed ones');
     assert.equal(summary.wallMs, 30);
-    assert.equal(summary.steps, 9);
+    assert.equal(summary.actions, 9);
+    assert.equal(summary.runnerSteps, null, 'a baseline has no runner steps to add up');
   });
 
   test('comparisons divide cost per completed task, baseline over Scope', () => {

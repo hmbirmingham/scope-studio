@@ -21,15 +21,22 @@ export function stepPrompts(calls) {
   return calls.filter((call) => call.purpose !== 'plan').map((call) => call.promptTokens);
 }
 
+// What "steps" means differs by arm, so the row never reports one number
+// for both. `actions` is the comparable count: capability calls the arm
+// attempted (a Scope run's steps that named a capability, a baseline's tool
+// calls). `runnerSteps` is every step the Scope runner executed, the plan and
+// the closing "done" included, and is null for a baseline, which has no
+// runner; its turns are its model calls.
+export function actionsOf(result) {
+  return result.stepRecord ? result.stepRecord.filter((step) => step.capability).length : result.toolCalls ?? 0;
+}
+
 // One task on one arm. `completed` is the objective check's verdict and
 // nothing else; `claimedDone` (the model said it was done) is kept beside it
 // so a run that claims success without achieving it is visible.
 export function taskRow({ task, arm, result }) {
   const calls = result.calls ?? [];
   const prompts = stepPrompts(calls);
-  const actions = result.stepRecord
-    ? result.stepRecord.filter((step) => step.capability).length
-    : result.steps;
   return {
     task: task.id,
     kind: task.kind,
@@ -42,8 +49,8 @@ export function taskRow({ task, arm, result }) {
     check: { exitCode: result.check.exitCode, timedOut: result.check.timedOut, testsTampered: result.check.testsTampered },
     costUsd: sum(calls.map((call) => call.costUsd)),
     wallMs: result.wallMs,
-    steps: result.steps,
-    actions,
+    actions: actionsOf(result),
+    runnerSteps: result.stepRecord ? result.runnerSteps ?? result.stepRecord.length : null,
     modelCalls: calls.length,
     cloudCalls: calls.filter((call) => call.adapter !== 'local').length,
     tokens: tokenTotals(calls),
@@ -84,8 +91,9 @@ export function armSummary(rows) {
     costUsd,
     costPerCompletedUsd: costPerCompleted(costUsd, completed),
     wallMs: sum(rows.map((row) => row.wallMs)),
-    steps: sum(rows.map((row) => row.steps)),
     actions: sum(rows.map((row) => row.actions)),
+    // Null for an arm with no runner (a baseline), never a sum of nothing.
+    runnerSteps: rows.some((row) => row.runnerSteps != null) ? sum(rows.map((row) => row.runnerSteps)) : null,
     modelCalls: sum(rows.map((row) => row.modelCalls)),
     tokens: {
       input: sum(rows.map((row) => row.tokens.input)),

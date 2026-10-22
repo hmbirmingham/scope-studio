@@ -101,8 +101,8 @@ function errorRow(task, arm, err) {
     check: null,
     costUsd: 0,
     wallMs: 0,
-    steps: 0,
     actions: 0,
+    runnerSteps: null,
     modelCalls: 0,
     cloudCalls: 0,
     tokens: { input: 0, cacheWrite: 0, cacheRead: 0, output: 0 },
@@ -226,7 +226,7 @@ export async function runTaskBenchmark({
           }
         }
         rows.push(row);
-        log(`${task.id} ${row.arm}: ${row.completed ? 'completed' : 'not completed'} (${row.runStatus}) $${row.costUsd.toFixed(4)} ${row.wallMs}ms ${row.steps} steps`);
+        log(`${task.id} ${row.arm}: ${row.completed ? 'completed' : 'not completed'} (${row.runStatus}) $${row.costUsd.toFixed(4)} ${row.wallMs}ms ${row.actions} actions${row.runnerSteps == null ? '' : ` in ${row.runnerSteps} runner steps`}`);
       }
     }
   } finally {
@@ -260,6 +260,7 @@ export async function runTaskBenchmark({
 
 const usd = (value) => (value == null ? '–' : `$${value.toFixed(4)}`);
 const num = (value) => (value == null ? '–' : Math.round(value).toLocaleString('en-US'));
+const count = (value) => (value == null ? '–' : String(value));
 const ratio = (value) => (value == null ? '–' : value === Infinity ? '∞' : `${value.toFixed(1)}x`);
 
 export function formatTable(report) {
@@ -267,25 +268,25 @@ export function formatTable(report) {
     `Task benchmark (${report.mode}) — ${report.mode === 'dry' ? 'priced at' : 'spent'} ${usd(report.mode === 'live' ? report.spentUsd : report.pricedUsd)}` +
       `${report.mode === 'dry' ? ' (dry: nothing was spent)' : ''}${report.partial ? ' — PARTIAL: spend cap reached' : ''}`,
     '',
-    '| task | arm | done | $ | wall s | steps | calls | in | cache write | cache read | out | step ctx first→last |',
-    '|---|---|---|---|---|---|---|---|---|---|---|---|',
+    '| task | arm | done | $ | wall s | actions | runner steps | calls | in | cache write | cache read | out | step ctx first→last |',
+    '|---|---|---|---|---|---|---|---|---|---|---|---|---|',
   ];
   for (const row of report.tasks) {
     const done = row.completed ? 'yes' : row.claimedDone ? 'NO (claimed)' : row.runStatus === 'harness_error' ? 'error' : 'no';
     lines.push(
-      `| ${row.task} | ${row.arm} | ${done} | ${usd(row.costUsd)} | ${(row.wallMs / 1000).toFixed(1)} | ${row.steps} | ${row.modelCalls} | ` +
+      `| ${row.task} | ${row.arm} | ${done} | ${usd(row.costUsd)} | ${(row.wallMs / 1000).toFixed(1)} | ${row.actions} | ${count(row.runnerSteps)} | ${row.modelCalls} | ` +
         `${num(row.tokens.input)} | ${num(row.tokens.cacheWrite)} | ${num(row.tokens.cacheRead)} | ${num(row.tokens.output)} | ` +
         `${num(row.context.firstStepPromptTokens)}→${num(row.context.lastStepPromptTokens)} |`
     );
   }
   lines.push(
     '',
-    '| arm | completed | total $ | $ / completed | wall s | steps | max step ctx | ctx growth / step |',
-    '|---|---|---|---|---|---|---|---|'
+    '| arm | completed | total $ | $ / completed | wall s | actions | runner steps | max step ctx | ctx growth / step |',
+    '|---|---|---|---|---|---|---|---|---|'
   );
   for (const [name, arm] of Object.entries(report.totals)) {
     lines.push(
-      `| ${name} | ${arm.completed}/${arm.tasks} | ${usd(arm.costUsd)} | ${usd(arm.costPerCompletedUsd)} | ${(arm.wallMs / 1000).toFixed(1)} | ${arm.steps} | ` +
+      `| ${name} | ${arm.completed}/${arm.tasks} | ${usd(arm.costUsd)} | ${usd(arm.costPerCompletedUsd)} | ${(arm.wallMs / 1000).toFixed(1)} | ${arm.actions} | ${count(arm.runnerSteps)} | ` +
         `${num(arm.maxStepPromptTokens)} | ${arm.meanGrowthTokensPerStep == null ? '–' : `${arm.meanGrowthTokensPerStep.toFixed(0)} tok`} |`
     );
   }
@@ -304,6 +305,11 @@ export function formatTable(report) {
     lines.push('', 'Harness errors:');
     for (const failure of report.harnessErrors) lines.push(`- ${failure.task} ${failure.arm}: ${failure.error}`);
   }
+  lines.push(
+    '',
+    'actions: capability calls the arm attempted (a Scope run’s steps that used a capability, a baseline’s tool calls), comparable across arms. ' +
+      'runner steps: every step the Scope runner executed, its plan and closing step included; a baseline has no runner (–), and its turns are its calls.'
+  );
   lines.push('', 'Prices: lib/anthropic.js, cache write 1.25x / read 0.1x input; local calls $0. Completion is the objective check only. Assumptions are in the JSON.');
   return lines.join('\n');
 }

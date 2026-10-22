@@ -71,6 +71,15 @@ describe('dry task benchmark', { skip }, () => {
     );
     assert.ok(paginate.stepRecord.every((step) => step.status === 'done'));
     assert.equal(paginate.actions, actions.length);
+    // The same scripted work is the same number of actions on every arm; the
+    // runner's own steps (plan and closing step) are counted apart, and a
+    // baseline has none.
+    assert.equal(paginate.runnerSteps, actions.length + 2);
+    for (const name of ['baseline_sonnet', 'baseline_opus']) {
+      const baseline = rows(name).find((row) => row.task === 'code-paginate-off-by-one');
+      assert.equal(baseline.actions, actions.length, name);
+      assert.equal(baseline.runnerSteps, null, name);
+    }
     // The runner's own cost ledger agrees with what the benchmark counted.
     for (const row of [...rows('scope_local'), ...rows('scope_local_cloud')]) {
       assert.equal(row.ledger.calls, row.modelCalls);
@@ -191,3 +200,4 @@ describe('dry task benchmark', { skip }, () => {
     }
   });
 });
+
