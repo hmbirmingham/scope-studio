@@ -74,23 +74,26 @@ The agent runs on whatever `OLLAMA_CHAT_MODEL` names; the default is
   reliably, so do one full run with it before the demo.
 
 Measured with `qwen3:8b` on the machine this was built on (a 4-core cloud VM,
-CPU only, no GPU), one full *Check my lab report against the data* run,
-approved straight away:
+CPU only, no GPU), one full *Check my lab report against the data* run with
+every vertical registered, approved straight away:
 
-| Step | Time | Model tokens in / out |
-|---|---|---|
-| Plan | 1 min 26 s | 1,975 / 75 |
-| Run code in the sandbox (writing the code; running it took 0.04 s) | 5 min 34 s | 2,039 / 568 |
-| Save to the map | 2 min 45 s | 2,166 / 219 |
-| Wrap-up | 1 min 19 s | 2,067 / 36 |
-| **Whole run** | **11 min 2 s** | 9,145 total, $0 |
+| Step | Time |
+|---|---|
+| Plan | 1 min 26 s |
+| Run code in the sandbox (writing the code; running it took under 0.1 s) | 4 min 7 s |
+| Save to the map | 2 min 5 s |
+| Wrap-up | 1 min 3 s |
+| **Whole run** | **8 min 37 s**, 9,109 tokens, $0 |
 
 The code it wrote computed slope 4.035 s²/m, g = 9.783 m/s² and 1.794 s at
 0.80 m, the same as the reference analysis. Its list of fixes caught the slope,
-g, the outlier and the uncertainty, but called the mean periods correct, so
-know the answers in step 6 of the talk track. A CPU without a GPU is this
-slow: run the demo on Apple silicon, and do one full run beforehand so the
-model is warm and you have seen its output.
+g, the uncertainty and that the 0.80 m point belongs in the fit, but did not
+say the report's 0.80 m row was copied from the 0.60 m one, so know the
+answers in step 6 of the talk track. Across four real runs the wording and
+the number of steps varied; one earlier run re-ran the code after saving
+(the task wording now prevents that). A CPU without a GPU is this slow: run
+the demo on Apple silicon, and do one full run beforehand so the model is
+warm and you have seen its output.
 
 ## What is in the demo
 
