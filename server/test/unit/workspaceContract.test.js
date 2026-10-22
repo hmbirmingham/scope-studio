@@ -192,7 +192,21 @@ describe('model adapters share one stream shape', () => {
       yield { message: { content: 'b' }, done: true, prompt_eval_count: 3, eval_count: 2 };
     };
     const events = await collect(localAdapter({ model: 'm', stream }));
-    assert.deepEqual(events, [{ text: 'a' }, { text: 'b' }, { done: true, usage: { input_tokens: 3, output_tokens: 2 }, costUsd: 0, model: 'm' }]);
+    assert.deepEqual(events, [{ text: 'a' }, { text: 'b' }, { done: true, usage: { input_tokens: 3, output_tokens: 2 }, costUsd: 0, model: 'm', stopReason: null }]);
+  });
+
+  test('local asks for an 8,192-token context and the output limit, and passes on why Ollama stopped', async () => {
+    const seen = [];
+    const stream = async function* (request) {
+      seen.push(request.options);
+      yield { message: { content: 'cut' }, done: true, done_reason: 'length', prompt_eval_count: 3, eval_count: 7 };
+    };
+    const port = localAdapter({ model: 'm', stream });
+    const events = [];
+    for await (const event of port.stream({ messages: [], maxTokens: 7 })) events.push(event);
+    assert.equal(events.at(-1).stopReason, 'length');
+    for await (const event of port.stream({ messages: [] })) events.push(event);
+    assert.deepEqual(seen, [{ num_ctx: 8192, num_predict: 7 }, { num_ctx: 8192 }]);
   });
 
   test('own key prices the usage and refuses to start without a key', async () => {

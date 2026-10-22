@@ -39,17 +39,29 @@ export function selectAdapter({ policy = 'local_only', purpose = 'step', hard = 
   return { adapter: 'local', reason: 'plan_has_no_cloud' };
 }
 
+// The context window a run's local calls ask for: the same as chat's
+// (routes/chat.js), so the model is not reloaded at another size between a
+// chat answer and a run step, and large enough for a chooser prompt plus a
+// code-writing reply, which Ollama's 4,096-token default could truncate.
+export const LOCAL_NUM_CTX = 8192;
+
 export function localAdapter({ model = localChatModel(), stream = streamOllama } = {}) {
   return {
     name: 'local',
     offline: true,
     async *stream({ messages, maxTokens, signal, format }) {
       let usage = null;
-      for await (const chunk of stream({ model, messages, options: maxTokens ? { num_predict: maxTokens } : undefined, format, signal })) {
+      let stopReason = null;
+      const options = { num_ctx: LOCAL_NUM_CTX, ...(maxTokens ? { num_predict: maxTokens } : {}) };
+      for await (const chunk of stream({ model, messages, options, format, signal })) {
         if (chunk.message?.content) yield { text: chunk.message.content };
-        if (chunk.done) usage = { input_tokens: chunk.prompt_eval_count ?? 0, output_tokens: chunk.eval_count ?? 0 };
+        if (chunk.done) {
+          usage = { input_tokens: chunk.prompt_eval_count ?? 0, output_tokens: chunk.eval_count ?? 0 };
+          // Ollama says 'length' when the reply hit num_predict.
+          stopReason = chunk.done_reason ?? null;
+        }
       }
-      yield { done: true, usage, costUsd: 0, model };
+      yield { done: true, usage, costUsd: 0, model, stopReason };
     },
   };
 }
@@ -62,7 +74,7 @@ export function ownKeyAdapter({ apiKey, model, effort, stream = streamAnthropic 
     async *stream({ messages, maxTokens, signal }) {
       for await (const event of stream({ apiKey, model, effort, messages, maxTokens, signal })) {
         if (event.text) yield { text: event.text };
-        if (event.done) yield { done: true, usage: event.usage, costUsd: costUsd(model, event.usage), model };
+        if (event.done) yield { done: true, usage: event.usage, costUsd: costUsd(model, event.usage), model, stopReason: event.stopReason ?? null };
       }
     },
   };

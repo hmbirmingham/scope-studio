@@ -1,6 +1,7 @@
 import { getPool } from '../../db/pool.js';
 import { selectAdapter } from '../modelPort.js';
 import { decide } from '../permissions.js';
+import { outputCeiling } from './budget.js';
 import { recordModelCall } from './ledger.js';
 
 // Every model call a run makes goes through here, in the order the contract
@@ -50,13 +51,29 @@ export function resolvePort(entry, run) {
   return entry ?? null;
 }
 
-export function createModelRouter({ agent, run, userPlan = 'free', online, adapters, publish, onCall = () => {}, db = getPool() }) {
+// Stop reasons that mean a reply was cut off at its output limit, as each
+// adapter reports them: Anthropic's (own key, platform) and Ollama's.
+const CUT_OFF = new Set(['max_tokens', 'length']);
+export function wasCutOff(done, limit) {
+  if (CUT_OFF.has(done?.stopReason)) return true;
+  return limit != null && Number(done?.usage?.output_tokens) >= limit;
+}
+
+// `budget` is the run's effective budget, or a getter for it (the runner
+// re-reads it between steps). Every call's output limit is clamped to what
+// its `maxTokens` has left, whatever the purpose: the plan, the chooser, or
+// a capability calling ctx.model with its own limit or none.
+export function createModelRouter({ agent, run, userPlan = 'free', online, adapters, publish, onCall = () => {}, budget = {}, db = getPool() }) {
   if (typeof online !== 'boolean') throw new Error('the model router needs an explicit online flag');
   // The agent may be passed as a getter so a runner that re-reads it between
   // steps decides with the current permissions.
   const current = typeof agent === 'function' ? agent : () => agent;
   const local = adapters.local;
   if (!local) throw new Error('the model router needs a local adapter');
+  const currentBudget = typeof budget === 'function' ? budget : () => budget;
+  // The run's spend so far, kept current from the ledger after every call
+  // (calls made by an earlier attempt are in the row it was claimed with).
+  let runTokens = Number(run.tokens_used) || 0;
 
   async function choose({ purpose, hard, privateContext }) {
     if (typeof privateContext !== 'boolean') throw new Error('every model call must say whether its context is private');
@@ -92,7 +109,12 @@ export function createModelRouter({ agent, run, userPlan = 'free', online, adapt
       fallbackFrom = choice.name;
     }
 
-    const request = { messages, maxTokens, signal, purpose: purpose === 'plan' ? 'plan' : 'step', format };
+    // A call's own limit, never more than the run's token budget has left.
+    // Without a token budget a call keeps its own limit (or none). The
+    // platform adapter does not send it: the control plane sets the ceiling.
+    const runBudget = currentBudget() ?? {};
+    const limit = runBudget.maxTokens == null ? maxTokens ?? null : outputCeiling(maxTokens ?? Infinity, runBudget, runTokens);
+    const request = { messages, maxTokens: limit ?? undefined, signal, purpose: purpose === 'plan' ? 'plan' : 'step', format };
     let finished = null;
     let produced = false;
     const relay = async function* (from) {
@@ -133,9 +155,22 @@ export function createModelRouter({ agent, run, userPlan = 'free', online, adapt
       },
       db
     );
+    runTokens = Math.max(runTokens, Number(recorded.runTokens) || 0);
     publish('cost', { tokens: recorded.tokens, usd: recorded.usd, adapter: port.name });
     onCall({ stepId, adapter: port.name, fallbackFrom, reason: choice.reason });
-    yield { done: true, usage, costUsd: usd, model: finished?.model ?? null, adapter: port.name, fallbackFrom, reason: choice.reason };
+    yield {
+      done: true,
+      usage,
+      costUsd: usd,
+      model: finished?.model ?? null,
+      adapter: port.name,
+      fallbackFrom,
+      reason: choice.reason,
+      // The limit the call was actually given, and why the adapter stopped,
+      // so a caller can tell a reply cut off at its limit.
+      maxTokens: limit,
+      stopReason: finished?.stopReason ?? null,
+    };
   }
 
   async function complete(options) {

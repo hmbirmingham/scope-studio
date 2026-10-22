@@ -674,6 +674,47 @@ describe('agent runner', () => {
     assert.deepEqual(local.calls.map((call) => call.maxTokens), [800, 880]);
   });
 
+  test('a capability’s own model call is held to what the token budget has left', async () => {
+    const agentId = await makeAgent({ budget: { maxTokens: 300 } });
+    const runId = await makeRun(agentId);
+    // Every call reports 100 in and 20 out. fixture.think asks for no limit.
+    local.push(plan, choose('fixture.think'), 'local thoughts');
+    assert.deepEqual(await worker().runNext(), { runId, outcome: 'budget_exceeded' });
+
+    // The plan is held under its own 800 (300 left), the chooser under its
+    // 600 (180 left), and the capability's call, which named no limit, to
+    // the 60 tokens the run had left.
+    assert.deepEqual(local.calls.map((call) => [call.purpose, call.maxTokens]), [['plan', 300], ['step', 180], ['step', 60]]);
+    assert.equal(invocations.think, 1);
+    const run = await runRow(runId);
+    assert.equal(run.status, 'budget_exceeded');
+    assert.equal(run.tokens_used, 360);
+  });
+
+  test('a plan run with less than its 800 tokens left asks for only what is left', async () => {
+    const agentId = await makeAgent({ budget: { maxTokens: 500 } });
+    const runId = await makeRun(agentId);
+    local.push(plan, done);
+    await worker().runNext();
+    assert.equal((await runRow(runId)).status, 'succeeded');
+    assert.deepEqual(local.calls.map((call) => call.maxTokens), [500, 380]);
+  });
+
+  test('a reply the adapter says was cut off is reported as the output limit, whatever its token count', async () => {
+    const agentId = await makeAgent({ tags: ['fixture', 'fixture_code'] });
+    // Ollama reports done_reason 'length' and Anthropic stop_reason
+    // 'max_tokens'; the adapters pass them on as stopReason.
+    for (const stop of ['length', 'max_tokens']) {
+      const runId = await makeRun(agentId);
+      // 20 output tokens, far under the limit: only the stop reason says it was cut.
+      local = createFakeModelPort({ name: 'local', stopReason: (request, text) => (text.startsWith('{"capability"') ? stop : 'stop') });
+      local.push(plan, '{"capability": "fixture.write_code", "input": {"code": "row_0', done);
+      await worker().runNext();
+      const rows = await steps(runId);
+      assert.match(rows[1].error, /^chooser_output_limit: the reply stopped at its 1500-token limit \(chooser_not_json\)/, stop);
+    }
+  });
+
   test('a chooser reply cut off at its limit fails the step and says so', async () => {
     const agentId = await makeAgent({ tags: ['fixture', 'fixture_code'] });
     const runId = await makeRun(agentId);

@@ -260,6 +260,13 @@ describe('the agent workspace end to end', { skip }, () => {
     assert.ok(run.steps.every((step) => step.adapter === null || step.adapter === 'local'));
     assert.equal(control.cloudRequests().length, 0);
     assert.equal(ollama.state.chatRequests.length, 4, 'the plan and three choices');
+    // The role can run model-written code, so every chooser call had the
+    // code-writing output limit; the plan its own; all with an 8,192-token
+    // context, so a long prompt and reply are not truncated.
+    assert.deepEqual(
+      ollama.state.chatRequests.map((request) => [request.format ?? 'text', request.options.num_predict, request.options.num_ctx]),
+      [['text', 800, 8192], ['json', 1500, 8192], ['json', 1500, 8192], ['json', 1500, 8192]]
+    );
     const { rows: costs } = await server.pool.query('SELECT DISTINCT adapter FROM agent_run_costs WHERE run_id = $1', [ctx.runId]);
     assert.deepEqual(costs, [{ adapter: 'local' }]);
     assert.equal(run.costUsd, 0);

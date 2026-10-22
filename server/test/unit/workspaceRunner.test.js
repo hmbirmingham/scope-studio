@@ -16,7 +16,7 @@ import graph from '../../src/plugins/graph/index.js';
 import kicad from '../../src/plugins/kicad/index.js';
 import physics from '../../src/plugins/physics/index.js';
 import research from '../../src/plugins/research/index.js';
-import { createModelRouter } from '../../src/workspace/runner/models.js';
+import { createModelRouter, wasCutOff } from '../../src/workspace/runner/models.js';
 import { advance } from '../../src/workspace/runner/scheduler.js';
 import { stopWithin } from '../../src/workspace/runner/shutdown.js';
 import { RUN_NODE_WINDOW, SLICE_NODES, SLICE_TOKENS, packSlice } from '../../src/workspace/runner/slice.js';
@@ -153,6 +153,16 @@ describe('chooser output limit', () => {
       .map((entry) => entry.name)
       .sort();
     assert.deepEqual(writes, ['cad.parametric_edit', 'code.edit', 'code.run_generated', 'physics.compute']);
+  });
+});
+
+describe('cut-off replies', () => {
+  test('a reply was cut off when the adapter says so or it used its whole limit', () => {
+    assert.equal(wasCutOff({ stopReason: 'length', usage: { output_tokens: 3 } }, 600), true);
+    assert.equal(wasCutOff({ stopReason: 'max_tokens' }, 600), true);
+    assert.equal(wasCutOff({ stopReason: null, usage: { output_tokens: 600 } }, 600), true);
+    assert.equal(wasCutOff({ stopReason: 'stop', usage: { output_tokens: 599 } }, 600), false);
+    assert.equal(wasCutOff({ stopReason: 'end_turn', usage: { output_tokens: 900 } }, null), false);
   });
 });
 

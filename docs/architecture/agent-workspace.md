@@ -181,10 +181,15 @@ The runner (`server/src/workspace/runner/`) implements this as follows.
 - The chooser's reply is the step's act, so code a step writes is inside it.
   Its output limit is 600 tokens, or 1,500 when the role offers a capability
   that declares `writesCode: true` (it picks the capability in the same
-  reply). The plan's limit is 800. No call asks for more output than the
-  run's `maxTokens` has left, and every call is counted in the ledger as it
-  was used. A reply cut off at its limit fails the step with
-  `chooser_output_limit`, not as a format error.
+  reply). The plan's limit is 800. The model router clamps every call's
+  output limit (the plan, the chooser, and a capability's own call through
+  `ctx.model`, with its own limit or none) to what the run's `maxTokens` has
+  left, and every call is counted in the ledger as it was used. The local
+  and own-key adapters pass that limit on; the platform adapter does not,
+  since the control plane sets its own ceiling. Local calls ask for an
+  8,192-token context, as chat does. A chooser reply cut off at its limit
+  (the adapter's stop reason says so, or it used the whole limit) fails the
+  step with `chooser_output_limit`, not as a format error.
 - The slice has a fixed budget (1,500 tokens, 8 nodes). The run's plan and its
   most recent notes compete for it with boosted scores, so the next step reads
   what the last one learned. They are the run's own memory, so they are
@@ -591,8 +596,10 @@ the Scope runner's own steps apart from them (its plan and closing step
 included; none for a baseline, whose turns are its model calls), model calls
 and tokens (uncached input, cache writes, cache reads and output
 separately), and every call's prompt size, from which it derives each arm's
-context curve and its growth in tokens per step. Every ready task's check is
-tested to fail on its untouched fixture. Totals give the cost per
+context curve and its growth in tokens per step. Each ready task's check is
+tested to fail before any work is done: the code and CAD checks on the
+untouched fixture's content, the research and physics checks on an empty
+answer. Totals give the cost per
 completed task and how many times more it costs on each baseline.
 
 `--dry` (the default, run in CI after the server tests) plays one scripted
