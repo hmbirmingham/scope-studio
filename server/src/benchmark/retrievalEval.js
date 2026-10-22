@@ -1,4 +1,5 @@
 import 'dotenv/config';
+import { createHash } from 'node:crypto';
 import { readFileSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
@@ -42,6 +43,13 @@ function externalIdFor(node) {
   return node.path ? `eval|0|${node.path}` : `eval|${node.key}`;
 }
 
+// Ranking breaks score ties by node id, so the same key must get the same id
+// on every run, or a reseeded corpus could order its ties differently.
+export function evalNodeId(key) {
+  const hex = createHash('sha256').update(`retrieval-eval:${key}`).digest('hex');
+  return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-4${hex.slice(13, 16)}-8${hex.slice(17, 20)}-${hex.slice(20, 32)}`;
+}
+
 // A throwaway owner: deleting it cascades to its nodes and edges, so the eval
 // never touches anyone else's graph.
 export async function createEvalOwner(pool, email = EVAL_OWNER_EMAIL) {
@@ -64,9 +72,9 @@ export async function seedCorpus(pool, ownerId, set, { vectors = null } = {}) {
   for (const [i, node] of set.nodes.entries()) {
     const vector = vectors?.[i];
     const { rows } = await pool.query(
-      `INSERT INTO nodes (owner_id, type, content, embedding, source, external_id, project, privacy)
-       VALUES ($1, $2, $3, $4, $5, $6, $7, 'cloud') RETURNING id`,
-      [ownerId, node.type, node.content, vector ? `[${vector.join(',')}]` : null, node.source, externalIdFor(node), node.project]
+      `INSERT INTO nodes (id, owner_id, type, content, embedding, source, external_id, project, privacy)
+       VALUES ($8, $1, $2, $3, $4, $5, $6, $7, 'cloud') RETURNING id`,
+      [ownerId, node.type, node.content, vector ? `[${vector.join(',')}]` : null, node.source, externalIdFor(node), node.project, evalNodeId(node.key)]
     );
     ids.set(node.key, rows[0].id);
   }

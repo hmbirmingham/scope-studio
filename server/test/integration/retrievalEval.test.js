@@ -38,12 +38,21 @@ describe('retrieval eval', () => {
     assert.deepEqual(Object.keys(summary.byGroup).sort(), ['cad', 'code', 'cross', 'kicad', 'physics', 'research', 'workspace']);
     assert.equal(results.nomic, undefined);
     const byId = Object.fromEntries(rows.map((row) => [row.id, row]));
-    assert.equal(byId['kc-c2']['recall@5'], 1, 'a reference designator alone finds its symbol');
+    assert.equal(byId['kc-c2']['recall@1'], 1, 'a reference designator alone finds its symbol');
 
     const after = await counts();
     assert.equal(after.metrics, before.metrics, 'no metrics rows recorded');
     assert.equal(after.nodes, before.nodes, 'the eval corpus is removed with its owner');
     assert.equal(after.owners, 0);
+  });
+
+  test('the ranking is identical across runs, reseeded corpus and all', async () => {
+    const first = await runEval({ pool: server.pool, set, modes: ['lexical'] });
+    const second = await runEval({ pool: server.pool, set, modes: ['lexical'] });
+    const ranking = (result) => result.lexical.rows.map((row) => [row.id, row.top]);
+    assert.deepEqual(ranking(second), ranking(first));
+    assert.deepEqual(second.lexical.summary, first.lexical.summary);
+    assert.equal(first.lexical.summary.unscored, 0, 'every candidate has a numeric score');
   });
 
   test('nomic-embed-text is reported separately', { skip: ollama ? false : 'Ollama not reachable' }, async () => {

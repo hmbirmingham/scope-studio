@@ -196,6 +196,13 @@ export function boostMultiplier(node, { project, task, now, features, terms = []
   return { multiplier, applied };
 }
 
+// Highest score first; equal scores fall back to node id, so the same corpus
+// and query always rank the same way. Without it, ties (and the candidate
+// lists Postgres cuts at LIMIT) came back in whatever order the engine chose.
+export function byScore(a, b) {
+  return b.score - a.score || (a.node.id < b.node.id ? -1 : a.node.id > b.node.id ? 1 : 0);
+}
+
 export function fuseAndScore({ dense, lexical, project, task, now, config, terms = [] }) {
   const byId = new Map();
   const k = config.rrf_k;
@@ -227,5 +234,5 @@ export function fuseAndScore({ dense, lexical, project, task, now, config, terms
     });
     scored.push({ ...entry, boosts: applied, score: entry.rrf * multiplier });
   }
-  return scored.sort((a, b) => b.score - a.score);
+  return scored.sort(byScore);
 }

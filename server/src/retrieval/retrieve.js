@@ -10,6 +10,7 @@ import {
   LEXICAL_MIN_MATCH,
   RARE_TERM_MAX_DF,
   SUPERSEDE_DEMOTION,
+  byScore,
   fuseAndScore,
   resolveConfig,
 } from './score.js';
@@ -169,7 +170,10 @@ async function lexicalCandidates(pool, ownerId, query, project, cloudOnly) {
          OR ((SELECT tsquery FROM rare) IS NOT NULL
              AND content_tsv @@ to_tsquery('simple', (SELECT tsquery FROM rare)))
        )
-     ORDER BY rank DESC
+     -- id breaks rank ties, so the same rows survive the LIMIT every time.
+     -- (The dense query keeps distance alone: a second sort key would stop
+     -- pgvector using the HNSW index, and exact distance ties are rare.)
+     ORDER BY rank DESC, id
      LIMIT $2`,
     [terms.join(' | '), LEXICAL_CANDIDATES, terms, minMatch, ownerId, RARE_TERM_MAX_DF, project ?? null, cloudOnly]
   );
@@ -209,7 +213,7 @@ async function expandFromSeeds(pool, ownerId, scored, { query, config, project, 
       existing.via = { from: source_id, relationship };
     }
   }
-  return [...byId.values()].sort((a, b) => b.score - a.score);
+  return [...byId.values()].sort(byScore);
 }
 
 function packIntoBudget(candidates, config) {
