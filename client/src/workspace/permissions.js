@@ -97,3 +97,41 @@ export const REASON_LABELS = {
 export function reasonText(reason) {
   return REASON_LABELS[reason] ?? (reason ? reason.replaceAll('_', ' ') : '');
 }
+
+// The project a new run or task for this agent should target unless the user
+// picks another. A run writes its plan and notes into its project, and an
+// agent writes only into the projects its write scope names, so a run with
+// no project (or another one) would be refused at its first step. An agent
+// that may write to exactly one of the listed projects gets that one;
+// anything else (several, every project, none) leaves the choice to the user.
+export function defaultProjectFor(agent, projectNames = []) {
+  const writable = agent?.scopes?.write?.projects ?? [];
+  if (writable.includes('*')) return '';
+  const candidates = writable.filter((project) => projectNames.includes(project));
+  return candidates.length === 1 ? candidates[0] : '';
+}
+
+// Plug-in capabilities by what they do, for the step stream and approvals.
+// A capability not listed here (a new vertical's) shows its own name.
+export const PLUGIN_CAPABILITY_LABELS = {
+  'code.search': 'Search the code',
+  'code.read': 'Read a file',
+  'code.edit': 'Edit a file in the sandbox copy',
+  'code.run_script': 'Run a project script',
+  'code.run_generated': 'Run code in the sandbox',
+  'graph.write_artifact': 'Save to the map',
+};
+
+export function capabilityLabel(name) {
+  if (!name) return null;
+  return PLUGIN_CAPABILITY_LABELS[name] ?? CAPABILITIES.find((capability) => capability.id === name)?.label ?? name;
+}
+
+// The runner writes a step approval's summary as "<capability>: <what the
+// step does>". The capability is shown as a label beside it, so the prefix
+// is dropped rather than shown twice.
+export function approvalSummary(approval) {
+  const summary = approval?.summary ?? '';
+  const prefix = `${approval?.capability}: `;
+  return summary.startsWith(prefix) ? summary.slice(prefix.length) : summary;
+}

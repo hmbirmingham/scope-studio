@@ -18,6 +18,9 @@ export async function startFakeOllama({ embedUrl } = {}) {
     pauseAfterFirstMs: 0,
     failAfterFirst: null,
     chatRequests: [],
+    // Optional: (request) => reply text, or null for the default tokens. Lets
+    // a test script whole conversations (the demo's runs, say).
+    respond: null,
     aborted: 0,
   };
 
@@ -46,6 +49,8 @@ export async function startFakeOllama({ embedUrl } = {}) {
     if (req.url === '/api/chat') {
       const request = JSON.parse(body);
       state.chatRequests.push(request);
+      const scripted = state.respond?.(request) ?? null;
+      const tokens = scripted == null ? state.tokens : (scripted.match(/[\s\S]{1,24}/g) ?? ['']);
       res.writeHead(200, { 'Content-Type': 'application/x-ndjson' });
       let closed = false;
       res.on('close', () => {
@@ -55,7 +60,7 @@ export async function startFakeOllama({ embedUrl } = {}) {
         }
       });
 
-      for (const [i, token] of state.tokens.entries()) {
+      for (const [i, token] of tokens.entries()) {
         if (closed) return;
         // Every line is written in two halves, split by bytes, so the client
         // must reassemble partial lines and partial UTF-8 sequences.
@@ -75,7 +80,7 @@ export async function startFakeOllama({ embedUrl } = {}) {
           message: { role: 'assistant', content: '' },
           done: true,
           done_reason: 'stop',
-          eval_count: state.tokens.length,
+          eval_count: tokens.length,
           prompt_eval_count: 321,
         })}\n`
       );

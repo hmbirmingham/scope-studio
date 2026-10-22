@@ -179,3 +179,59 @@ jobs:
           name: playwright-results
           path: client/test-results/
           retention-days: 7
+
+  # The student demo (docs/demo.md) end to end: `npm run demo` for real with
+  # the scripted demo model in place of Ollama's chat, walked in Chromium.
+  # The screenshots of each step are kept for review.
+  demo:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    services:
+      postgres:
+        image: pgvector/pgvector:pg18
+        env:
+          POSTGRES_USER: scope
+          POSTGRES_HOST_AUTH_METHOD: trust
+          POSTGRES_DB: postgres
+        ports: ['5432:5432']
+        options: >-
+          --health-cmd "pg_isready -U scope"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 12
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 26
+          cache: npm
+          cache-dependency-path: |
+            server/package-lock.json
+            client/package-lock.json
+
+      # The demo's analysis step runs model-written code in the OS sandbox.
+      - name: Install bubblewrap and allow user namespaces
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y bubblewrap
+          sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
+
+      - run: npm ci
+        working-directory: server
+      - run: npm ci
+        working-directory: client
+      - run: npx playwright install --with-deps chromium
+        working-directory: client
+      - run: npx playwright test -c playwright.demo.config.js
+        working-directory: client
+        env:
+          DEMO_DATABASE_URL: postgresql://scope@localhost:5432/scope_demo_test
+          DEMO_SHOTS_DIR: ${{ github.workspace }}/demo-shots
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: demo-screenshots
+          path: |
+            demo-shots/
+            client/test-results/
+          retention-days: 14

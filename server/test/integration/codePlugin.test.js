@@ -67,6 +67,7 @@ describe('code plug-in registration', () => {
     // The verticals register beside it; the code plug-in is there once.
     assert.equal(listPlugins().filter((name) => name === 'code').length, 1);
     assert.equal(listPlugins()[0], 'code');
+    assert.ok(listPlugins().includes('graph'));
     assert.equal(cap('code.search').permission, 'read_graph');
     assert.equal(cap('code.read').permission, 'read_graph');
     assert.equal(cap('code.edit').permission, 'edit_files');
@@ -81,6 +82,7 @@ describe('code plug-in registration', () => {
     assert.deepEqual(names(['code']), ['code.edit', 'code.read', 'code.search']);
     assert.deepEqual(names(['scripts']), ['code.run_script']);
     assert.deepEqual(names(['sandbox']), ['code.run_generated']);
+    assert.deepEqual(names(['graph']), ['graph.write_artifact']);
   });
 });
 

@@ -1,12 +1,23 @@
 import loadEnv from './config/env.js';
+import { localModeConfigError } from './config/localMode.js';
 import createApp from './app.js';
 import { createScheduler, createWorker, setRunQueuedListener, stopWithin } from './workspace/runner/index.js';
 
 const env = loadEnv();
+// Local mode signs a browser in without a password, so a configuration that
+// does not keep it to the demo account on loopback is refused outright.
+const localModeProblem = localModeConfigError();
+if (localModeProblem) {
+  console.error(`Refusing to start: ${localModeProblem}. Local mode is for npm run demo only.`);
+  process.exit(1);
+}
 const app = createApp(env);
 const port = process.env.PORT || 3001;
+// SCOPE_HOST=127.0.0.1 keeps the engine off the network (the demo launcher
+// sets it); unset, it listens on every interface as before.
+const host = process.env.SCOPE_HOST || undefined;
 
-app.listen(port, () => {
+app.listen(port, host, () => {
   console.log(`Scope Studio server listening on port ${port}`);
 });
 

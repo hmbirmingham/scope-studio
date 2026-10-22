@@ -52,6 +52,8 @@ export function fakeApi(overrides = {}) {
     startRun: vi.fn(),
     cancelRun: vi.fn(),
     listApprovals: vi.fn(async () => []),
+    getApproval: vi.fn(async () => null),
+    getNode: vi.fn(async (id) => ({ id, content: "" })),
     resolveApproval: vi.fn(async (id, decision) => ({ id, status: decision === 'approve' ? 'approved' : 'rejected' })),
     getPlan: vi.fn(async () => ({ ownKey: false })),
     ...overrides,

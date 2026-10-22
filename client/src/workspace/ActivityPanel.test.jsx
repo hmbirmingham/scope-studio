@@ -1,4 +1,5 @@
 import { act, screen, within } from '@testing-library/react';
+import userEvent from '@testing-library/user-event';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import ActivityPanel from './ActivityPanel.jsx';
 import { FakeEventSource, workspaceEvent } from '../test/fakeEventSource.js';
@@ -34,5 +35,22 @@ describe('ActivityPanel run list', () => {
     const item = await screen.findByRole('button', { name: /Tidy the README/ });
     emit('run.paused', { reason: 'agent_paused' });
     expect(item).toHaveTextContent('paused');
+  });
+
+  it('starts a run in the project the agent may write to, unless another is chosen', async () => {
+    const user = userEvent.setup();
+    const startRun = vi.fn(async (body) => ({ ...RUN, id: 'run-2', ...body }));
+    renderWithWorkspace(<ActivityPanel />, { api: fakeApi({ listAgents: vi.fn(async () => [AGENT]), listRuns: vi.fn(async () => []), startRun, getRun: vi.fn(async () => RUN) }) });
+    const project = await screen.findByRole('combobox', { name: 'Project' });
+    await screen.findByRole('option', { name: 'Ada' });
+    expect(project).toHaveValue('alpha');
+    await user.type(screen.getByRole('textbox', { name: 'What should it do?' }), 'Tidy the notes');
+    await user.click(screen.getByRole('button', { name: 'Start run' }));
+    expect(startRun).toHaveBeenCalledWith({ agentId: AGENT.id, instructions: 'Tidy the notes', project: 'alpha' });
+
+    await user.selectOptions(project, '');
+    await user.type(screen.getByRole('textbox', { name: 'What should it do?' }), 'Anything');
+    await user.click(screen.getByRole('button', { name: 'Start run' }));
+    expect(startRun).toHaveBeenLastCalledWith({ agentId: AGENT.id, instructions: 'Anything' });
   });
 });

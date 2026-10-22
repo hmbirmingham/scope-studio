@@ -1,0 +1,8 @@
+{
+  "name": "scope-studio",
+  "private": true,
+  "description": "Scripts that span the engine and the app. Each package keeps its own dependencies.",
+  "scripts": {
+    "demo": "node server/src/demo/launch.js"
+  }
+}
