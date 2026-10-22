@@ -35,8 +35,12 @@ const HARD_PATTERNS = [
   // Only a check run as a task: "check the BOM for the part number of the
   // MOSFET" is a lookup, so a bare leading "check" does not count.
   /^\s*(please\s+)?(run|do) an? .*\bcheck\b/i,
-  // Reviewing and planning.
-  /\b(review|audit|evaluate|assess|critique|plan for|design (a|an|the))\b/i,
+  // Reviewing and planning, as something asked for. The words also name
+  // things — "open peer review", "the review queue page", "show me the plan
+  // for…" — so they count only leading the request or acting on an object.
+  /^\s*(please\s+)?(review|audit|evaluate|assess|critique|plan)\b/i,
+  /\b(review|audit|evaluate|assess|critique) (the|this|that|my|our|whether|how)\b/i,
+  /\bdesign (a|an|the)\b/i,
 ];
 
 const LONG_QUESTION_WORDS = 35;

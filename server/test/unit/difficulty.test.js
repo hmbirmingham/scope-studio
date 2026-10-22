@@ -75,6 +75,17 @@ describe('questionDifficulty', () => {
     }
   });
 
+  test('review and plan count as requests, not as nouns', () => {
+    for (const q of ['Review dispose_engine — does it reset the factory?', 'Plan for moving PollState to Redis',
+      'Evaluate whether an isolation forest contamination of 0.05 makes sense', 'can you review the vote handler for races']) {
+      assert.equal(hardWording(q), 'wording', q);
+    }
+    for (const q of ['Which chapter covers open peer review?', 'what does the review queue page show',
+      'show me the plan for the dense_pack work']) {
+      assert.equal(hardWording(q), null, q);
+    }
+  });
+
   test('long and multi-part questions are hard', () => {
     assert.equal(hardWording(Array.from({ length: 36 }, (_, i) => `word${i}`).join(' ')), 'length');
     assert.equal(hardWording('where is it set? and where is it read?'), 'multi_part');
