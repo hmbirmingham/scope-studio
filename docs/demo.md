@@ -203,14 +203,15 @@ keeps going, click **Stop run**; the list of fixes is already saved.
   network, and model-written code only ever runs in an OS sandbox.
 - **Small context per step, from the graph.** The task benchmark
   (`npm run benchmark:tasks`, a dry run with scripted models, re-run for this
-  document; six code tasks and one research task, every arm completes 7/7):
+  document; six code tasks, one research task and one physics task, every arm
+  completes 8/8; the CAD and KiCad tasks are listed but not run here):
 
   | Arm | Cost per completed task |
   |---|---|
   | Scope, local model | $0 |
-  | Scope, local + cloud planner | $0.0025 |
-  | Standard full-transcript agent, Claude Sonnet | $0.0118 |
-  | Standard full-transcript agent, Claude Opus | $0.0295 |
+  | Scope, local + cloud planner | $0.0026 |
+  | Standard full-transcript agent, Claude Sonnet | $0.0117 |
+  | Standard full-transcript agent, Claude Opus | $0.0292 |
 
   On the longest task Scope's per-step context levels off at about 1.8k
   tokens, while the full-transcript agent's grows every turn to 4.3k. The dry
