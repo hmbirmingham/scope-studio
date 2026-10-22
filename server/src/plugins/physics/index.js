@@ -339,6 +339,7 @@ export function createPhysicsPlugin({ sandbox = defaultSandbox, python = default
         name: 'physics.compute',
         tags: ['physics'],
         permission: 'run_generated_code',
+        writesCode: true,
         input: {
           type: 'object',
           required: ['crossCheck'],

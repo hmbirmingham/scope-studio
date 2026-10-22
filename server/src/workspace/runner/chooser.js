@@ -6,6 +6,22 @@
 const SUMMARY_MAX = 500;
 const CAPABILITY_LINE_MAX = 400;
 
+// How many tokens the chooser may write. Its reply is the step's whole act,
+// so for a capability that takes code (an edit, a script to run) the code is
+// inside the reply. A choice with an ordinary input fits easily in 600; real
+// local runs that wrote a short analysis script used 567 to 569, so a step
+// that may write code gets 1,500: room for about two and a half times that,
+// while a ~2,000-token chooser prompt (the 1,500-token slice, the goal and
+// the capability list) plus the reply still fits a 4,096-token local context.
+// The model picks the capability in the same reply, so the limit follows the
+// capabilities on offer: a role that can write code gets the larger one.
+export const CHOOSER_MAX_TOKENS = 600;
+export const CODE_CHOOSER_MAX_TOKENS = 1_500;
+
+export function chooserOutputLimit(capabilities = []) {
+  return capabilities.some((capability) => capability.writesCode === true) ? CODE_CHOOSER_MAX_TOKENS : CHOOSER_MAX_TOKENS;
+}
+
 export function sliceText(nodes) {
   if (nodes.length === 0) return '(nothing in the graph yet)';
   return nodes

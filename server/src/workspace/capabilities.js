@@ -36,6 +36,12 @@ function checkCapability(plugin, capability) {
   if (capability.verifiers != null && !Array.isArray(capability.verifiers)) {
     fail(plugin, `${capability.name} verifiers must be a list of names`);
   }
+  // `writesCode: true` says the input carries code the model writes (an
+  // edit, a script to run), which gives the step's chooser a larger output
+  // limit (runner/chooser.js).
+  if (capability.writesCode != null && typeof capability.writesCode !== 'boolean') {
+    fail(plugin, `${capability.name} writesCode must be true or false`);
+  }
 }
 
 function checkVerifier(plugin, verifier) {
