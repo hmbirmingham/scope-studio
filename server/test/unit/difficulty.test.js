@@ -61,6 +61,20 @@ describe('questionDifficulty', () => {
     }
   });
 
+  test('proposals, derivations, explanations and check runs are hard', () => {
+    for (const q of [
+      'Suggest which passives could be consolidated to cut unique BOM lines',
+      'propose a way to make housing.stl watertight',
+      'derive the period of a physical pendulum with a rod of mass m',
+      'explain the difference between the watershed and threshold results',
+      'Run an ERC-style check: which power inputs are driven by nothing?',
+    ]) assert.equal(hardWording(q), 'wording', q);
+    for (const q of ['check the BOM for the part number of the MOSFET', 'what does the guide suggest for licences',
+      'which check runs on every push']) {
+      assert.equal(hardWording(q), null, q);
+    }
+  });
+
   test('long and multi-part questions are hard', () => {
     assert.equal(hardWording(Array.from({ length: 36 }, (_, i) => `word${i}`).join(' ')), 'length');
     assert.equal(hardWording('where is it set? and where is it read?'), 'multi_part');

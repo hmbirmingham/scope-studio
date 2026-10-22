@@ -30,6 +30,11 @@ const HARD_PATTERNS = [
   /^\s*(is|are|does|do|will|would|can|could)\b.*\b(safe|unsafe|enough|sufficient|race-?free|thread-?safe|hold up|hold a|withstand)\b/i,
   /^\s*should (we|i)\b/i,
   /\bwhat (would|will|could) (break|happen|go wrong)\b/i,
+  // Asking for a proposal, a derivation or a check run over the whole design.
+  /^\s*(please\s+)?(suggest|propose|derive|explain)\b/i,
+  // Only a check run as a task: "check the BOM for the part number of the
+  // MOSFET" is a lookup, so a bare leading "check" does not count.
+  /^\s*(please\s+)?(run|do) an? .*\bcheck\b/i,
   // Reviewing and planning.
   /\b(review|audit|evaluate|assess|critique|plan for|design (a|an|the))\b/i,
 ];
