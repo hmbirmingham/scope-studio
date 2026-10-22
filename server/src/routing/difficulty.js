@@ -25,6 +25,11 @@ const HARD_PATTERNS = [
   // Writing: a drafted paragraph, section or function is judged on quality a
   // small model rarely reaches, whatever the topic.
   /^\s*(please\s+)?(draft|write|compose)\b/i,
+  // Judging whether something is safe, sufficient or right, and what a change
+  // would do: yes/no in form, but the answer is an analysis.
+  /^\s*(is|are|does|do|will|would|can|could)\b.*\b(safe|unsafe|enough|sufficient|race-?free|thread-?safe|hold up|hold a|withstand)\b/i,
+  /^\s*should (we|i)\b/i,
+  /\bwhat (would|will|could) (break|happen|go wrong)\b/i,
   // Reviewing and planning.
   /\b(review|audit|evaluate|assess|critique|plan for|design (a|an|the))\b/i,
 ];

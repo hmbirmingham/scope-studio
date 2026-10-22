@@ -47,6 +47,20 @@ describe('questionDifficulty', () => {
     }
   });
 
+  test('judging whether something is safe, enough or wise is hard', () => {
+    for (const q of [
+      'Is RedisBackend.cleanup safe under concurrent requests?',
+      'is 22u enough output capacitance for the AP2112 at full load',
+      'does the LED resistor value give a safe current at 3.3 V',
+      'will the bracket hold a 20 kg load at the end of the arm',
+      'should we move the poll state into Redis',
+      'what would break if we raised the blur kernel to 301',
+    ]) assert.equal(hardWording(q), 'wording', q);
+    for (const q of ['is the Proteus profile validated', 'does the bibliography have duplicate entries', 'what is the safe operating area table in the datasheet']) {
+      assert.equal(hardWording(q), null, q);
+    }
+  });
+
   test('long and multi-part questions are hard', () => {
     assert.equal(hardWording(Array.from({ length: 36 }, (_, i) => `word${i}`).join(' ')), 'length');
     assert.equal(hardWording('where is it set? and where is it read?'), 'multi_part');
