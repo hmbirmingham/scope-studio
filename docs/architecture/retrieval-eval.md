@@ -71,7 +71,7 @@ Against the baseline, nomic top-1 changed on 7 of 47 queries:
   - `kc-bom-caps`: the AP2112 datasheet ranks above the BOM rows.
   - `kc-led-net`: a near-tie, now decided the other way.
 
-The losses come from the task-type boost (and, for `kc-led-net`, the tie-break). It now sees these node types for the first time, and its quality is now visible and stable enough to tune. Before, NaN ordering hid it. Lexical retrieval has no task boost, and it gained: recall@5 rose from 92.6% to 93.6% and MRR moved from 0.851 to 0.846.
+The losses come from the task-type boost (and, for `kc-led-net`, the tie-break). It now sees these node types for the first time, and its quality is now visible and stable enough to tune. Before, NaN ordering hid it. Lexical retrieval has no task boost. Its recall@5 and packed recall rose from 92.6% to 93.6%, and its MRR dipped from 0.851 to 0.846. On `kc-3v3` and `kc-u1-pins`, a net or a finding that now has a real score ranks one place above the U1 symbol.
 
 ## Changes
 
