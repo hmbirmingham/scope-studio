@@ -22,6 +22,9 @@ const HARD_PATTERNS = [
   // A request that opens on a change verb asks for work, not a lookup: "fix
   // solve_2cmt so…", "add a unit test that…", "make the limit per coach".
   /^\s*(please\s+)?(fix|add|make|change|update|rename|remove|convert)\b/i,
+  // Writing: a drafted paragraph, section or function is judged on quality a
+  // small model rarely reaches, whatever the topic.
+  /^\s*(please\s+)?(draft|write|compose)\b/i,
   // Reviewing and planning.
   /\b(review|audit|evaluate|assess|critique|plan for|design (a|an|the))\b/i,
 ];

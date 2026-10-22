@@ -35,6 +35,18 @@ describe('questionDifficulty', () => {
     }
   });
 
+  test('drafting prose or code is hard', () => {
+    for (const q of [
+      'Draft a related-work paragraph in LaTeX on definitions of reproducibility',
+      "Write a methods paragraph following the guide's checklist",
+      'write a function that converts pixel areas to mm²',
+      'compose a reply to the reviewer',
+    ]) assert.equal(hardWording(q), 'wording', q);
+    for (const q of ['where do we write the CSV header', 'who wrote the reproducibility survey', 'what does the draft say about FAIR']) {
+      assert.equal(hardWording(q), null, q);
+    }
+  });
+
   test('long and multi-part questions are hard', () => {
     assert.equal(hardWording(Array.from({ length: 36 }, (_, i) => `word${i}`).join(' ')), 'length');
     assert.equal(hardWording('where is it set? and where is it read?'), 'multi_part');
