@@ -64,8 +64,9 @@ after(async () => {
 describe('code plug-in registration', () => {
   test('registers through the built-in registry, once', () => {
     registerBuiltInPlugins();
-    // Other verticals register beside it; code is there exactly once.
+    // The verticals register beside it; the code plug-in is there once.
     assert.equal(listPlugins().filter((name) => name === 'code').length, 1);
+    assert.equal(listPlugins()[0], 'code');
     assert.ok(listPlugins().includes('graph'));
     assert.equal(cap('code.search').permission, 'read_graph');
     assert.equal(cap('code.read').permission, 'read_graph');

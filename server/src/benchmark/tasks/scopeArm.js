@@ -1,6 +1,7 @@
 import { randomUUID } from 'node:crypto';
 import { existsSync } from 'node:fs';
 import { join } from 'node:path';
+import { ingestProblems } from '../../plugins/physics/ingest.js';
 import { registerBuiltInPlugins } from '../../plugins/registry.js';
 import { createEventBus } from '../../workspace/events.js';
 import { roleTemplate } from '../../workspace/roles.js';
@@ -8,6 +9,7 @@ import { executeRun } from '../../workspace/runner/execute.js';
 import { runCosts } from '../../workspace/runner/ledger.js';
 import { sandboxRoot } from '../../workspace/runner/sandbox.js';
 import { insertRun, loadRun } from '../../workspace/runner/store.js';
+import { problemOf } from './catalog.js';
 import { createCallLog, createScript, livePlatformPort, recordedLocalPort, scriptedPort } from './models.js';
 import { prepareLibrary } from './research.js';
 import { prepareProject, snapshotTree } from './workspace.js';
@@ -20,8 +22,14 @@ import { prepareProject, snapshotTree } from './workspace.js';
 
 // The built-in role for the kind of task: Debugger, whose tags cover
 // reading, editing, the project's scripts and generated code; Researcher,
-// whose tags cover the research plug-in.
-export const ROLE_FOR_KIND = Object.freeze({ code: 'debugger', research: 'researcher' });
+// whose tags cover the research plug-in; Physicist, whose tags cover the
+// physics plug-in; CAD Designer, whose tags cover the CAD plug-in. A task
+// may still name a role of its own (`task.role`).
+export const ROLE_FOR_KIND = Object.freeze({ code: 'debugger', research: 'researcher', physics: 'physicist', cad: 'cad_designer' });
+
+export function roleFor(task) {
+  return task?.role ?? ROLE_FOR_KIND[task?.kind] ?? ROLE_FOR_KIND.code;
+}
 const LEASE_MS = 60_000;
 // Generous limits: a dry run ends well inside them, and a live run should
 // stop on the task, not on a budget the benchmark set.
@@ -43,8 +51,8 @@ async function claimOwn(runId, workerId, db) {
   return { ...run, was_started: false };
 }
 
-async function createBenchAgent({ db, ownerId, project, arm, kind }) {
-  const role = roleTemplate(ROLE_FOR_KIND[kind] ?? ROLE_FOR_KIND.code);
+async function createBenchAgent({ db, ownerId, project, arm, task }) {
+  const role = roleTemplate(roleFor(task));
   // Local+cloud: the user has said yes to the cloud for this agent, so the
   // plan's cloud calls are allowed without a per-run approval.
   const overrides = arm.policy === 'local_cloud' ? { cloud_model: 'allow' } : {};
@@ -84,8 +92,13 @@ export async function runScopeTask({ task, arm, workspace, ownerId, db, mode = '
   } else {
     const repo = await prepareProject(task, workspace, arm.name);
     await db.query('INSERT INTO project_settings (owner_id, project, local_path) VALUES ($1, $2, $3)', [ownerId, project, repo]);
+    // A physics task's problem is a node in the project's graph, which is
+    // where the agent reads it from.
+    if (task.kind === 'physics') {
+      await ingestProblems(ownerId, { project, privacy: 'cloud', problems: [problemOf(task)] }, { embed: mode === 'dry' ? null : undefined });
+    }
   }
-  const agentId = await createBenchAgent({ db, ownerId, project, arm, kind: task.kind });
+  const agentId = await createBenchAgent({ db, ownerId, project, arm, task });
   const run = await insertRun({ ownerId, agentId, instructions: task.instructions, project }, db);
 
   // The worker removes the run's sandbox as soon as the run ends, right after
@@ -128,6 +141,12 @@ export async function runScopeTask({ task, arm, workspace, ownerId, db, mode = '
   const final = await loadRun(run.id, db);
   const { rows: steps } = await db.query('SELECT index, kind, capability, status, error FROM agent_run_steps WHERE run_id = $1 ORDER BY index', [run.id]);
   const ledger = await runCosts(run.id, db);
+  // What the verified steps produced, for a check that reads a result rather
+  // than a working tree.
+  const { rows: answers } = await db.query(
+    "SELECT capability, output FROM agent_run_steps WHERE run_id = $1 AND status = 'done' AND capability IS NOT NULL ORDER BY index",
+    [run.id]
+  );
   const claimedDone = final.status === 'succeeded';
   // The run's conclusion, which a research task's check reads: the summary
   // the final step gave when it declared the goal met.
@@ -143,6 +162,9 @@ export async function runScopeTask({ task, arm, workspace, ownerId, db, mode = '
     claimedDone,
     // The objective check runs on this afterwards (run.js), outside the timing.
     resultDir: snapshot,
+    // What a check reads besides the working tree: the verified steps'
+    // outputs (physics) and the final answer in the arm's project (research).
+    answers,
     project,
     answer: last?.summary ?? null,
     wallMs,

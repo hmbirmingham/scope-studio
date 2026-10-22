@@ -456,6 +456,7 @@ that no longer parses stops the task (`next_run_at` NULL).
 | `/api/approvals` | Path A — the approvals inbox |
 | `/api/agent-runs` | Path B — start, list, inspect, cancel runs |
 | `/api/workspace/events` | Path B — the SSE stream |
+| `/api/plugins/kicad` | KiCad — ingest jobs and kicad-cli status |
 
 (`/api/runs` is the existing approval-gated script run and is unchanged.)
 
@@ -609,9 +610,23 @@ answer against the task's key (it must name the method, cite the paper by
 citekey and name the table, and every citation in it must resolve to an
 ingested paper).
 
-KiCad, physics and CAD tasks are defined as pending acceptance gates
+KiCad tasks are defined as pending acceptance gates
 (why each is pending and which plug-in and verifier make it ready) and are
-listed in every report, never run and never counted as failures.
+listed in every report, never run and never counted as failures. A ready
+task of another vertical names the `role` both arms get (so the same
+capabilities), the external tools it `requires`, and its own check: the CAD
+task (`cad-bracket-hole-spacing`) is done by the CAD Designer, requires
+CadQuery, and is checked by measuring the `bracket.stl` the run leaves
+behind. Where a required tool is not installed the task is listed as
+unavailable, like a pending gate: not run and not a failure.
+
+The physics task (`physics-projectile-range`) is ready. A task may name its
+role (`role: 'physicist'`); its fixture holds only the problem statement,
+which the Scope arm ingests into the task's graph and the baseline gets in
+its first message. Its check is a quantity check (`check.kind:
+'quantity'`): the arm's last `physics.compute` result that passed its own
+verifiers (a computation node was written), in metres, within 0.5% of a
+reference kept in the catalog and never shown to an arm.
 
 ## Plug-in registration
 
@@ -695,3 +710,165 @@ refuses with `private_sources` when any of that text is `local` and the
 agent could reach the cloud (online, and `cloud_model` not denied for it),
 because the model router decides by the step's slice, not by what the
 capability read.
+
+### Physics
+
+The physics plug-in (`server/src/plugins/physics/`, tag `physics`) needs no
+migration of its own: it uses 039's `derivation` and `computation` types,
+source `physics`, and the existing `spec` type for ingested problems.
+
+| Capability | Permission | Verifiers | What it does |
+|---|---|---|---|
+| `physics.derive` | `write_notes` | `physics.units`, `physics.limits` | Asks `ctx.model` for a derivation as JSON (result expression and units, variables with representative values and units, explicit assumptions, steps, at least one limiting case), with one repair request if the reply does not validate. Written as a `derivation` node, `derived_from` the problem node when given `problemId`. |
+| `physics.compute` | `run_generated_code` | `physics.units`, `physics.rederive` | Runs model-written Python (or the `expression` template: the derivation's closed form) on Pint quantities, and a required `crossCheck` by a different method, each in its own OS-sandboxed process. Written as a `computation` node `derived_from` its derivation. |
+| `physics.check` | `run_generated_code` | — | Runs the checks again on a stored derivation or computation and reports them as a finding. |
+
+- **Verifiers.** `physics.units` evaluates the result with Pint quantities:
+  adding unlike dimensions, a dimensioned argument to `sin`/`exp`/…, or a
+  result whose dimensions differ from its declared units fails; for a
+  computation, every output must convert to its declared units.
+  `physics.limits` evaluates each declared limiting case (variables set near
+  the limit) against its expected expression or value within `rtol`/`atol`.
+  `physics.rederive` compares the computation with its independent
+  cross-check within `tolerance` (default 1e-3, at most 0.05).
+- **Expressions** are parsed with Python's `ast` and evaluated by a
+  whitelist (numbers, declared variables, `pi`, `e`, `+ - * / **`, a fixed
+  list of functions); anything else is refused before evaluation.
+- **Everything Python runs through `runSandboxed`** (`python3 -I -B` and a
+  fixed harness, `harness.py`, copied with the job into a fresh directory in
+  the run's scratch space, the only writable path; thread counts pinned to 1).
+  `PHYSICS_PYTHON` may name another interpreter (a virtual environment); its
+  prefix is mounted read-only. Availability is probed by running the harness
+  in the sandbox. Model-written code runs in a `run` job whose result says
+  only which plain values (number and unit string) the code reports: the code
+  shares that process and could print a result line of its own, so no check
+  outcome is taken from it. The units check (conversion to the declared
+  units, finiteness) and the conversion the cross-check comparison uses run
+  in a separate `convert` job that runs no model-written code. The job file
+  holding a run's nonce is deleted before the job starts. Without the sandbox, `python3`, NumPy, SciPy or Pint the
+  verifiers return `{ ok: true, unavailable: true, detail }`,
+  `physics.compute` refuses with `physics_unavailable`, and a derivation is
+  written marked "unverified".
+- **Write-back.** The runner's write-back makes only findings, decisions,
+  questions and artifacts, so these capabilities write their own node. To
+  keep "nothing is written before it is verified", the capability runs the
+  checks first and writes the node only when they pass (or are unavailable);
+  the verifiers report those results for that result object, or run the
+  checks themselves for a result they did not see made. The node is keyed by
+  step (`external_id` `derivation:<stepId>`), so a resumed step updates it.
+  Each capability also returns a finding naming the node, so the next step's
+  slice carries its id.
+- **Privacy.** `ctx` does not say whether the step's slice held a private
+  node, so physics nodes are written `local` unless `ctx.privateContext ===
+  false` and every node they were built on is `cloud`. For the same reason
+  `physics.derive` sends a `problemId` node's text to the model only when that
+  node is `cloud` or `ctx.privateContext === true`.
+- **Ingest.** `POST /api/plugins/physics/ingest { project, problems: [{ id,
+  title?, statement, given?, find? }], privacy? }` (a background job, like
+  GitHub ingest; privacy defaults to `local`) writes `spec` nodes with
+  `external_id` `problem:<id>`, never an answer. `GET /status` reports whether
+  the toolchain is usable, and `GET /jobs/:id` a physics job.
+
+### The CAD plug-in
+
+`server/src/plugins/cad/` (tag `cad`; migration 039's `part`, `assembly`,
+`contains` and source `cad`; no migration of its own). Open formats first:
+STL (ASCII and binary) and STEP's product structure are read in
+JavaScript; anything that needs a B-rep kernel goes to CadQuery.
+
+| Capability | Permission | What it does |
+|---|---|---|
+| `cad.inspect` | `read_graph` (source `cad`) | STL: bounding box, area, volume (signed tetrahedra), centroid, watertightness (every edge shared by exactly two faces, wound consistently), optional cross-section with holes, their spacing and wall. STEP: header, products, assemblies and what they contain, length unit; geometry from CadQuery when available, else `geometry.unavailable`. |
+| `cad.mass_properties` | `read_graph` (source `cad`) | Volume, mass, centre of mass and inertia about it, for a density `{ value, unit }` (or the project's); SI results. STL in JavaScript (refused if not watertight), STEP with CadQuery. |
+| `cad.interference` | `read_graph` (source `cad`) | STL pairs in JavaScript: bounding-box prefilter, a grid over the overlap, exact triangle-triangle test; touching is not interference, crossing or nesting is. STEP with CadQuery booleans (common volume), within one file or across files; a mix tessellates the STEP. |
+| `cad.parametric_edit` | `run_generated_code` | Runs a CadQuery script that assigns `result`, exports it (STEP or STL by extension) into the run's sandbox copy (or its scratch directory when there is no copy), never the user's checkout. Verifiers `cad.valid_geometry`, `cad.dimensions`, `cad.no_interference`. |
+
+The project declares in `cad.json` (all optional): `units` (what STL
+coordinates mean; default `mm`), a default `density`, an `assembly` (parts
+that must not interfere) and `dimensions` (checks `cad.dimensions`
+applies: `{ file, measure, value, tolerance }` or `{ file, measure, min,
+max }`, measures `size.x|y|z`, `volume`, `surfaceArea`, `holes.count`,
+`holes.spacing`, `holes.maxSpacing`, `holes.diameter`, `holes.maxDiameter`,
+`holes.minWall`).
+
+CadQuery runs only inside the OS sandbox (`runSandboxed`): each call copies
+its inputs, a driver (`driver.py`) and a request into a fresh scratch
+directory, runs `CADQUERY_PYTHON -I driver.py request.json` there (no
+network, only that directory writable) and removes it. `CADQUERY_PYTHON`
+names an interpreter that can import cadquery, best a venv made with
+`python3 -m venv --copies` so interpreter and packages share one prefix the
+sandbox mounts; it defaults to `python3`. On macOS, CadQuery's wheels
+(`pip install cadquery`, arm64 and x86_64) run under `sandbox-exec` the same
+way; FreeCAD is not needed. Without an OS sandbox or without CadQuery,
+`cadquery.status()` says why, a capability that needs it refuses with
+`tool_unavailable`, and a verifier that needs it returns `{ ok: true,
+unavailable: true, detail: 'unavailable: …' }` (the contract's convention:
+the step is not failed for a check that could not run, and the recorded
+detail says it was not made). Verifiers never trust the step's own report:
+they read the produced file again, measure STL in JavaScript, and run STEP
+checks in a fresh CadQuery process with no model-written code in it.
+
+Ingest: `POST /api/plugins/cad/ingest { project, privacy? }` (a background
+job, `GET /api/plugins/cad/jobs/:id`) walks the project's local folder
+(never following links, hidden folders or `node_modules`). Each STL is a
+`part`; each STEP product an `assembly` or `part`, with `contains` edges
+weighted by quantity. External ids are `<project>|<path>[#<product id>]`,
+so re-ingest updates in place; files that are gone lose their nodes, files
+that fail to read keep theirs. Nodes are `local` unless the request says
+`cloud`. `GET /api/plugins/cad/status` reports whether CadQuery can run.
+
+A SolidWorks companion is designed, not built: `solidworks-connector.md`.
+
+### KiCad (`server/src/plugins/kicad/`)
+
+Reads KiCad 6+ `.kicad_sch` and `.kicad_pcb` files with its own small
+S-expression reader. Net resolution is pragmatic: wires join at their ends
+and at any connection point on them (crossing wires only through a
+junction), pins at one point join, power ports, global labels and hidden
+power-input pins join by name across the design, local labels by name on one
+sheet, and sheet pins join the child's hierarchical labels. Buses are not
+followed. Net names follow KiCad (`/LED_A` for a root-sheet local label,
+`Net-(R1-Pad2)` when nothing names a net). Points are indexed by row and
+column before they are matched to wires, and a design with more than 500,000
+connection points, or whose wires would need more than 5,000,000
+point-on-wire tests, is refused with `design_too_large`.
+
+Ingest: `POST /api/plugins/kicad/ingest { project, privacy? }` reads the
+folder bound to the project (`project_settings.local_path`) as a background
+job (`GET /api/plugins/kicad/jobs/:id`); privacy defaults to `local`. Each
+root schematic gives a `schematic` node with `symbol`, `net` and `bom_row`
+nodes `part_of` it; each board a `board` node with `footprint` and `net`
+nodes. Schematic nets `connect` symbols, board nets `connect` footprints, and
+a footprint `implements` its symbol (by the symbol path the footprint
+records, else by reference). External ids are
+`<project>|<kind>|<file>[|<name>]`; re-ingest updates in place, removes what
+is gone and rebuilds these links in one transaction, leaving links from other
+nodes (an agent's notes) alone. A file that fails to load keeps the nodes of
+its last good ingest (it is listed in the summary's `errors`), and nothing is
+pruned when the folder scan was truncated. `GET /api/plugins/kicad/status` says whether
+kicad-cli can run ERC and DRC.
+
+| Capability | Permission | Tags | Does |
+|---|---|---|---|
+| `kicad.net_query` | `read_graph` (source `kicad`) | `kicad` | pins and symbols on a net, or the nets a symbol touches |
+| `kicad.footprint_query` | `read_graph` (source `kicad`) | `kicad` | footprints by reference, value, layer or net, with placement and pad nets |
+| `kicad.bom` | `read_graph` (source `kicad`) | `kicad` | the BOM as a table, and a CSV artifact |
+| `kicad.schematic_review` | `read_graph` (source `kicad`) | `kicad` | unconnected pins, missing values and footprints, power nets with an IC pin and no capacitor to ground; findings per issue |
+
+Capabilities read the run's sandbox copy when there is one, else the project
+folder, and return the ingested nodes they are about as `touchedNodeIds`.
+The review finds every issue in code; `ctx.model` may only reword them, a
+reworded issue is kept only if it still names its part or net, and for a
+private design the model is asked only when the call cannot leave the
+machine (`ctx.model.offline`, or the agent's policy is `local_only`).
+
+Verifiers `kicad.erc` and `kicad.drc` run `kicad-cli sch erc` / `pcb drc`
+(KiCad 8+, JSON report) on a copy of the design's files in a scratch
+directory inside the OS sandbox, never on the host, and pass when the report
+has no error-severity violation. Without kicad-cli 8+ they return `{ ok:
+true, unavailable: true }`; without an OS sandbox `{ ok: false, unverified:
+true }`. They check at most 10 designs per step; when more exist, or the
+folder scan was truncated, a clean result is `{ ok: false, unverified: true }`
+with the number skipped, never a pass. They are for capabilities that change a design; the four read-only
+capabilities above carry none, since a design that fails ERC must not fail a
+read of it.

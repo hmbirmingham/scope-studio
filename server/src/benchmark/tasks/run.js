@@ -14,6 +14,7 @@ import { comparisons, summarize, taskRow } from './metrics.js';
 import { SCOPE_CLOUD_PLAN } from './models.js';
 import { answerCheck } from './research.js';
 import { SCOPE_BUDGET, runScopeTask } from './scopeArm.js';
+import { defaultCadQuery } from '../../plugins/cad/cadquery.js';
 import { createWorkspace, objectiveCheck, osSandboxStatus } from './workspace.js';
 
 // Task benchmark: does Scope, with the graph as the agent's memory and local
@@ -61,7 +62,7 @@ export function assumptions(mode) {
       ? 'counted from the prompts actually built, at four characters a token (the corpus counts nodes the same way)'
       : 'as the model reported them; prompt sizes for the curve are the same four-characters-a-token estimate when a model reports none',
     replies: mode === 'dry' ? 'scripted: both arms play the same capability calls in the same order (catalog.js dry.actions)' : 'chosen by the models',
-    completion: 'objective only: the task check (for code, the fixture’s test script with its original tests restored, run in the OS sandbox on the result; for research, the final answer against the task’s key, with every citation resolving to an ingested paper)',
+    completion: 'objective only: the task check (for code, the fixture’s test script with its original tests restored, run in the OS sandbox on the result; for research, the final answer against the task’s key, with every citation resolving to an ingested paper; for physics, the last verified computation within tolerance of a reference kept out of the fixture; for CAD, the part the run leaves measured against the task’s dimensions)',
     prices: 'USD per million tokens from lib/anthropic.js; cache writes at 1.25x input, cache reads at 0.1x input',
     baseline: {
       loop: 'full transcript: every turn re-sends the system prompt, the tool list and the whole conversation; one tool call per turn',
@@ -71,7 +72,7 @@ export function assumptions(mode) {
       contextWindowTokens: BASELINE_WINDOW_TOKENS,
     },
     scope: {
-      runner: 'executeRun with the registered plug-ins, the run sandbox and the OS sandbox; agent level sandboxed, role Debugger (code tasks) or Researcher (research tasks)',
+      runner: 'executeRun with the registered plug-ins, the run sandbox and the OS sandbox; agent level sandboxed, role Debugger (code tasks), Researcher (research tasks), Physicist (physics tasks) or CAD Designer (CAD tasks)',
       memory: `the graph: each step reads one packed slice of at most ${SLICE_TOKENS} tokens and ${SLICE_NODES} nodes, never a transcript`,
       localCost: 'local model calls cost $0 (electricity and hardware not counted)',
       cloud: `scope_local_cloud runs on the ${SCOPE_CLOUD_PLAN} plan's rules: planning and hard steps may use the platform model it would pick, priced without caching`,
@@ -114,6 +115,22 @@ function pendingEntry(task) {
   return { id: task.id, kind: task.kind, title: task.title, status: 'pending', reason: task.pending.reason, readyWhen: task.pending.readyWhen, check: task.check?.description ?? null };
 }
 
+// External tools a ready task needs (`requires`). A task whose tool is not
+// installed here is listed as unavailable, like a pending gate: not run and
+// not a failure, since no arm could have done it.
+export const TOOLS = {
+  cadquery: async () => defaultCadQuery.status(),
+};
+
+async function missingTool(task, tools) {
+  for (const name of task.requires ?? []) {
+    const probe = tools[name];
+    const state = probe ? await probe().catch((err) => ({ available: false, reason: err.message })) : { available: false, reason: 'unknown tool' };
+    if (!state.available) return { name, reason: state.reason };
+  }
+  return null;
+}
+
 export async function runTaskBenchmark({
   tasks = TASKS,
   mode = 'dry',
@@ -124,6 +141,7 @@ export async function runTaskBenchmark({
   ownerId = null,
   sandbox,
   keepWorkspace = false,
+  tools = TOOLS,
   log = () => {},
 }) {
   if (!MODES.includes(mode)) throw new Error(`mode must be one of ${MODES.join(', ')}, not ${mode}`);
@@ -161,6 +179,20 @@ export async function runTaskBenchmark({
         pending.push(pendingEntry(task));
         continue;
       }
+      const missing = await missingTool(task, tools);
+      if (missing) {
+        pending.push({
+          id: task.id,
+          kind: task.kind,
+          title: task.title,
+          status: 'unavailable',
+          reason: `${missing.name} is not available here (${missing.reason})`,
+          readyWhen: `${missing.name} is installed`,
+          check: task.check?.description ?? null,
+        });
+        log(`${task.id}: skipped, ${missing.name} is not available here`);
+        continue;
+      }
       // The arms run one after another, so their wall clocks are not shared
       // with each other. The checks are not timed and run after them, also
       // one at a time: every OS-sandboxed process runs as the same user, and
@@ -187,7 +219,7 @@ export async function runTaskBenchmark({
           try {
             const check = task.check.kind === 'answer'
               ? await answerCheck(task, { answer: result.answer, ownerId: owner, project: result.project, db })
-              : await objectiveCheck(task, { resultDir: result.resultDir, workspace, label: arm.name, ...(sandbox ? { sandbox } : {}) });
+              : await objectiveCheck(task, { resultDir: result.resultDir, answers: result.answers, workspace, label: arm.name, ...(sandbox ? { sandbox } : {}) });
             row = taskRow({ task, arm, result: { ...result, check } });
           } catch (err) {
             row = errorRow(task, arm, err);
@@ -265,7 +297,7 @@ export function formatTable(report) {
     }
   }
   if (report.pending.length) {
-    lines.push('', 'Pending acceptance gates (listed, not run, not failures):');
+    lines.push('', 'Pending acceptance gates, and tasks whose tool is not installed here (listed, not run, not failures):');
     for (const entry of report.pending) lines.push(`- ${entry.id} (${entry.kind}): ${entry.reason}. Ready when ${entry.readyWhen}.`);
   }
   if (report.harnessErrors.length) {

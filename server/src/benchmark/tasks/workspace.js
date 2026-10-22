@@ -2,6 +2,7 @@ import { execFile } from 'node:child_process';
 import { cpSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, relative, sep } from 'node:path';
+import { checkCadResult } from '../../plugins/cad/check.js';
 import { runSandboxed, sandboxStatus } from '../../workspace/sandbox/index.js';
 import { fixturePath } from './catalog.js';
 
@@ -122,7 +123,14 @@ export async function osSandboxStatus() {
 // and package.json are put back over them, and the task's script runs in the
 // OS sandbox (the result may hold model-written code). Completed means that
 // script exited 0; nothing a model reported is consulted.
-export async function objectiveCheck(task, { resultDir, workspace, label, sandbox = { run: runSandboxed } }) {
+export async function objectiveCheck(task, { resultDir, answers = [], workspace, label, sandbox = { run: runSandboxed } }) {
+  if (task.check?.kind === 'quantity') return quantityCheck(task, answers);
+  // A CAD task's check measures the part the run left; it reads the file
+  // and runs nothing from the result.
+  if (task.check?.kind === 'cad') {
+    const result = await checkCadResult({ dir: resultDir && existsSync(resultDir) ? resultDir : null, check: task.check });
+    return { completed: result.completed, exitCode: null, timedOut: false, testsTampered: false, output: result.output.slice(0, CHECK_OUTPUT_CHARS) };
+  }
   const dir = workspace.dir('checks', task.id, label);
   rmSync(dir, { recursive: true, force: true });
   if (resultDir && existsSync(resultDir)) snapshotTree(resultDir, dir);
@@ -150,5 +158,26 @@ export async function objectiveCheck(task, { resultDir, workspace, label, sandbo
     timedOut: Boolean(result.timedOut),
     testsTampered: tampered,
     output: output.length > CHECK_OUTPUT_CHARS ? `…${output.slice(-CHECK_OUTPUT_CHARS)}` : output,
+  };
+}
+
+// The check for a task whose result is a number, not a working tree (a
+// physics computation). It reads what the arm's capability returned, never
+// what a model said: the last result of the named capability that passed its
+// own checks (a computation node was written, which happens only when its
+// units and independent cross-check verified), in the required units, within
+// the tolerance of the catalog's reference.
+export function quantityCheck(task, answers) {
+  const { capability, output, units, reference, rtol } = task.check;
+  const verified = answers.filter((answer) => answer.capability === capability && answer.output?.computationId && answer.output?.outputs?.[output]);
+  const last = verified.at(-1)?.output.outputs[output] ?? null;
+  const base = { exitCode: null, timedOut: false, testsTampered: false };
+  if (!last) return { ...base, completed: false, output: `no verified ${capability} result for ${output}` };
+  if (last.units !== units) return { ...base, completed: false, output: `${output} is in ${last.units}, not ${units}` };
+  const relative = Math.abs(last.value - reference) / Math.abs(reference);
+  return {
+    ...base,
+    completed: relative <= rtol,
+    output: `${output} = ${last.value} ${units}; reference ${reference} ${units}; relative difference ${relative.toExponential(2)} (tolerance ${rtol})`,
   };
 }
