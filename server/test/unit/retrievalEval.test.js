@@ -10,7 +10,7 @@ import {
   loadHeldOut,
   loadSessionTurns,
 } from '../../src/benchmark/difficultyEval.js';
-import { formatReport, loadEvalSet, scoreRanking, summarise } from '../../src/benchmark/retrievalEval.js';
+import { assertEvalDatabase, formatReport, loadEvalSet, parseArgs, scoreRanking, summarise } from '../../src/benchmark/retrievalEval.js';
 
 function tempJson(value) {
   const dir = mkdtempSync(join(tmpdir(), 'eval-'));
@@ -78,6 +78,30 @@ describe('retrieval eval scoring', () => {
       badQuery.done();
       duplicate.done();
     }
+  });
+});
+
+describe('retrieval eval database guard', () => {
+  test('a local database named for tests or evals is accepted', () => {
+    assert.equal(assertEvalDatabase('postgres://scope@localhost:5432/scope_test_x'), 'scope_test_x');
+    assert.equal(assertEvalDatabase('postgres://scope@127.0.0.1/retrieval_eval'), 'retrieval_eval');
+  });
+
+  test('a remote host is refused, even when allowed by name', () => {
+    assert.throws(() => assertEvalDatabase('postgres://u@db.example.com/scope_test', { allow: true }), /non-local database host/);
+  });
+
+  test('a local database with another name needs --allow-database', () => {
+    assert.throws(() => assertEvalDatabase('postgres://scope@localhost/scope'), /--allow-database/);
+    assert.equal(assertEvalDatabase('postgres://scope@localhost/scope', { allow: true }), 'scope');
+    assert.throws(() => assertEvalDatabase(undefined), /DATABASE_URL/);
+  });
+
+  test('--allow-database is a flag that takes no value', () => {
+    const args = parseArgs(['--allow-database', '--modes', 'lexical']);
+    assert.equal(args.allowDatabase, true);
+    assert.deepEqual(args.modes, ['lexical']);
+    assert.equal(parseArgs([]).allowDatabase, false);
   });
 });
 

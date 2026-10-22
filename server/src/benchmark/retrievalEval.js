@@ -3,11 +3,9 @@ import { createHash } from 'node:crypto';
 import { readFileSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
-import { buildCentroids } from '../db/build-centroids.js';
 import { getPool } from '../db/pool.js';
 import { embedDocuments } from '../lib/embeddings.js';
 import { gatherCandidates, packForTier } from '../retrieval/retrieve.js';
-import { TASK_EXAMPLES } from '../retrieval/taskExamples.js';
 
 // A small, deterministic retrieval eval. The live benchmark (run.js) needs a
 // real ingested corpus; this one seeds a fixed corpus that covers every node
@@ -20,6 +18,27 @@ const here = dirname(fileURLToPath(import.meta.url));
 export const DEFAULT_EVAL_SET = join(here, '../../benchmarks/retrieval-eval.json');
 export const EVAL_OWNER_EMAIL = 'retrieval-eval@example.invalid';
 export const RECALL_KS = [1, 5, 10];
+// One eval at a time per database: two runs would share the owner email and
+// the fixed node ids, and each would delete the other's corpus.
+export const EVAL_LOCK_KEY = 4_242_017;
+
+const LOCAL_HOSTS = new Set(['localhost', '127.0.0.1', '::1', '[::1]', '']);
+
+// The eval writes and deletes rows, so it refuses any database that is not
+// on this machine, and any local one whose name does not say it is for tests
+// or evals unless the caller says so explicitly. Returns the database name.
+export function assertEvalDatabase(url, { allow = false } = {}) {
+  if (!url) throw new Error('retrieval eval: DATABASE_URL is not set');
+  const parsed = new URL(url);
+  const name = decodeURIComponent(parsed.pathname.replace(/^\//, ''));
+  if (!LOCAL_HOSTS.has(parsed.hostname)) {
+    throw new Error(`retrieval eval: refusing non-local database host "${parsed.hostname}"`);
+  }
+  if (!/test|eval/i.test(name) && !allow) {
+    throw new Error(`retrieval eval: refusing database "${name}": its name has neither "test" nor "eval" (pass --allow-database to run anyway)`);
+  }
+  return name;
+}
 
 export function loadEvalSet(path = DEFAULT_EVAL_SET) {
   const set = JSON.parse(readFileSync(path, 'utf8'));
@@ -121,12 +140,12 @@ export function summarise(rows) {
 
 // Never records anything: no metrics rows, no access counts, so re-running
 // the eval cannot teach the recency signal its own questions.
-export async function evaluate({ ownerId, set, ids, tier = 'local_7b', embed }) {
+export async function evaluate({ ownerId, set, ids, tier = 'local_7b', embed, overrides }) {
   const keyOf = new Map([...ids].map(([key, id]) => [id, key]));
   const rows = [];
   for (const query of set.queries) {
-    const gathered = await gatherCandidates({ ownerId, query: query.query, tier, embed });
-    const packed = packForTier(gathered.candidates, tier);
+    const gathered = await gatherCandidates({ ownerId, query: query.query, tier, embed, overrides });
+    const packed = packForTier(gathered.candidates, tier, overrides);
     const ranked = gathered.candidates.map((entry) => keyOf.get(entry.node.id));
     rows.push({
       id: query.id,
@@ -150,37 +169,65 @@ async function embedCorpus(set) {
   }
 }
 
-async function ensureCentroids(pool) {
+// The task centroids are shared with every user of the database, so the eval
+// only reads them. Without them (a fresh database before npm run centroids)
+// the nomic run still runs, with task inference switched off, and says so.
+async function centroidsPresent(pool) {
   const { rows } = await pool.query('SELECT count(*)::int AS count FROM task_centroids');
-  if (rows[0].count !== Object.keys(TASK_EXAMPLES).length) await buildCentroids(pool, { log: () => {} });
+  return rows[0].count > 0;
 }
 
 // Lexical-only runs first: the query-embedding cache is per process, and a
 // lexical run after a nomic one would find every query's vector cached.
-export async function runEval({ pool = getPool(), set = loadEvalSet(), tier = 'local_7b', modes = ['lexical', 'nomic'], log = () => {} } = {}) {
-  const ownerId = await createEvalOwner(pool);
+// `handleSignals` (the CLI) drops the eval owner on Ctrl-C or SIGTERM, so an
+// interrupted run leaves nothing behind.
+export async function runEval({ pool = getPool(), set = loadEvalSet(), tier = 'local_7b', modes = ['lexical', 'nomic'], log = () => {}, handleSignals = false } = {}) {
+  // A session-level advisory lock, held on its own connection for the run and
+  // released with it, even if the process dies.
+  const lock = await pool.connect();
+  let ownerId = null;
+  const onSignal = (signal) => {
+    const drop = ownerId ? dropEvalOwner(pool, ownerId) : Promise.resolve();
+    drop.catch(() => {}).finally(() => process.exit(signal === 'SIGINT' ? 130 : 143));
+  };
   try {
-    const vectors = modes.includes('nomic') ? await embedCorpus(set) : null;
-    const ids = await seedCorpus(pool, ownerId, set, { vectors });
-    const results = {};
-    if (modes.includes('lexical')) {
-      log('lexical-only…');
-      results.lexical = await evaluate({ ownerId, set, ids, tier, embed: false });
+    const { rows } = await lock.query('SELECT pg_try_advisory_lock($1) AS locked', [EVAL_LOCK_KEY]);
+    if (!rows[0].locked) throw new Error('retrieval eval: another run holds the eval lock on this database');
+    if (handleSignals) {
+      process.once('SIGINT', onSignal);
+      process.once('SIGTERM', onSignal);
     }
-    if (modes.includes('nomic')) {
-      if (vectors) {
-        await ensureCentroids(pool);
-        log('nomic-embed-text…');
-        results.nomic = await evaluate({ ownerId, set, ids, tier, embed: true });
-      } else {
-        log('nomic-embed-text unavailable: skipped');
-        results.nomic = null;
-      }
-    }
-    return results;
+    ownerId = await createEvalOwner(pool);
+    return await seededRun({ pool, set, tier, modes, log, ownerId });
   } finally {
-    await dropEvalOwner(pool, ownerId);
+    if (ownerId) await dropEvalOwner(pool, ownerId);
+    process.removeListener('SIGINT', onSignal);
+    process.removeListener('SIGTERM', onSignal);
+    await lock.query('SELECT pg_advisory_unlock($1)', [EVAL_LOCK_KEY]).catch(() => {});
+    lock.release();
   }
+}
+
+async function seededRun({ pool, set, tier, modes, log, ownerId }) {
+  const vectors = modes.includes('nomic') ? await embedCorpus(set) : null;
+  const ids = await seedCorpus(pool, ownerId, set, { vectors });
+  const results = {};
+  if (modes.includes('lexical')) {
+    log('lexical-only…');
+    results.lexical = await evaluate({ ownerId, set, ids, tier, embed: false });
+  }
+  if (modes.includes('nomic')) {
+    if (vectors) {
+      const taskInference = await centroidsPresent(pool);
+      log(`nomic-embed-text… (task inference ${taskInference ? 'on' : 'off: no task centroids in this database'})`);
+      const overrides = taskInference ? undefined : { features: { task_inference: false } };
+      results.nomic = { ...(await evaluate({ ownerId, set, ids, tier, embed: true, overrides })), taskInference };
+    } else {
+      log('nomic-embed-text unavailable: skipped');
+      results.nomic = null;
+    }
+  }
+  return results;
 }
 
 const pct = (value) => `${(value * 100).toFixed(1)}%`.padStart(6);
@@ -192,7 +239,7 @@ export function formatReport(results) {
       lines.push(`${mode}: not run (embedder unavailable)`);
       continue;
     }
-    lines.push(`${mode}`);
+    lines.push(result.taskInference === false ? `${mode} (task inference off: no task centroids)` : `${mode}`);
     lines.push(`  ${'group'.padEnd(10)} ${'n'.padStart(3)}  ${METRICS.map((m) => m.padStart(8)).join(' ')}  unscored`);
     const row = (name, s) =>
       `  ${name.padEnd(10)} ${String(s.queries).padStart(3)}  ${METRICS.map((m) => (m === 'mrr' ? s[m].toFixed(3).padStart(8) : pct(s[m]).padStart(8))).join(' ')}  ${String(s.unscored).padStart(8)}`;
@@ -204,9 +251,13 @@ export function formatReport(results) {
   return lines.join('\n');
 }
 
-function parseArgs(argv) {
-  const args = { tier: 'local_7b', set: DEFAULT_EVAL_SET, modes: ['lexical', 'nomic'], json: null };
+export function parseArgs(argv) {
+  const args = { tier: 'local_7b', set: DEFAULT_EVAL_SET, modes: ['lexical', 'nomic'], json: null, allowDatabase: false };
   for (let i = 0; i < argv.length; i++) {
+    if (argv[i] === '--allow-database') {
+      args.allowDatabase = true;
+      continue;
+    }
     const [flag, inline] = argv[i].split('=');
     const value = inline ?? argv[++i];
     switch (flag) {
@@ -221,9 +272,15 @@ function parseArgs(argv) {
 }
 
 if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
-  const pool = getPool();
   const args = parseArgs(process.argv.slice(2));
-  runEval({ pool, set: loadEvalSet(args.set), tier: args.tier, modes: args.modes, log: (line) => console.error(line) })
+  try {
+    assertEvalDatabase(process.env.DATABASE_URL, { allow: args.allowDatabase });
+  } catch (err) {
+    console.error(err.message);
+    process.exit(1);
+  }
+  const pool = getPool();
+  runEval({ pool, set: loadEvalSet(args.set), tier: args.tier, modes: args.modes, log: (line) => console.error(line), handleSignals: true })
     .then(async (results) => {
       console.log(`tier ${args.tier}`);
       console.log(formatReport(results));
