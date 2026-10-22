@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict';
 import { describe, test } from 'node:test';
+import { loadAdversarialEasy } from '../../src/benchmark/difficultyEval.js';
 import { hardWording, questionDifficulty } from '../../src/routing/difficulty.js';
 
 describe('questionDifficulty', () => {
@@ -51,7 +52,7 @@ describe('questionDifficulty', () => {
     for (const q of [
       'Is RedisBackend.cleanup safe under concurrent requests?',
       'is 22u enough output capacitance for the AP2112 at full load',
-      'does the LED resistor value give a safe current at 3.3 V',
+      'is it safe to run the LED at 20 mA from 3.3 V',
       'will the bracket hold a 20 kg load at the end of the arm',
       'should we move the poll state into Redis',
       'what would break if we raised the blur kernel to 301',
@@ -84,6 +85,25 @@ describe('questionDifficulty', () => {
       'show me the plan for the dense_pack work']) {
       assert.equal(hardWording(q), null, q);
     }
+  });
+
+  test('lookups that borrow the hard words stay local', () => {
+    for (const q of [
+      'Explain what dispose_engine does', 'Explain how the auth middleware is wired up', 'Explain the poll_state table columns', 'Explain U1',
+      'Does the session object hold a reference to the pool?', 'Does RedisBackend hold a lock while polling?',
+      'Is the safe mode flag documented anywhere?', 'Write down the pin numbers of J1', 'Update me on what the Q3 note says',
+      'Make a list of the nets on the GPIO header', 'Add up the capacitor count in the BOM',
+    ]) assert.equal(hardWording(q), null, q);
+    // The judgement forms of the same words are still hard.
+    for (const q of ['explain the trade-offs of HNSW', 'is it safe to call cleanup twice', 'is the bracket safe under a 20 kg load',
+      'will the bracket hold a 20 kg load', 'does the shelf hold up when wet', 'write a methods paragraph', 'update the README']) {
+      assert.equal(hardWording(q), 'wording', q);
+    }
+  });
+
+  test('every adversarial-easy question in the eval set stays local', () => {
+    const misroutes = loadAdversarialEasy().filter((item) => questionDifficulty(item.query));
+    assert.deepEqual(misroutes, []);
   });
 
   test('long and multi-part questions are hard', () => {

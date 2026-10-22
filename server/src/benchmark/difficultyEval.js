@@ -25,6 +25,14 @@ export function loadHeldOut(path = DEFAULT_DIFFICULTY_SET) {
   return queries;
 }
 
+// Plain lookups that share words with the hard patterns, kept apart from the
+// held-out set: they were written after a review found the rule sending them
+// to the cloud, so scoring them with the held-out set would flatter it.
+export function loadAdversarialEasy(path = DEFAULT_DIFFICULTY_SET) {
+  const { adversarial_easy: queries = [] } = JSON.parse(readFileSync(path, 'utf8'));
+  return queries.map((query) => ({ query, label: 'easy' }));
+}
+
 function scenarioFiles(dir) {
   return readdirSync(dir, { withFileTypes: true }).flatMap((entry) =>
     entry.isDirectory() ? scenarioFiles(join(dir, entry.name)) : entry.name.endsWith('.json') ? [join(dir, entry.name)] : []
@@ -82,4 +90,5 @@ export function formatDifficulty(name, result) {
 if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
   console.log(formatDifficulty('held-out', evaluateDifficulty(loadHeldOut())));
   console.log(formatDifficulty('sessions', evaluateDifficulty(loadSessionTurns())));
+  console.log(formatDifficulty('adversarial-easy', evaluateDifficulty(loadAdversarialEasy())));
 }

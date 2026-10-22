@@ -21,17 +21,27 @@ const HARD_PATTERNS = [
   /\b(refactor|rewrite|implement|redesign|architect|migrate|optimi[sz]e|debug|fix (the|this|a)|add (a|an) (feature|test|endpoint))\b/i,
   // A request that opens on a change verb asks for work, not a lookup: "fix
   // solve_2cmt so…", "add a unit test that…", "make the limit per coach".
-  /^\s*(please\s+)?(fix|add|make|change|update|rename|remove|convert)\b/i,
+  // Some phrasings only borrow the verb: "update me on…", "add up…", "make a
+  // list of…" ask for a lookup.
+  /^\s*(please\s+)?(fix|add(?! up\b)|make(?! a list\b)|change|update(?! me\b)|rename|remove|convert)\b/i,
   // Writing: a drafted paragraph, section or function is judged on quality a
-  // small model rarely reaches, whatever the topic.
-  /^\s*(please\s+)?(draft|write|compose)\b/i,
+  // small model rarely reaches, whatever the topic. "Write down…" copies a
+  // value out, which is a lookup.
+  /^\s*(please\s+)?(draft|write(?! down\b)|compose)\b/i,
   // Judging whether something is safe, sufficient or right, and what a change
   // would do: yes/no in form, but the answer is an analysis.
-  /^\s*(is|are|does|do|will|would|can|could)\b.*\b(safe|unsafe|enough|sufficient|race-?free|thread-?safe|hold up|hold a|withstand)\b/i,
+  // "safe" and "hold" also name things ("the safe mode flag", "hold a lock"),
+  // so they count only in a judgement form: safe to/under/for…, holding up
+  // or holding a quantity.
+  /^\s*(is|are|does|do|will|would|can|could)\b.*\b(unsafe|enough|sufficient|race-?free|thread-?safe|safe (to|under|for|when|if|with)|hold up|hold a \d+|withstand)\b/i,
+  /\bis (it|this|that) safe\b/i,
   /^\s*should (we|i)\b/i,
   /\bwhat (would|will|could) (break|happen|go wrong)\b/i,
   // Asking for a proposal, a derivation or a check run over the whole design.
-  /^\s*(please\s+)?(suggest|propose|derive|explain)\b/i,
+  /^\s*(please\s+)?(suggest|propose|derive)\b/i,
+  // "Explain what X does" is a lookup; explaining a difference or a
+  // trade-off is not ("explain why" is a cause, above).
+  /^\s*(please\s+)?explain (the difference|the trade-?offs?|how come)\b/i,
   // Only a check run as a task: "check the BOM for the part number of the
   // MOSFET" is a lookup, so a bare leading "check" does not count.
   /^\s*(please\s+)?(run|do) an? .*\bcheck\b/i,

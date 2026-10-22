@@ -6,6 +6,7 @@ import { describe, test } from 'node:test';
 import {
   evaluateDifficulty,
   formatDifficulty,
+  loadAdversarialEasy,
   loadHeldOut,
   loadSessionTurns,
 } from '../../src/benchmark/difficultyEval.js';
@@ -106,6 +107,14 @@ describe('difficulty eval', () => {
     assert.ok(!turns.some((turn) => turn.query === 'Summarise the bugs we found today.'), 'a follow-up');
     assert.ok(turns.some((turn) => turn.query === 'What does quantify_colonies return?' && turn.label === 'easy'));
     assert.ok(turns.some((turn) => turn.query.startsWith('Refactor create_poll') && turn.label === 'hard'));
+  });
+
+  test('the adversarial-easy set loads apart from the held-out set, all easy', () => {
+    const adversarial = loadAdversarialEasy();
+    assert.ok(adversarial.length >= 15);
+    assert.ok(adversarial.every((item) => item.label === 'easy'));
+    const heldOut = new Set(loadHeldOut().map((item) => item.query));
+    assert.ok(adversarial.every((item) => !heldOut.has(item.query)), 'no overlap with the held-out set');
   });
 
   test('the held-out set is labelled and balanced; a bad label is refused', () => {
