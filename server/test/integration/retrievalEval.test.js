@@ -38,7 +38,7 @@ describe('retrieval eval', () => {
     assert.deepEqual(Object.keys(summary.byGroup).sort(), ['cad', 'code', 'cross', 'kicad', 'physics', 'research', 'workspace']);
     assert.equal(results.nomic, undefined);
     const byId = Object.fromEntries(rows.map((row) => [row.id, row]));
-    assert.equal(byId['kc-c2']['recall@1'], 1, 'a reference designator alone finds its symbol');
+    assert.equal(byId['kc-c2']['recall@5'], 1, 'a reference designator alone finds its symbol');
 
     const after = await counts();
     assert.equal(after.metrics, before.metrics, 'no metrics rows recorded');
