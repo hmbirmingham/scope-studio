@@ -228,6 +228,30 @@ describe('graph slice packing', () => {
     assert.ok(early.nodes.some((entry) => entry.id.startsWith('r')));
   });
 
+  test('notes that aged out of the window stay out, even when retrieval scores them highly', async () => {
+    // Retrieval scores the run's own notes like any node; here the oldest ones
+    // echo the goal best. They must not come back and pin themselves in the slice.
+    const readsNotes = { scopes: { read: { projects: ['p'], sources: ['github', 'agent'] } } };
+    const at = async (step) => {
+      const written = Array.from({ length: step }, (_, i) => node(`w${step - i}`, { source: 'agent', type: 'step', tokens: 150 }));
+      const echoes = written.slice(-4).map((entry) => ({ node: entry, score: 0.9 }));
+      return packSlice({
+        // An agent that reads agent-written nodes, so retrieval can return its own notes.
+        ownerId: 'o', agent: readsNotes, goal: 'g', project: 'p', planNodeId: 'plan', runNodeIds: written.map((entry) => entry.id),
+        gather: fakeGather([...retrieved.map((hit) => ({ ...hit, score: hit.score / 20 })), ...echoes]),
+        db: fakeDb([node('plan', { source: 'agent', type: 'plan', tokens: 250 }), ...written]),
+      });
+    };
+    const late = await at(40);
+    const ids = late.nodes.map((entry) => entry.id);
+    assert.ok(!ids.some((id) => ['w1', 'w2', 'w3', 'w4'].includes(id)), ids.join(','));
+    assert.ok(ids.includes('w40'));
+    assert.equal(late.tokens, (await at(20)).tokens, 'the slice has levelled off');
+    // Inside the window the same high retrieval score still counts.
+    const early = await at(4);
+    assert.ok(early.nodes.some((entry) => entry.id === 'w1'));
+  });
+
   test('the run’s own notes still outrank retrieval hits whose score is missing or NaN', async () => {
     // Retrieval without an embedding can leave scores undefined; NaN compares
     // false with everything, so the boost must not depend on comparing it.

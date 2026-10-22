@@ -8,7 +8,8 @@ import { inReadScope, inScope } from '../permissions.js';
 export const SLICE_TOKENS = 1500;
 export const SLICE_NODES = 8;
 // How many of the nodes this run wrote are offered to each step, most recent
-// first. Older ones are still in the graph and reachable by retrieval.
+// first. Older ones age out of the slice; they stay in the graph for search
+// and for later runs.
 export const RUN_NODE_WINDOW = 12;
 // The plan and the run's own recent notes outrank ordinary retrieval hits, a
 // little less for each step further back, so they compete for the slice
@@ -60,9 +61,18 @@ export async function packSlice({
 
   const boostIds = [...new Set([planNodeId, ...runNodeIds.slice(0, RUN_NODE_WINDOW)].filter(Boolean))];
   const runNodes = await loadRunNodes(ownerId, boostIds, db);
-  const top = candidates.reduce((best, entry) => Math.max(best, scoreOf(entry)), 0) || 1;
+  // Retrieval returns the run's own notes too: plan, step and finding nodes
+  // score like any other. The window decides which of them the step sees, so
+  // a note that has aged out of it does not come back as an ordinary hit; if
+  // it did, the older notes that echo the goal would stay in every slice and
+  // fill it a little more each step. And the boosts are relative to the best
+  // hit from the rest of the graph, not to the run's own notes.
+  const runIds = new Set([planNodeId, ...runNodeIds].filter(Boolean));
+  const boosted = new Set(boostIds);
+  const ordinary = candidates.filter((entry) => !runIds.has(entry.node.id));
+  const top = ordinary.reduce((best, entry) => Math.max(best, scoreOf(entry)), 0) || 1;
 
-  const byId = new Map(candidates.map((entry) => [entry.node.id, entry]));
+  const byId = new Map(candidates.filter((entry) => !runIds.has(entry.node.id) || boosted.has(entry.node.id)).map((entry) => [entry.node.id, entry]));
   boostIds.forEach((id, position) => {
     const node = runNodes.get(id);
     if (!node || !runNodeReadable(agent, node)) return;
