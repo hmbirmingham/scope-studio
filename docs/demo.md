@@ -21,7 +21,7 @@ Then get the code and install it:
 ```sh
 git clone https://github.com/hmbirmingham/scope-studio.git
 cd scope-studio
-git checkout feat/student-demo      # until it is merged
+git checkout dev                    # until it is merged to main
 ```
 
 `npm run demo` installs the engine's and the app's packages itself the first
