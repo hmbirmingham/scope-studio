@@ -130,7 +130,11 @@ async function denseCandidates(pool, ownerId, vector, project, cloudOnly) {
      WHERE embedding IS NOT NULL AND owner_id = $3
        AND ($4::text IS NULL OR project = $4)
        AND ($5::boolean IS NOT TRUE OR privacy <> 'local')
-     ORDER BY embedding <=> $1::vector
+     -- id breaks exact distance ties, so the same rows survive the LIMIT.
+     -- pgvector still serves this from the HNSW index: the planner adds an
+     -- Incremental Sort on id over the index scan (checked with EXPLAIN on
+     -- PostgreSQL 18 / pgvector 0.8).
+     ORDER BY embedding <=> $1::vector, id
      LIMIT $2`,
     [`[${vector.join(',')}]`, DENSE_CANDIDATES, ownerId, project ?? null, cloudOnly]
   );
@@ -171,8 +175,6 @@ async function lexicalCandidates(pool, ownerId, query, project, cloudOnly) {
              AND content_tsv @@ to_tsquery('simple', (SELECT tsquery FROM rare)))
        )
      -- id breaks rank ties, so the same rows survive the LIMIT every time.
-     -- (The dense query keeps distance alone: a second sort key would stop
-     -- pgvector using the HNSW index, and exact distance ties are rare.)
      ORDER BY rank DESC, id
      LIMIT $2`,
     [terms.join(' | '), LEXICAL_CANDIDATES, terms, minMatch, ownerId, RARE_TERM_MAX_DF, project ?? null, cloudOnly]
