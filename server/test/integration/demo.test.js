@@ -4,9 +4,12 @@ import { DEMO_EMAIL, DEMO_NODES, DEMO_PROJECT, DEMO_RELATIONSHIPS, WEEKLY_TASK }
 import { seedDemo } from '../../src/demo/seed.js';
 import { createEventBus } from '../../src/workspace/events.js';
 import { createWorker } from '../../src/workspace/runner/index.js';
+import { roleTemplate } from '../../src/workspace/roles.js';
 import { sandboxStatus } from '../../src/workspace/sandbox/index.js';
 import { demoReply, LAB_TITLE, GUIDE_TITLE } from '../demoModel.js';
 import { createFakeModelPort } from '../fakeModelPort.js';
+import createApp from '../../src/app.js';
+import loadEnv from '../../src/config/env.js';
 import { registeredSession, session, startServer } from '../helpers.js';
 import { useDataDir } from './workspaceSandboxFixtures.js';
 
@@ -16,25 +19,46 @@ import { useDataDir } from './workspaceSandboxFixtures.js';
 const sandbox = await sandboxStatus();
 const needsOsSandbox = sandbox.available ? false : `no OS sandbox on this machine (${sandbox.reason})`;
 
+// Local mode exactly as the demo launcher sets it up.
+function enableLocalMode(overrides = {}) {
+  Object.assign(process.env, { SCOPE_LOCAL_USER: DEMO_EMAIL, NODE_ENV: 'development', SCOPE_HOST: '127.0.0.1', ...overrides });
+}
+
+function disableLocalMode() {
+  delete process.env.SCOPE_LOCAL_USER;
+  delete process.env.SCOPE_HOST;
+  process.env.NODE_ENV = 'test';
+}
+
 describe('student demo', () => {
   let server;
   let data;
+  // A second engine on the same database, bound to loopback as the demo's is:
+  // local sign-in is only ever granted by an engine listening on loopback.
+  let loopback;
+  let loopbackBase;
   const workers = [];
 
   before(async () => {
     server = await startServer();
     data = useDataDir();
+    const app = createApp({ ...loadEnv(), nodeEnv: 'test' });
+    loopback = await new Promise((resolve) => {
+      const instance = app.listen(0, '127.0.0.1', () => resolve(instance));
+    });
+    loopbackBase = `http://127.0.0.1:${loopback.address().port}`;
   });
 
   beforeEach(() => {
     for (const instance of workers.splice(0)) instance.abandon();
-    delete process.env.SCOPE_LOCAL_USER;
+    disableLocalMode();
   });
 
   after(async () => {
     for (const instance of workers.splice(0)) instance.abandon();
-    delete process.env.SCOPE_LOCAL_USER;
+    disableLocalMode();
     data.restore();
+    await new Promise((resolve) => loopback.close(resolve));
     await server.close();
   });
 
@@ -77,11 +101,15 @@ describe('student demo', () => {
       // Something the demo made since: a run and a node an agent wrote.
       await server.pool.query("INSERT INTO agent_runs (owner_id, agent_id, instructions, project) VALUES ($1, $2, 'x', $3)", [first.user.id, first.agent.id, DEMO_PROJECT]);
       await server.pool.query("INSERT INTO nodes (owner_id, type, content, source, project) VALUES ($1, 'artifact', 'old', 'agent', $2)", [first.user.id, DEMO_PROJECT]);
+      // A research record for one of its notes, and a Scope Studio sign-in.
+      await server.pool.query("INSERT INTO research_items (node_id, owner_id, kind, item_key) VALUES ($1, $2, 'note', 'DEMO0001')", [first.nodeIds['lecture-7'], first.user.id]);
+      await server.pool.query("INSERT INTO control_links (owner_id, token_sealed, account_id, email) VALUES ($1, 'sealed-test-not-real', 'acct-test', 'student@example.com')", [first.user.id]);
       // And another person's data in the same database.
       const other = await registeredSession(server.base);
       const { data: otherNode } = await other('POST', '/api/nodes', { type: 'decision', content: 'Not the demo', project: DEMO_PROJECT });
       const { data: { userId: otherId } } = await other('GET', '/api/auth/session');
       const { data: { agent: otherAgent } } = await other('POST', '/api/agents', { name: 'Theirs', template: 'researcher' });
+      await server.pool.query("INSERT INTO control_links (owner_id, token_sealed, account_id, email) VALUES ($1, 'sealed-test-not-real', 'acct-other', 'other@example.com')", [otherId]);
 
       const second = await seedDemo({ embed: false });
       assert.equal(second.user.id, first.user.id);
@@ -89,6 +117,9 @@ describe('student demo', () => {
       assert.equal(await count('SELECT count(*)::int FROM agent_runs WHERE owner_id = $1', [first.user.id]), 0);
       assert.equal(await count('SELECT count(*)::int FROM agents WHERE owner_id = $1', [first.user.id]), 1);
       assert.equal(await count('SELECT count(*)::int FROM tasks WHERE owner_id = $1', [first.user.id]), 3);
+      assert.equal(await count('SELECT count(*)::int FROM research_items WHERE owner_id = $1', [first.user.id]), 0);
+      assert.equal(await count('SELECT count(*)::int FROM control_links WHERE owner_id = $1', [first.user.id]), 0);
+      assert.equal(await count('SELECT count(*)::int FROM control_links WHERE owner_id = $1', [otherId]), 1);
 
       assert.equal(await count('SELECT count(*)::int FROM nodes WHERE id = $1 AND owner_id = $2', [otherNode.id, otherId]), 1);
       assert.equal(await count('SELECT count(*)::int FROM agents WHERE id = $1 AND owner_id = $2', [otherAgent.id, otherId]), 1);
@@ -98,12 +129,14 @@ describe('student demo', () => {
   describe('local sign-in', () => {
     const signIn = (api, headers = { 'X-Scope-Local-Signin': '1' }) => api.raw('POST', '/api/auth/local', undefined, { headers });
 
-    test('signs this machine’s browser in to the local account', async () => {
+    test('signs this machine’s browser in to the demo account, and says it will', async () => {
       const seeded = await seedDemo({ embed: false });
-      process.env.SCOPE_LOCAL_USER = DEMO_EMAIL;
-      const api = session(server.base);
-      assert.equal((await api('GET', '/api/auth/session')).status, 401);
-      const response = await signIn(api);
+      enableLocalMode();
+      const api = session(loopbackBase);
+      const before = await api('GET', '/api/auth/session');
+      assert.equal(before.status, 401);
+      assert.deepEqual(before.data, { error: 'not authenticated', localSignin: true });
+      const response = await signIn(api, { 'X-Scope-Local-Signin': '1', Origin: loopbackBase });
       assert.equal(response.status, 200);
       assert.deepEqual(await response.json(), { id: seeded.user.id, email: DEMO_EMAIL });
       const { status, data: me } = await api('GET', '/api/auth/session');
@@ -113,20 +146,50 @@ describe('student demo', () => {
       assert.equal(graph.nodes.length, DEMO_NODES.length);
     });
 
-    test('is refused without the header, without local mode, or for an account that does not exist', async () => {
+    test('is neither offered nor granted by an engine listening on every interface', async () => {
       await seedDemo({ embed: false });
-      process.env.SCOPE_LOCAL_USER = DEMO_EMAIL;
+      enableLocalMode();
       const api = session(server.base);
-      const bare = await signIn(api, {});
-      assert.equal(bare.status, 404);
-      assert.deepEqual(await bare.json(), { error: 'local_signin_unavailable' });
+      assert.deepEqual((await api('GET', '/api/auth/session')).data, { error: 'not authenticated' });
+      assert.equal((await signIn(api)).status, 404);
       assert.equal((await api('GET', '/api/auth/session')).status, 401);
+    });
 
-      delete process.env.SCOPE_LOCAL_USER;
-      assert.equal((await signIn(api)).status, 404);
-      process.env.SCOPE_LOCAL_USER = 'nobody@scope-demo.local';
-      assert.equal((await signIn(api)).status, 404);
+    test('is refused without the header, from another origin, through a proxy, or outside the demo’s exact configuration', async () => {
+      await seedDemo({ embed: false });
+      const other = await registeredSession(server.base);
+      const { data: { userId: otherId } } = await other('GET', '/api/auth/session');
+      const { rows: [otherUser] } = await server.pool.query('SELECT email FROM users WHERE id = $1', [otherId]);
+      const api = session(loopbackBase);
+      const refused = async (headers, label) => {
+        const response = await signIn(api, headers);
+        assert.equal(response.status, 404, label);
+        assert.deepEqual(await response.json(), { error: 'local_signin_unavailable' }, label);
+      };
+
+      enableLocalMode();
+      await refused({}, 'no header');
+      await refused({ 'X-Scope-Local-Signin': '1', Origin: 'https://evil.example' }, 'cross-site origin');
+      await refused({ 'X-Scope-Local-Signin': '1', 'X-Forwarded-For': '192.168.1.20' }, 'forwarded by a proxy');
+
+      enableLocalMode({ NODE_ENV: 'production' });
+      await refused(undefined, 'production');
+      enableLocalMode({ NODE_ENV: '' });
+      await refused(undefined, 'NODE_ENV unset');
+      enableLocalMode({ SCOPE_HOST: '0.0.0.0' });
+      await refused(undefined, 'not configured for loopback');
+      // A real account, even one that exists, is never signed in this way.
+      enableLocalMode({ SCOPE_LOCAL_USER: otherUser.email });
+      await refused(undefined, 'a real account');
+      disableLocalMode();
+      await refused(undefined, 'local mode off');
       assert.equal((await api('GET', '/api/auth/session')).status, 401);
+    });
+
+    test('is refused for the demo account until it has been seeded', async () => {
+      await server.pool.query('DELETE FROM users WHERE email = $1', [DEMO_EMAIL]);
+      enableLocalMode();
+      assert.equal((await signIn(session(loopbackBase))).status, 404);
     });
   });
 
@@ -138,8 +201,8 @@ describe('student demo', () => {
 
     beforeEach(async () => {
       seeded = await seedDemo({ embed: false });
-      process.env.SCOPE_LOCAL_USER = DEMO_EMAIL;
-      api = session(server.base);
+      enableLocalMode();
+      api = session(loopbackBase);
       const signedIn = await api.raw('POST', '/api/auth/local', undefined, { headers: { 'X-Scope-Local-Signin': '1' } });
       assert.equal(signedIn.status, 200, await signedIn.text());
       assert.equal((await api('GET', '/api/auth/session')).status, 200);
@@ -214,6 +277,60 @@ describe('student demo', () => {
       assert.equal(run.status, 'succeeded');
       assert.deepEqual(run.steps.map((step) => step.status), ['done', 'rejected', 'done', 'done']);
       assert.equal(run.steps[1].output, null);
+    });
+
+    test('an artifact made from a private note is private; one made from shared notes is not', async () => {
+      const owner = await registeredSession(server.base);
+      const { data: { userId: ownerId } } = await owner('GET', '/api/auth/session');
+      const role = { ...roleTemplate('physicist') };
+      // Every node of the project is in the slice, so what the step read is
+      // known exactly rather than left to retrieval.
+      const gather = async ({ ownerId: who, project }) => {
+        const { rows } = await server.pool.query('SELECT id, type, content, source, project, privacy, token_length, created_at FROM nodes WHERE owner_id = $1 AND project = $2', [who, project]);
+        return { candidates: rows.map((node) => ({ node, score: 1 })) };
+      };
+      async function guideFrom(project, privacy) {
+        await server.pool.query("INSERT INTO nodes (owner_id, type, content, source, project, privacy) VALUES ($1, 'note', 'Lecture notes: T = 2π√(L/g)', 'manual', $2, $3)", [ownerId, project, privacy]);
+        const { rows: [agent] } = await server.pool.query(
+          `INSERT INTO agents (owner_id, name, role, level, scopes, model_policy) VALUES ($1, $2, $3, 'supervised', $4, 'local_only') RETURNING id`,
+          [ownerId, `Agent ${project}`, role, { read: { projects: [project], sources: ['*'] }, write: { projects: [project] } }]
+        );
+        const { rows: [run] } = await server.pool.query(
+          "INSERT INTO agent_runs (owner_id, agent_id, instructions, project) VALUES ($1, $2, 'Make a one-page study guide, save it with graph.write_artifact, then finish.', $3) RETURNING id",
+          [ownerId, agent.id, project]
+        );
+        const instance = createWorker({ adapters: { local }, events: bus, embed: false, online: () => false, gather, leaseMs: 30_000, heartbeatMs: 25, onError: () => {} });
+        workers.push(instance);
+        await instance.drain();
+        const { rows: [finished] } = await server.pool.query('SELECT status FROM agent_runs WHERE id = $1', [run.id]);
+        assert.equal(finished.status, 'succeeded');
+        const { rows: [step] } = await server.pool.query("SELECT detail FROM agent_run_steps WHERE run_id = $1 AND capability = 'graph.write_artifact'", [run.id]);
+        const { rows: artifacts } = await server.pool.query("SELECT privacy FROM nodes WHERE owner_id = $1 AND project = $2 AND type = 'artifact'", [ownerId, project]);
+        assert.equal(artifacts.length, 1);
+        return { privacy: artifacts[0].privacy, privateContext: step.detail.privateContext };
+      }
+
+      assert.deepEqual(await guideFrom('private-notes', 'local'), { privacy: 'local', privateContext: true });
+      assert.deepEqual(await guideFrom('shared-notes', 'cloud'), { privacy: 'cloud', privateContext: false });
+    });
+
+    test('graph.write_artifact is denied once the agent may no longer write to the run’s project', async () => {
+      const { data: { run: started } } = await api('POST', '/api/agent-runs', { taskId: taskId('Check my lab report against the data') });
+      const runner = worker();
+      await runner.drain();
+      // While the run waits on its first approval, the user takes the project
+      // out of the agent's write scope, then rejects the code step.
+      const patched = await api('PATCH', `/api/agents/${seeded.agent.id}`, { scopes: { read: { projects: [DEMO_PROJECT], sources: ['*'] }, write: { projects: [] } } });
+      assert.equal(patched.status, 200);
+      const { data: { approvals } } = await api('GET', '/api/approvals?status=pending');
+      await api('POST', `/api/approvals/${approvals[0].id}`, { decision: 'reject' });
+      await runner.drain();
+
+      const { rows: steps } = await server.pool.query('SELECT index, capability, status, error FROM agent_run_steps WHERE run_id = $1 ORDER BY index', [started.id]);
+      const write = steps.find((step) => step.capability === 'graph.write_artifact');
+      assert.equal(write.status, 'failed');
+      assert.equal(write.error, 'denied: outside_write_scope');
+      assert.equal(await count("SELECT count(*)::int FROM nodes WHERE owner_id = $1 AND type = 'artifact'", [seeded.user.id]), 0);
     });
 
     test('“Make a study guide”: notes are allowed, so it runs straight through', async () => {

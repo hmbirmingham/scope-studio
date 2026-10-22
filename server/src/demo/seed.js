@@ -22,13 +22,18 @@ import { DEMO_AGENT, DEMO_EMAIL, DEMO_NODES, DEMO_PROJECT, DEMO_RELATIONSHIPS, D
 
 // The tables that hold what an account made in the workspace and on the map.
 // Tasks, runs, steps, approvals and run costs go with their agent; node
-// relationships go with their nodes.
+// relationships go with their nodes. research_items (migration 050) would go
+// with its nodes too, and is cleared explicitly so the reset never depends
+// on that. A control link (a Scope Studio sign-in made from the demo) is
+// cleared so every demo starts signed out: free, local answers only.
 const RESET_STATEMENTS = [
   'DELETE FROM agents WHERE owner_id = $1',
   'DELETE FROM agent_roles WHERE owner_id = $1',
+  'DELETE FROM research_items WHERE owner_id = $1',
   'DELETE FROM nodes WHERE owner_id = $1',
   'DELETE FROM project_settings WHERE owner_id = $1',
   'DELETE FROM query_metrics WHERE owner_id = $1',
+  'DELETE FROM control_links WHERE owner_id = $1',
 ];
 
 // The demo account signs in through local mode (SCOPE_LOCAL_USER), never with
@@ -85,6 +90,7 @@ export async function seedDemo({ email = DEMO_EMAIL, embed = true } = {}) {
     name: DEMO_AGENT.name,
     template: DEMO_AGENT.template,
     level: DEMO_AGENT.level,
+    modelPolicy: DEMO_AGENT.modelPolicy,
     color: DEMO_AGENT.color,
     scopes: { read: { projects: [DEMO_PROJECT], sources: ['*'] }, write: { projects: [DEMO_PROJECT] } },
   });
