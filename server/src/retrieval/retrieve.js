@@ -2,7 +2,7 @@ import { getPool } from '../db/pool.js';
 import { embedQuery } from '../lib/embeddings.js';
 import { logQueryMetrics, logContextNodes, markFollowUp } from '../models/metricsStore.js';
 import {
-  DECAY_LAMBDA,
+  decayLambda,
   DENSE_CANDIDATES,
   EXPANSION_DECAY,
   EXPANSION_SEEDS,
@@ -29,7 +29,18 @@ const STOPWORDS = new Set([
 ]);
 
 // Edge semantics per ADR §2.3: traversal is forward only (seed is the source).
-const EDGE_WEIGHTS = { depends_on: 1.0, references: 0.7, part_of: 0.7, caused_by: 1.0, supersedes: 1.0 };
+// The workspace and vertical edges (migrations 020, 039) follow the same rule:
+// an edge that carries the answer's substance (a computation's derivation, the
+// finding a question asked for) is full weight; structure is 0.7.
+export const EDGE_WEIGHTS = {
+  depends_on: 1.0, references: 0.7, part_of: 0.7, caused_by: 1.0, supersedes: 1.0,
+  derived_from: 1.0, answers: 1.0, produces: 0.7, follows: 0.5,
+  connects: 0.7, implements: 0.7, cites: 0.7, contains: 0.7,
+};
+// An edge type added after this table would otherwise give its target a NaN
+// score, which sorts anywhere. test/unit/scoreVocabulary.test.js fails when a
+// migration adds one without a weight; this keeps production ranking sane meanwhile.
+export const DEFAULT_EDGE_WEIGHT = 0.5;
 const WHY_PATTERN = /^\s*(why|how come|what('s| is| was) the reason)\b/i;
 const WHY_CAUSED_BY_BOOST = 1.5;
 
@@ -185,7 +196,7 @@ async function expandFromSeeds(pool, ownerId, scored, { query, config, project, 
   const whyQuery = WHY_PATTERN.test(query);
   const byId = new Map(scored.map((entry) => [entry.node.id, entry]));
   for (const { source_id, weight, relationship, ...node } of rows) {
-    let edge = EDGE_WEIGHTS[relationship];
+    let edge = EDGE_WEIGHTS[relationship] ?? DEFAULT_EDGE_WEIGHT;
     if (relationship === 'caused_by' && whyQuery) edge *= WHY_CAUSED_BY_BOOST;
     const demotion = config.features.supersede_demotion && node.superseded ? SUPERSEDE_DEMOTION : 1;
     const score = seedScore.get(source_id) * Number(weight) * edge * EXPANSION_DECAY * demotion;
@@ -329,7 +340,7 @@ export async function recordRetrieval({ queryId, ownerId, sessionId, query, metr
         nodeId: entry.node.id,
         position,
         score: entry.score,
-        decayLambda: DECAY_LAMBDA[entry.node.type],
+        decayLambda: decayLambda(entry.node.type),
       })),
       client
     );
