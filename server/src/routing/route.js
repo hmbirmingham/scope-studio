@@ -47,3 +47,31 @@ export function decideRoute({ selected, preferredTier, localAvailable, cloudAvai
   // The provisional local pack is bounded by the local budget, so it fits.
   return decision(LOCAL_TIER, 'context_size', true, null);
 }
+
+// Decides the route and packs the context that will actually be sent. The
+// decision is made on the provisional pack; when the tier changes, the context
+// is re-packed for it, and a cloud pack is larger than a local one, so it can
+// reach a private node the provisional pack stopped short of (a hard question
+// re-packed from 5 nodes to 10, say). The final pack is therefore checked
+// again: a private node in it forces local, exactly as one in the provisional
+// pack would have. `pack(tier)` returns { selected, tokens } for a tier.
+export function routeAndPack({ pack, provisional, ...inputs }) {
+  let packed = pack(provisional);
+  let route = decideRoute({ ...inputs, selected: packed.selected });
+  if (route.tier === provisional) return { route, packed };
+  packed = pack(route.tier);
+  if (sendsPrivate(route, packed.selected)) {
+    // Privacy outranks every other input, so this decides local (or refuses
+    // when local cannot serve); the decision never goes back to the cloud.
+    route = decideRoute({ ...inputs, selected: packed.selected });
+    packed = pack(route.tier);
+  }
+  return { route, packed };
+}
+
+// True when a cloud answer would send a private node: the last guard on what
+// leaves the machine, for context assembled outside the pack (a continued
+// conversation, a prefilled draft).
+export function sendsPrivate(route, entries) {
+  return route.decision === 'cloud' && entries.some(({ node }) => node.privacy === 'local');
+}

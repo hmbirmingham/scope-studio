@@ -3,7 +3,7 @@ import { describe, test } from 'node:test';
 import { parseNdjson } from '../../src/lib/ollama.js';
 import { resolveConfig } from '../../src/retrieval/score.js';
 import { SYSTEM_PROMPTS, buildMessages } from '../../src/routing/prompt.js';
-import { CLOUD_TIER, LOCAL_TIER, decideRoute, provisionalTier } from '../../src/routing/route.js';
+import { CLOUD_TIER, LOCAL_TIER, decideRoute, provisionalTier, routeAndPack, sendsPrivate } from '../../src/routing/route.js';
 
 const entry = (privacy, overrides = {}) => ({
   node: { id: overrides.id ?? privacy, type: 'file', project: 'hmb/p', privacy, content: overrides.content ?? privacy },
@@ -125,5 +125,39 @@ describe('parseNdjson', () => {
       parsed.push(line.t);
     }
     assert.deepEqual(parsed, ['naïve', '—', 'end'], 'trailing line without a newline is still emitted');
+  });
+});
+
+describe('routeAndPack', () => {
+  const entry = (id, privacy = 'cloud') => ({ node: { id, privacy } });
+  // Local packs the first five, cloud the first ten, like the tier budgets.
+  const ranked = Array.from({ length: 8 }, (_, i) => entry(`n${i}`, i === 6 ? 'local' : 'cloud'));
+  const pack = (tier) => ({ selected: ranked.slice(0, tier === 'local_7b' ? 5 : 10), tokens: 0 });
+  const base = { pack, provisional: 'local_7b', localAvailable: true, cloudAvailable: true };
+
+  test('a private node reached only by the cloud re-pack forces local', () => {
+    const { route, packed } = routeAndPack({ ...base, hard: true });
+    assert.equal(route.decision, 'local');
+    assert.equal(route.reason, 'privacy_flag');
+    assert.deepEqual(packed.selected.map((e) => e.node.id), ['n0', 'n1', 'n2', 'n3', 'n4']);
+  });
+
+  test('a hard question with nothing private in the cloud pack still goes to the cloud', () => {
+    const open = (tier) => ({ selected: pack(tier).selected.map((e) => entry(e.node.id)), tokens: 0 });
+    const { route, packed } = routeAndPack({ ...base, pack: open, hard: true });
+    assert.equal(route.reason, 'complexity');
+    assert.equal(packed.selected.length, 8);
+  });
+
+  test('with the local model down, a private node in the cloud pack refuses rather than sends', () => {
+    const { route } = routeAndPack({ ...base, provisional: 'cloud_frontier', localAvailable: false });
+    assert.equal(route.reason, 'privacy_flag');
+    assert.equal(route.blocked, 'local_unavailable');
+  });
+
+  test('sendsPrivate guards resent context on a cloud route only', () => {
+    assert.equal(sendsPrivate({ decision: 'cloud' }, [entry('a'), entry('b', 'local')]), true);
+    assert.equal(sendsPrivate({ decision: 'cloud' }, [entry('a')]), false);
+    assert.equal(sendsPrivate({ decision: 'local' }, [entry('b', 'local')]), false);
   });
 });

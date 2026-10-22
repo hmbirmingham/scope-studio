@@ -26,7 +26,7 @@ import {
   saveDraft,
 } from '../routing/conversation.js';
 import { buildFollowUp, buildMessages, composeMessages } from '../routing/prompt.js';
-import { CLOUD_TIER, decideRoute, provisionalTier } from '../routing/route.js';
+import { CLOUD_TIER, provisionalTier, routeAndPack, sendsPrivate } from '../routing/route.js';
 import { parseEdits, presentProposal, recordProposals } from '../editing/proposals.js';
 import { declaredScripts, parseRuns, presentRun, recordRuns } from '../editing/commands.js';
 import { autoOpens, openNow, parseActions, presentAction, recordActions } from '../editing/actions.js';
@@ -211,22 +211,25 @@ async function planTurn(ownerId, sessionId, { query, project, tier, overrides, c
   }
 
   const decideStart = performance.now();
-  let packed = packForTier(gathered.candidates, provisional, overrides);
   // Only Auto weighs difficulty; a chosen tier is the user's call.
   const difficulty = tier ? null : questionDifficulty(text);
-  const route = decideRoute({
-    selected: packed.selected,
+  const { route, packed } = routeAndPack({
+    pack: (packTier) => packForTier(gathered.candidates, packTier, overrides),
+    provisional,
     preferredTier: tier,
     localAvailable,
     cloudAvailable,
     hard: Boolean(difficulty),
   });
-  if (route.tier !== provisional) packed = packForTier(gathered.candidates, route.tier, overrides);
   const routingDecisionMs = Math.round(probeMs + performance.now() - decideStart);
 
   const config = resolveConfig(route.tier, overrides);
-  const continued = continuation(conversation, { selected: packed.selected, tier: route.tier, project });
-  const prefilled = continued ? null : coveringDraft(draftKey(ownerId, sessionId), { selected: packed.selected, tier: route.tier });
+  // A continued conversation or a prefilled draft resends context assembled
+  // earlier; neither may carry a private node to the cloud.
+  let continued = continuation(conversation, { selected: packed.selected, tier: route.tier, project });
+  if (continued && sendsPrivate(route, [...continued.entry.sources, ...continued.added])) continued = null;
+  let prefilled = continued ? null : coveringDraft(draftKey(ownerId, sessionId), { selected: packed.selected, tier: route.tier });
+  if (prefilled && sendsPrivate(route, prefilled.sources)) prefilled = null;
   let messages;
   let sources;
   let contextBlock;
