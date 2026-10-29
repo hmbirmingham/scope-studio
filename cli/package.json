@@ -1,0 +1,13 @@
+{
+  "name": "scope-cli",
+  "version": "0.1.0",
+  "description": "Personal local-agent CLI — runs graph-backed agents on this laptop",
+  "type": "module",
+  "bin": { "scope": "./bin/scope.js" },
+  "scripts": {
+    "test": "node --test \"test/**/*.test.js\""
+  },
+  "author": "Hynes Birmingham",
+  "license": "ISC",
+  "dependencies": {}
+}
