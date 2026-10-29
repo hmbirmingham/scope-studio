@@ -1,11 +1,7 @@
 import { randomUUID } from 'node:crypto';
 import { Router } from 'express';
 import requireAuth from '../middleware/requireAuth.js';
-import { costUsd, describeError, streamChat as streamCloud } from '../lib/anthropic.js';
-import { CLOUD_MODELS, ECONOMY_MAX_TOKENS, canAutoCloud, canChooseCloud } from '../billing/plans.js';
-import { resolveCloudCredential } from '../billing/credential.js';
 import { questionDifficulty } from '../routing/difficulty.js';
-import { monthlyPlatformAnswers, weeklyPlatformSpend } from '../models/usageStore.js';
 import { localChatModel, localModelStatus, streamChat as streamLocal } from '../lib/ollama.js';
 import {
   gatherCandidates,
@@ -27,18 +23,13 @@ import {
   saveDraft,
 } from '../routing/conversation.js';
 import { buildFollowUp, buildMessages, composeMessages } from '../routing/prompt.js';
-import { CLOUD_TIER, decideRoute, provisionalTier } from '../routing/route.js';
+import { decideRoute, provisionalTier } from '../routing/route.js';
 import { parseEdits, presentProposal, recordProposals } from '../editing/proposals.js';
 import { declaredScripts, parseRuns, presentRun, recordRuns } from '../editing/commands.js';
 import { autoOpens, openNow, parseActions, presentAction, recordActions } from '../editing/actions.js';
 import { displayControlAllowed } from './actions.js';
 import { getProjectSettings } from '../models/projectSettings.js';
 import { beginGeneration, endGeneration, warmCache } from '../routing/warm.js';
-import { getUserPlan } from '../models/userStore.js';
-
-// The cloud tier runs on the user's own key, sent per request in this header
-// and never stored — not in the session, not in the database, not in a log.
-const API_KEY_HEADER = 'x-anthropic-api-key';
 
 // Room for the local context budget in real Qwen tokens (token_length is a
 // chars/4 estimate and code tokenizes denser), the system prompt, and the answer.
@@ -47,6 +38,10 @@ const LOCAL_OPTIONS = { num_ctx: 8192 };
 const router = Router();
 router.use(requireAuth);
 
+function describeLocalError(err) {
+  return `The local model stopped answering: ${err.message}`;
+}
+
 function localFix(status, model) {
   return status.running
     ? `Run \`ollama pull ${model}\` to enable it.`
@@ -54,11 +49,11 @@ function localFix(status, model) {
 }
 
 function unavailableMessage(route, status, model) {
-  if (route.blocked === 'cloud_unavailable') {
-    const needsKey = `Cloud routing needs your own Anthropic API key, sent with the request in the ${API_KEY_HEADER} header; it is never stored.`;
-    return route.reason === 'user_override'
-      ? `${needsKey} Ask without choosing a tier to answer locally.`
-      : `The local model is not available. ${needsKey} ${localFix(status, model)}`;
+  // Choosing a cloud tier is not a missing API key any more — this engine has
+  // no cloud at all. Cloud work goes through the scope CLI, which spends a
+  // rationed daily budget on headless Claude Code.
+  if (route.reason === 'user_override' && route.blocked === 'cloud_unavailable') {
+    return `This engine answers with the local model only. Ask without choosing a tier. ${localFix(status, model)}`;
   }
   const lead =
     route.reason === 'privacy_flag'
@@ -67,55 +62,9 @@ function unavailableMessage(route, status, model) {
   return `${lead} ${localFix(status, model)}`;
 }
 
-// What a refused Cloud or web request says depends on what Auto can still do
-// for this plan: Student and Engineer reach the cloud through it, Free never.
-function keyProOnly(plan) {
-  const lead = 'Choosing Cloud or web search runs on Key Pro, with your own Anthropic key.';
-  return canAutoCloud(plan)
-    ? `${lead} Use Auto: it answers locally, and uses the cloud on its own when the local model cannot answer.`
-    : `${lead} This plan answers with the local model.`;
-}
-const ANSWERS_USED =
-  "This month's cloud answers are used, and the local model is not available to answer instead.";
-const ALLOWANCE_USED =
-  "This week's cloud allowance is used, and the local model is not available to answer instead.";
-
-// The credential for this request, from the plan: the user's own key on Key
-// Pro, the platform's key for an Auto answer on Student or Engineer while the
-// allowance lasts, or none. The week's platform spend is only read when the
-// plan could spend it.
-async function cloudCredentialFor(ownerId, userPlan, body, headerKey) {
-  const explicit = body.tier === CLOUD_TIER || body.webSearch === true;
-  const meters = !canChooseCloud(userPlan) && !explicit && canAutoCloud(userPlan);
-  return resolveCloudCredential({
-    plan: userPlan,
-    headerKey,
-    explicit,
-    modelChoice: body.cloudModel,
-    weeklySpentUsd: meters ? await weeklyPlatformSpend(ownerId) : 0,
-    monthlyAnswersUsed: meters ? await monthlyPlatformAnswers(ownerId) : 0,
-  });
-}
-
-function blockedMessage({ route, credential, webSearch, status, model }) {
-  if (route.blocked === 'cloud_unavailable') {
-    if (credential.blocked === 'allowance_exhausted') return `${ALLOWANCE_USED} ${localFix(status, model)}`;
-    if (credential.blocked === 'answer_limit_reached') return `${ANSWERS_USED} ${localFix(status, model)}`;
-    if (credential.billedTo === 'user_key' && webSearch) {
-      return `Web search runs on the cloud tier and needs your own Anthropic API key, sent in the ${API_KEY_HEADER} header; it is never stored.`;
-    }
-    if (credential.billedTo !== 'user_key' && route.reason === 'no_ollama') {
-      return `The local model is not available. ${localFix(status, model)}`;
-    }
-  }
-  return unavailableMessage(route, status, model);
-}
-
-function invalid({ query, tier, webSearch, displayControl, cloudModel }) {
+function invalid({ query, tier, displayControl }) {
   if (!query || typeof query !== 'string' || !query.trim()) return 'query is required';
-  if (cloudModel !== undefined && !CLOUD_MODELS.includes(cloudModel)) return `cloudModel must be one of: ${CLOUD_MODELS.join(', ')}`;
   if (displayControl !== undefined && typeof displayControl !== 'boolean') return 'displayControl must be true or false';
-  if (webSearch !== undefined && typeof webSearch !== 'boolean') return 'webSearch must be true or false';
   if (tier && !TIER_CONFIGS[tier]) return `tier must be one of: ${Object.keys(TIER_CONFIGS).join(', ')}`;
   return null;
 }
@@ -124,41 +73,19 @@ function invalid({ query, tier, webSearch, displayControl, cloudModel }) {
 // routing decision from what was selected, and the exact messages to send —
 // continuing an existing conversation when its context still covers the
 // question, so the prefix stays cached.
-// Both tiers stream the same shape, so the route does not care which answered.
-// Where the cacheable prefix ends: everything above the question is stable
-// across a conversation, so that is where the cache breakpoint goes.
-const CACHE_MARKERS = { strict_xml: '<question>', markdown: '## Question' };
-
-async function* generate({ decision, model, effort, messages, apiKey, cacheMarker, signal, webSearch, economy = false }) {
-  if (decision === 'local') {
-    for await (const chunk of streamLocal({ model, messages, options: LOCAL_OPTIONS, signal })) {
-      if (chunk.message?.content) yield { text: chunk.message.content };
-      if (chunk.done) {
-        yield { done: true, outputTokens: chunk.eval_count ?? null, promptTokens: chunk.prompt_eval_count ?? null };
-      }
-    }
-    return;
-  }
-  for await (const event of streamCloud({
-    apiKey, model, effort, messages, cacheMarker, signal, webSearch,
-    ...(economy ? { maxTokens: ECONOMY_MAX_TOKENS, brevity: true } : {}),
-  })) {
-    if (event.text) yield { text: event.text };
-    if (event.searching) yield { searching: event.searching };
-    if (event.citations) yield { citations: event.citations };
-    if (event.done) {
-      yield {
-        done: true,
-        outputTokens: event.usage?.output_tokens ?? null,
-        promptTokens: event.usage?.input_tokens ?? null,
-        costUsd: costUsd(model, event.usage),
-        webSearches: event.usage?.server_tool_use?.web_search_requests ?? 0,
-      };
+// The local model is the only runner this engine has. Cloud work goes through
+// the scope CLI, which spends a rationed daily budget on headless Claude Code
+// rather than an API key.
+async function* generate({ model, messages, signal }) {
+  for await (const chunk of streamLocal({ model, messages, options: LOCAL_OPTIONS, signal })) {
+    if (chunk.message?.content) yield { text: chunk.message.content };
+    if (chunk.done) {
+      yield { done: true, outputTokens: chunk.eval_count ?? null, promptTokens: chunk.prompt_eval_count ?? null };
     }
   }
 }
 
-async function planTurn(ownerId, sessionId, { query, project, tier, overrides, conversationId, cloudOnly = false }, { cloudAvailable }) {
+async function planTurn(ownerId, sessionId, { query, project, tier, overrides, conversationId }) {
   const text = query.trim();
   const model = localChatModel();
 
@@ -169,8 +96,8 @@ async function planTurn(ownerId, sessionId, { query, project, tier, overrides, c
 
   const conversation = getConversation(conversationId, ownerId);
   const provisional = provisionalTier({ localAvailable, preferredTier: tier });
-  const gather = (query, onlyCloud = cloudOnly) =>
-    gatherCandidates({ ownerId, query, project, tier: provisional, overrides, embed: status.running, cloudOnly: onlyCloud });
+  const gather = (query) =>
+    gatherCandidates({ ownerId, query, project, tier: provisional, overrides, embed: status.running, cloudOnly: false });
   // A question that stands on its own is retrieved on its own, so a change of
   // subject finds its own sources; only when that finds nothing, or the wording
   // leans on the previous turn, does the previous question join the query.
@@ -181,16 +108,6 @@ async function planTurn(ownerId, sessionId, { query, project, tier, overrides, c
     gathered = await gather(asked);
   }
 
-  // With private nodes left out, say how many the answer would otherwise have
-  // read, so it is never silently thinner than it looks.
-  let omittedPrivate = 0;
-  if (cloudOnly) {
-    const everything = await gather(asked, false);
-    omittedPrivate = packForTier(everything.candidates, provisional, overrides).selected.filter(
-      ({ node }) => node.privacy === 'local'
-    ).length;
-  }
-
   const decideStart = performance.now();
   let packed = packForTier(gathered.candidates, provisional, overrides);
   // Only Auto weighs difficulty; a chosen tier is the user's call.
@@ -199,7 +116,7 @@ async function planTurn(ownerId, sessionId, { query, project, tier, overrides, c
     selected: packed.selected,
     preferredTier: tier,
     localAvailable,
-    cloudAvailable,
+    cloudAvailable: false,
     hard: Boolean(difficulty),
   });
   if (route.tier !== provisional) packed = packForTier(gathered.candidates, route.tier, overrides);
@@ -247,7 +164,6 @@ async function planTurn(ownerId, sessionId, { query, project, tier, overrides, c
     contextTokens,
     metrics,
     routingDecisionMs,
-    omittedPrivate,
     difficulty,
     reused: Boolean(continued),
     routing: {
@@ -272,11 +188,7 @@ router.post('/prepare', async (req, res) => {
   const problem = invalid(req.body);
   if (problem) return res.status(400).json({ error: problem });
 
-  const userPlan = await getUserPlan(req.session.userId);
-  const credential = await cloudCredentialFor(req.session.userId, userPlan, req.body, req.get(API_KEY_HEADER));
-  const plan = await planTurn(req.session.userId, req.sessionID, req.body, {
-    cloudAvailable: Boolean(credential.apiKey),
-  });
+  const plan = await planTurn(req.session.userId, req.sessionID, req.body);
   if (plan.contextBlock) {
     saveDraft(draftKey(req.session.userId, req.sessionID), {
       tier: plan.route.tier,
@@ -316,25 +228,9 @@ router.post('/', async (req, res) => {
   });
 
   const ownerId = req.session.userId;
-  const userPlan = await getUserPlan(ownerId);
-  const credential = await cloudCredentialFor(ownerId, userPlan, req.body, req.get(API_KEY_HEADER));
-  // A plan that may not choose the cloud is refused before anything is
-  // retrieved or sent: the hard block.
-  if (credential.blocked === 'cloud_requires_key_pro') {
-    return res.status(403).json({
-      error: req.body.webSearch === true ? `Web search runs on the cloud tier. ${keyProOnly(userPlan)}` : keyProOnly(userPlan),
-      code: 'cloud_requires_key_pro',
-    });
-  }
-  const apiKey = credential.apiKey;
-  // Searching the web happens on Anthropic's side, so it is a cloud answer.
-  // Nodes marked private are left out of its retrieval entirely; everything
-  // else is used, and the answer says how many private nodes it skipped.
-  const webSearch = req.body.webSearch === true;
-  const turn = webSearch ? { ...req.body, tier: CLOUD_TIER, cloudOnly: true } : req.body;
-  const plan = await planTurn(ownerId, req.sessionID, turn, { cloudAvailable: Boolean(apiKey) });
+  const plan = await planTurn(ownerId, req.sessionID, req.body);
   const { route, sources, metrics } = plan;
-  const model = route.decision === 'local' ? plan.model : credential.modelFor(Boolean(plan.difficulty));
+  const model = plan.model;
   const conversationId = req.body.conversationId ?? randomUUID();
 
   const queryId = randomUUID();
@@ -355,26 +251,12 @@ router.post('/', async (req, res) => {
       },
     });
 
-  // Unreachable while retrieval leaves private nodes out, and kept that way on
-  // purpose: if one ever got through, the search is refused, not sent.
-  if (webSearch && route.decision === 'local') {
-    await record({}, false);
-    return res.status(409).json({
-      error:
-        'Web search sends the question to Anthropic, and this one draws on private context, which only ever goes to the local model. Ask it without web search, or search for something that does not need the private repository.',
-      code: 'web_search_private',
-      queryId,
-    });
-  }
-
   if (route.blocked) {
     await record({}, false);
     return res.status(503).json({
       // Always the local model here: the hint is about what to install.
-      error: blockedMessage({ route, credential, webSearch, status: plan.status, model: plan.model }),
-      code: route.blocked === 'cloud_unavailable' && ['allowance_exhausted', 'answer_limit_reached'].includes(credential.blocked)
-        ? credential.blocked
-        : route.blocked,
+      error: unavailableMessage(route, plan.status, plan.model),
+      code: route.blocked,
       queryId,
       routing: plan.routing,
       nodes: sources.map(({ node }) => ({ id: node.id, type: node.type, project: node.project, privacy: node.privacy })),
@@ -398,48 +280,22 @@ router.post('/', async (req, res) => {
     nodes: sources.map(presentNode),
     ambiguity: projectAmbiguity(plan.gathered.candidates),
     metrics,
-    ...(webSearch ? { omittedPrivate: plan.omittedPrivate } : {}),
   });
 
   let ttftMs = null;
   let outputTokens = null;
   let promptTokens = null;
-  let cost = null;
   let failure = null;
   let answer = '';
-  let citations = [];
-  // Every query a web answer searched, kept so the answer can show them even
-  // when it cites nothing, and the count recorded with the metrics.
-  const searches = [];
-  let webSearches = null;
   // Asked for on this request, and granted for this session, from this machine.
   const displayControl = req.body.displayControl === true && displayControlAllowed(req);
   beginGeneration();
   try {
     for await (const event of generate({
-      decision: route.decision,
       model,
       messages: plan.messages,
-      apiKey,
-      effort: credential.effort,
-      cacheMarker: CACHE_MARKERS[plan.config.prompt_structure],
       signal: upstream.signal,
-      webSearch,
-      economy: credential.economy,
     })) {
-      if (event.searching) {
-        searches.push(event.searching);
-        send({ type: 'searching', query: event.searching });
-        // In display mode the search plays out on screen as it happens.
-        if (displayControl) {
-          const [shown] = await recordActions({
-            ownerId, conversationId, project: req.body.project ?? null, found: [{ kind: 'search', target: event.searching }],
-          });
-          if (shown.state === 'proposed') await openNow(shown, { run: req.app.locals.openRunner });
-          send({ type: 'actions', queryId, actions: [presentAction(shown)] });
-        }
-      }
-      if (event.citations) citations = event.citations;
       if (event.text) {
         ttftMs ??= Math.round(performance.now() - started);
         answer += event.text;
@@ -448,8 +304,6 @@ router.post('/', async (req, res) => {
       if (event.done) {
         outputTokens = event.outputTokens;
         promptTokens = event.promptTokens;
-        cost = event.costUsd ?? null;
-        if (webSearch) webSearches = event.webSearches ?? searches.length;
       }
     }
   } catch (err) {
@@ -498,10 +352,13 @@ router.post('/', async (req, res) => {
       localPath: settings?.localPath ?? null,
       found,
     });
+    // In display mode an action opens by itself. A url never does: autoOpens
+    // only cleared one that a web search had cited, and with no web search
+    // there is nothing to vouch for an address the model wrote, so every url
+    // waits for approval.
     if (displayControl) {
-      const citedUrls = citations.map((page) => page.url);
       for (const action of proposedActions) {
-        if (autoOpens(action, { citedUrls })) await openNow(action, { run: req.app.locals.openRunner });
+        if (autoOpens(action)) await openNow(action, { run: req.app.locals.openRunner });
       }
     }
   }
@@ -511,14 +368,13 @@ router.post('/', async (req, res) => {
     if (proposed.length) send({ type: 'edits', queryId, edits: proposed.map(presentProposal) });
     if (proposedRuns.length) send({ type: 'runs', queryId, runs: proposedRuns.map(presentRun) });
     if (proposedActions.length) send({ type: 'actions', queryId, actions: proposedActions.map(presentAction) });
-    if (failure) send({ type: 'error', queryId, error: describeError(failure) });
+    if (failure) send({ type: 'error', queryId, error: describeLocalError(failure) });
     else {
       send({
         type: 'done',
         queryId,
         conversationId,
-        metrics: { ttftMs, totalResponseMs, outputTokens, promptTokens, costUsd: cost },
-        ...(webSearch ? { web: citations, searches } : {}),
+        metrics: { ttftMs, totalResponseMs, outputTokens, promptTokens },
       });
     }
     res.end();
@@ -545,12 +401,6 @@ router.post('/', async (req, res) => {
         ttftMs,
         totalResponseMs,
         outputTokens,
-        costUsd: cost,
-        // Whose money paid for this answer: only platform spend is margin.
-        // Whose money paid for this answer: only platform spend is margin, and
-        // only an Auto answer on Student or Engineer can be platform spend.
-        billedTo: route.decision === 'cloud' ? credential.billedTo : null,
-        webSearches,
       },
       true
     );

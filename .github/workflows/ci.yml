@@ -62,36 +62,18 @@ jobs:
           SESSION_SECRET: ${{ secrets.SESSION_SECRET }}
           BASE_URL: http://localhost:3001
 
-  control:
+  cli:
     runs-on: ubuntu-latest
-    services:
-      postgres:
-        image: postgres:18
-        env:
-          POSTGRES_USER: scope
-          POSTGRES_HOST_AUTH_METHOD: trust
-          POSTGRES_DB: scope_control_test
-        ports: ['5432:5432']
-        options: >-
-          --health-cmd "pg_isready -U scope"
-          --health-interval 5s
-          --health-timeout 5s
-          --health-retries 12
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
         with:
           node-version: 26
-          cache: npm
-          cache-dependency-path: control/package-lock.json
-      - run: npm ci
-        working-directory: control
+      # No dependencies: Node covers fetch, parseArgs and the test runner. The
+      # gates and the vault are exercised against temporary directories, and
+      # nothing here needs Ollama, so this job stays fast and deterministic.
       - run: npm test
-        working-directory: control
-        env:
-          NODE_ENV: test
-          TEST_DATABASE_URL: postgresql://scope@localhost:5432/scope_control_test
-          CONTROL_SESSION_SECRET: ${{ secrets.SESSION_SECRET }}
+        working-directory: cli
 
   client:
     runs-on: ubuntu-latest

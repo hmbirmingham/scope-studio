@@ -198,7 +198,7 @@ describe('chat routing and streaming', () => {
     assert.equal(row.tier, 'local_7b');
   });
 
-  test('a cloud request with public-only context is refused explicitly, not answered locally', async () => {
+  test('choosing a cloud tier is refused explicitly: this engine is local only', async () => {
     const before = await accessCount(ids.quantify);
     const { status, data } = await api('POST', '/api/chat', {
       query: 'what does quantify_colonies return in the mask',
@@ -207,7 +207,7 @@ describe('chat routing and streaming', () => {
     assert.equal(status, 503);
     assert.equal(data.code, 'cloud_unavailable');
     assert.equal(data.routing.reason, 'user_override');
-    assert.match(data.error, /API key/);
+    assert.match(data.error, /local model only/);
     assert.equal(fake.state.chatRequests.length, 0);
 
     const row = await metricsRow(data.queryId);

@@ -7,7 +7,6 @@ import { resetActions } from '../../src/editing/actions.js';
 import { parseNdjson } from '../../src/lib/ollama.js';
 import { resetConversations } from '../../src/routing/conversation.js';
 import { resetWarmState } from '../../src/routing/warm.js';
-import { startFakeAnthropic } from '../fakeAnthropic.js';
 import { startFakeOllama } from '../fakeOllama.js';
 import { ensureCentroids, registeredSession, startServer } from '../helpers.js';
 
@@ -20,7 +19,6 @@ describe('screen actions', { skip: onMac ? false : 'actions open things only on 
   let api;
   let other;
   let opened;
-  let anthropic;
 
   const ask = async (query, tokens, extra = {}, headers = {}) => {
     fake.state.tokens = tokens;
@@ -32,9 +30,7 @@ describe('screen actions', { skip: onMac ? false : 'actions open things only on 
 
   before(async () => {
     fake = await startFakeOllama({ embedUrl: realOllama });
-    anthropic = await startFakeAnthropic();
     process.env.OLLAMA_URL = fake.url;
-    process.env.ANTHROPIC_BASE_URL = anthropic.url;
     server = await startServer();
     // Every approval in this suite goes to this recorder, never to the real `open`.
     server.app.locals.openRunner = (file, args, options, done) => {
@@ -44,9 +40,6 @@ describe('screen actions', { skip: onMac ? false : 'actions open things only on 
     await ensureCentroids(server.pool);
     api = await registeredSession(server.base);
     other = await registeredSession(server.base);
-    // These tests exercise cloud requests, which only Key Pro may make.
-    await server.pool.query("UPDATE users SET plan = 'key_pro' WHERE id = $1", [(await api('GET', '/api/auth/session')).data.userId]);
-
     await api('POST', '/api/nodes', {
       type: 'file',
       content: 'src/quantify.py\n\ndef quantify_colonies(image):\n    """Returns colony count and mean area."""',
@@ -61,7 +54,6 @@ describe('screen actions', { skip: onMac ? false : 'actions open things only on 
 
   beforeEach(async () => {
     await api('PUT', '/api/actions/consent', { displayControl: false });
-    Object.assign(anthropic.state, { requests: [], search: null, pauseAfterSearch: false, text: ['Cloud ', 'answer.'] });
     opened = [];
     resetActions();
     resetConversations();
@@ -70,10 +62,8 @@ describe('screen actions', { skip: onMac ? false : 'actions open things only on 
 
   after(async () => {
     process.env.OLLAMA_URL = realOllama;
-    delete process.env.ANTHROPIC_BASE_URL;
     await server.close();
     await fake.close();
-    await anthropic.close();
   });
 
   test('actions in an answer are held for approval, and approving opens exactly that', async () => {
@@ -141,13 +131,13 @@ describe('screen actions', { skip: onMac ? false : 'actions open things only on 
       assert.equal((await api('PUT', '/api/actions/consent', { displayControl: false })).data.displayControl, false);
     });
 
-    test('with consent, actions open by themselves — except an address the search did not cite', async () => {
+    test('with consent, actions open by themselves — except a url, which always asks', async () => {
       await api('PUT', '/api/actions/consent', { displayControl: true });
       const lines = await ask('search and open that page', answer, { displayControl: true });
       const [search, url] = lines.filter((l) => l.type === 'actions').flatMap((l) => l.actions);
       assert.equal(search.state, 'opened');
       assert.equal(search.auto, true);
-      assert.equal(url.state, 'proposed', 'a made-up address still asks');
+      assert.equal(url.state, 'proposed', 'an address the model wrote still asks');
       assert.deepEqual(opened.map((o) => o.args[0]), ['-u']);
       assert.match(opened[0].args[1], /q=colony%20watershed/);
     });
@@ -159,19 +149,5 @@ describe('screen actions', { skip: onMac ? false : 'actions open things only on 
       assert.equal(opened.length, 0);
     });
 
-    test('a web search plays out on screen, and a page it cited opens by itself', async () => {
-      await api('PUT', '/api/actions/consent', { displayControl: true });
-      const cited = 'https://example.com/pgvector';
-      anthropic.state.search = { query: 'pgvector hnsw tuning', url: cited, title: 'HNSW' };
-      anthropic.state.text = ['Tune ef_search. ', `<open kind="url">${cited}</open>`];
-      const lines = await ask('how should I tune hnsw', [], { webSearch: true, displayControl: true }, { 'x-anthropic-api-key': 'sk-ant-test-not-a-real-key' });
-      assert.equal(lines.at(-1).type, 'done');
-      const actions = lines.filter((l) => l.type === 'actions').flatMap((l) => l.actions);
-      assert.deepEqual(actions.map((a) => [a.kind, a.state]), [['search', 'opened'], ['url', 'opened']]);
-      assert.deepEqual(opened.map((o) => o.args[1]), [
-        'https://duckduckgo.com/?q=pgvector%20hnsw%20tuning',
-        cited,
-      ]);
-    });
   });
 });
