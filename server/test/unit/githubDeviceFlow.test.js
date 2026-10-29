@@ -240,10 +240,10 @@ describe('no client secret anywhere', () => {
     }
   }
 
-  test('the engine, the client and the env template never mention one', async () => {
+  test('the engine, the CLI and the env template never mention one', async () => {
     const offenders = [];
     const paths = [join(root, '.env.example')];
-    for (const dir of ['server/src', 'client/src']) {
+    for (const dir of ['server/src', 'cli/src']) {
       for await (const path of files(join(root, dir))) paths.push(path);
     }
     for (const path of paths) {
