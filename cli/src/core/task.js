@@ -1,5 +1,6 @@
 import { readFile } from 'node:fs/promises';
 import { knownChecks } from '../eval/check.js';
+import { loadRubric } from '../eval/rubric.js';
 import { agentPath, parseFrontmatter } from './vault.js';
 
 // A task is a markdown file, because the vault is a format and not a tool: the
@@ -44,7 +45,7 @@ function section(body, name) {
 
 // "- id: check arg" — the arg is the rest of the line so a regex can contain
 // spaces without quoting.
-function parseGates(text) {
+export function parseGates(text) {
   if (!text) return [];
   const gates = [];
   for (const line of text.split('\n')) {
@@ -61,12 +62,23 @@ function parseGates(text) {
   return gates;
 }
 
-export function parseTask(text, source) {
+/**
+ * @param {string} text the task file
+ * @param {string} source its path, for error messages
+ * @param {object|null} rubric the loaded rubric for this task's use_case, if any
+ */
+export function parseTask(text, source, rubric = null) {
   const { fields, body } = parseFrontmatter(text);
   const prompt = section(body, 'Task') ?? section(body, 'Question');
   if (!prompt) throw new Error(`${source}: needs a "## Task" or "## Question" section`);
 
-  const gates = parseGates(section(body, 'Gates'));
+  // The rubric's gates apply to every task of that use case; the task's own
+  // gates are added, and one sharing an id overrides the rubric's so a task can
+  // tighten a limit without restating the rest.
+  const own = parseGates(section(body, 'Gates'));
+  const fromRubric = rubric ? parseGates(rubric.gatesText) : [];
+  const overridden = new Set(own.map((g) => g.id));
+  const gates = [...fromRubric.filter((g) => !overridden.has(g.id)), ...own];
   // The rule, enforced at load time rather than discovered at run time.
   if (gates.length === 0) {
     throw new Error(
@@ -80,13 +92,25 @@ export function parseTask(text, source) {
     );
   }
 
+  // Vault-relative paths whose contents are the material the task works from.
+  // This is a deliberately small stand-in for retrieval: when the graph lands,
+  // it replaces how sources are chosen, not what a task does with them.
+  const sources = (section(body, 'Sources') ?? '')
+    .split('\n')
+    .map((line) => /^\s*-\s+(.*)$/.exec(line)?.[1]?.trim())
+    .filter(Boolean);
+
   return {
     id: fields.id ?? source.replace(/\.md$/, ''),
     useCase: fields.use_case ?? null,
-    important: fields.important === true,
+    important: fields.important === true || Boolean(rubric?.important),
     attempts: Number.isInteger(fields.attempts) ? fields.attempts : 2,
     prompt,
     gates,
+    sources,
+    instructions: rubric?.instructions ?? null,
+    rubricLines: rubric?.lines ?? [],
+    rubricSource: rubric?.source ?? null,
     source,
   };
 }
@@ -102,5 +126,9 @@ export async function loadTask(config, idOrPath) {
     if (err.code === 'ENOENT') throw new Error(`no task at ${file}`);
     throw err;
   }
-  return parseTask(text, file);
+  // The use_case has to be read before the task can be fully parsed, since the
+  // rubric supplies gates the task is allowed to override.
+  const { fields } = parseFrontmatter(text);
+  const rubric = fields.use_case ? await loadRubric(fields.use_case) : null;
+  return parseTask(text, file, rubric);
 }
