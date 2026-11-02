@@ -121,3 +121,17 @@ test('an HTTP error surfaces its status and body', async () => {
     globalThis.fetch = originalFetch;
   }
 });
+
+test('a key shape the prefix list does not know is still refused', () => {
+  // A real key with an unlisted prefix slipped past the prefix-only version of
+  // this check on the day it was written. These are fabricated stand-ins.
+  const synthetic = ['AQ.', 'Xy7', 'QwErTyUiOpAsDfGhJkL1234567890'].join('');
+  assert.deepEqual(privacyViolations(`does ${synthetic} work?`), ['credential-shaped string']);
+  assert.deepEqual(privacyViolations('is xoxb-1234567890-abcdefghij valid?'), ['credential-shaped string']);
+});
+
+test('ordinary long words and phrasings are not mistaken for credentials', () => {
+  assert.deepEqual(privacyViolations('explain antidisestablishmentarianism in detail please'), []);
+  assert.deepEqual(privacyViolations('what does cross-validation mean in machine learning?'), []);
+  assert.deepEqual(privacyViolations('compare retrieval augmented generation and finetuning'), []);
+});

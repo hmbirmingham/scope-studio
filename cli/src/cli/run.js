@@ -1,4 +1,5 @@
 import { generate } from '../runners/local.js';
+import { PrivacyRefusal, search, searchConfigured } from '../runners/search.js';
 import { failureConstraint, runGates } from '../eval/check.js';
 import { claimsOf, correctionNotes, groundQuotes, parseAnalysis } from '../eval/analysis.js';
 import { writeRun } from '../core/ledger.js';
@@ -30,10 +31,48 @@ async function readSources(config, task) {
   return parts.join('\n\n');
 }
 
+/**
+ * Material the task fetches rather than reads. Each search is its own source
+ * block, so a quote grounds against the passage that carried it rather than
+ * against everything ever fetched.
+ */
+async function fetchSources(config, task) {
+  if (!searchConfigured(config)) {
+    throw new Error(
+      `${task.id} needs the search tier for its "## Search" queries, but no GEMINI_API_KEY is set (see \`scope doctor\`)`
+    );
+  }
+  const parts = [];
+  for (const query of task.searchQueries) {
+    process.stderr.write(`  searching: ${query}… `);
+    const result = await search(config, { query });
+    process.stderr.write(`${result.sources.length} sources (${result.ms} ms)\n`);
+    // The answer and its citations both become groundable material: the prose
+    // is what the search actually said, the uris are what it said it from.
+    parts.push(
+      `<search query="${query}">\n${result.output}\n</search>`,
+      ...(result.sourceText ? [result.sourceText] : [])
+    );
+  }
+  return parts.join('\n\n');
+}
+
 export default async function runCommand(config, taskRef, { verbose = false } = {}) {
   const task = await loadTask(config, taskRef);
   await ensureAgentDirs(config);
-  const sources = task.sources.length ? await readSources(config, task) : '';
+  const fromVault = task.sources.length ? await readSources(config, task) : '';
+  let fetched = '';
+  if (task.searchQueries.length) {
+    try {
+      fetched = await fetchSources(config, task);
+    } catch (err) {
+      // A privacy refusal is a design outcome, not a crash: say which query was
+      // refused and stop, rather than silently running without its material.
+      if (err instanceof PrivacyRefusal) throw new Error(`search refused: ${err.message}`);
+      throw err;
+    }
+  }
+  const sources = [fromVault, fetched].filter(Boolean).join('\n\n');
   if (task.sources.length) {
     console.error(`  sources: ${task.sources.join(', ')}`);
   }

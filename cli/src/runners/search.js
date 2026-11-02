@@ -31,9 +31,14 @@ export function privacyViolations(query) {
   }
   if (/\[\[[^\]]+\]\]/.test(query)) found.push('vault wikilink');
   if (/\/Users\/[^/\s]+\//.test(query)) found.push('local filesystem path');
-  if (/\b(sk-[A-Za-z0-9_-]{16,}|ghp_[A-Za-z0-9]{16,}|AIza[A-Za-z0-9_-]{20,})\b/.test(query)) {
-    found.push('credential-shaped string');
-  }
+  // Known prefixes, then anything that merely looks like a secret. The first
+  // list is always out of date: a real key whose prefix was not on it slipped
+  // past a prefix-only version of this check the day it was written.
+  const known = /\b(sk-[A-Za-z0-9_-]{16,}|ghp_[A-Za-z0-9]{16,}|AIza[A-Za-z0-9_-]{20,}|AQ\.[A-Za-z0-9_-]{16,}|xox[baprs]-[A-Za-z0-9-]{10,})\b/;
+  // A long unbroken run of key-ish characters mixing both cases and a digit is
+  // not something a question about the world contains.
+  const shaped = /\b(?=[A-Za-z0-9_.-]*[A-Z])(?=[A-Za-z0-9_.-]*[a-z])(?=[A-Za-z0-9_.-]*\d)[A-Za-z0-9_.-]{28,}\b/;
+  if (known.test(query) || shaped.test(query)) found.push('credential-shaped string');
   return found;
 }
 

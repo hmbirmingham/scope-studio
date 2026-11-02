@@ -100,7 +100,16 @@ export function parseTask(text, source, rubric = null) {
     .map((line) => /^\s*-\s+(.*)$/.exec(line)?.[1]?.trim())
     .filter(Boolean);
 
+  // A task may fetch its own material instead of reading the vault. The two are
+  // deliberately the same shape downstream: by the time gates run, source text
+  // is source text and nothing cares where it came from.
+  const searchQueries = (section(body, 'Search') ?? '')
+    .split('\n')
+    .map((line) => /^\s*-\s+(.*)$/.exec(line)?.[1]?.trim())
+    .filter(Boolean);
+
   return {
+    searchQueries,
     id: fields.id ?? source.replace(/\.md$/, ''),
     useCase: fields.use_case ?? null,
     important: fields.important === true || Boolean(rubric?.important),
