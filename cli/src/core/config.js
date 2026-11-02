@@ -21,6 +21,14 @@ const DEFAULTS = {
     // hybrid-attention 9b on reworded follow-ups.
     model: process.env.OLLAMA_MODEL ?? 'qwen3:8b',
   },
+  search: {
+    // The search tier's key. Free tier, and Google trains on free-tier data, so
+    // this tier only ever carries questions about the world — never anything
+    // from the vault. Kept in the environment, not in this file, and never in
+    // the vault.
+    apiKey: process.env.GEMINI_API_KEY ?? null,
+    model: process.env.GEMINI_MODEL ?? 'gemini-2.5-flash',
+  },
   cloud: {
     // Headless Claude Code on the Pro subscription. No API keys anywhere.
     command: process.env.SCOPE_CLAUDE_BIN ?? 'claude',

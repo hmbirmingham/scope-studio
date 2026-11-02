@@ -1,6 +1,7 @@
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import { ollamaUp } from '../runners/local.js';
+import { searchConfigured } from '../runners/search.js';
 import { AGENT_DIRS, agentPath, vaultExists, vaultIsGit } from '../core/vault.js';
 import { access, constants } from 'node:fs/promises';
 import { join } from 'node:path';
@@ -108,6 +109,17 @@ export default async function doctor(config) {
           ? `${config.cloud.dailyCloudSteps} steps/day`
           : 'uncalibrated — cloud steps are off until measured',
       fix: 'measure a week of runs, then set cloud.dailyCloudSteps',
+    })
+  );
+
+  checks.push(
+    line({
+      ok: searchConfigured(config) ? true : null,
+      label: 'search tier (gemini, free)',
+      detail: searchConfigured(config)
+        ? `${config.search.model} — outbound questions only, never vault content`
+        : 'no GEMINI_API_KEY — tasks needing outside facts have no sources',
+      fix: 'export GEMINI_API_KEY=... in ~/.zshrc',
     })
   );
 
