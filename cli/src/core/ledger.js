@@ -22,6 +22,20 @@ function attemptSection(attempt) {
     '| --- | --- | --- | --- |',
     ...attempt.results.map(gateLine),
     '',
+    ...(attempt.grounding
+      ? [
+          `Analysis: ${attempt.claimCount} claims · ${attempt.grounding.grounded.length} grounded · ${attempt.grounding.ungrounded.length} ungrounded`,
+          '',
+          ...(attempt.grounding.ungrounded.length
+            ? [
+                'Quotes not found in the source material:',
+                '',
+                ...attempt.grounding.ungrounded.map((u) => `- under *${u.heading ?? 'untitled'}*: "${u.quote}"`),
+                '',
+              ]
+            : []),
+        ]
+      : []),
     '<details><summary>Output</summary>',
     '',
     attempt.output || '_(empty)_',

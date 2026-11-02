@@ -1,5 +1,6 @@
 import { generate } from '../runners/local.js';
 import { failureConstraint, runGates } from '../eval/check.js';
+import { claimsOf, correctionNotes, groundQuotes, parseAnalysis } from '../eval/analysis.js';
 import { writeRun } from '../core/ledger.js';
 import { loadTask } from '../core/task.js';
 import { agentPath, ensureAgentDirs } from '../core/vault.js';
@@ -52,16 +53,31 @@ export default async function runCommand(config, taskRef, { verbose = false } = 
 
     process.stderr.write(`  attempt ${n}/${task.attempts} on ${config.ollama.model}… `);
     const result = await generate(config, { system: systemPrompt(task), prompt });
-    const { passed, results } = runGates(task.gates, result.output);
+    const { passed, results } = runGates(task.gates, result.output, { sources });
     process.stderr.write(`${passed ? 'passed' : 'failed'} (${result.ms} ms)\n`);
 
-    attempts.push({ n, ...result, passed, results });
+    // The in-work analysis: the answer decomposed into claims and the citations
+    // behind them, recorded with the attempt. The gates read it, the trace keeps
+    // it, and a grader can re-score it later without re-running the model.
+    const analysis = parseAnalysis(result.output);
+    const grounding = sources ? groundQuotes(analysis, sources) : null;
+    const claimCount = claimsOf(analysis).length;
+
+    attempts.push({ n, ...result, passed, results, analysis, grounding, claimCount });
     if (verbose) {
       for (const r of results) console.error(`      ${r.ok ? '✅' : '❌'} ${r.id}: ${r.detail}`);
+      if (grounding) {
+        console.error(
+          `      · ${claimCount} claims, ${grounding.grounded.length} grounded quotes, ${grounding.ungrounded.length} ungrounded`
+        );
+      }
     }
     if (passed) break;
-    // Rubric-aware retry: the next attempt is told exactly which line it broke.
-    constraint = failureConstraint(results);
+    // Correction is per-claim, not a blanket retry: the next attempt is told
+    // which claims failed and why, so it repairs those and leaves the rest.
+    constraint = [failureConstraint(results), ...(sources ? correctionNotes(analysis, sources) : [])]
+      .filter(Boolean)
+      .join('\n');
   }
 
   const passed = attempts.at(-1).passed;
