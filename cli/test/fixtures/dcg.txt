@@ -1,0 +1,498 @@
+Discounted cumulative gain - Wikipedia
+
+Jump to content
+
+Main menu
+
+Main menu
+
+move to sidebar
+hide
+
+Navigation
+
+Main page
+Contents
+Current events
+Random article
+About Wikipedia
+Contact us
+
+Contribute
+
+Help
+Learn to edit
+Community portal
+Recent changes
+Upload file
+Special pages
+
+Search
+
+Search
+
+Appearance
+
+Donate
+
+Create account
+
+Log in
+
+Personal tools
+
+Donate
+
+Create account
+
+Log in
+
+## Contents
+
+move to sidebar
+hide
+
+(Top)
+
+1
+Overview
+
+Toggle Overview subsection
+
+1.1
+Cumulative Gain
+
+1.2
+Discounted Cumulative Gain
+
+1.3
+Normalized DCG
+
+2
+Example
+
+3
+Limitations
+
+4
+See also
+
+5
+References
+
+Toggle the table of contents
+
+# Discounted cumulative gain
+
+2 languages
+
+日本語
+Polski
+
+Edit links
+
+Article
+
+Talk
+
+English
+
+Read
+
+Edit
+
+View history
+
+Save
+
+Tools
+
+Tools
+
+move to sidebar
+hide
+
+Actions
+
+Read
+
+Edit
+
+View history
+
+Save
+
+General
+
+What links here
+Related changes
+Upload file
+Permanent link
+Page information
+Cite this page
+Get shortened URL
+Switch to legacy parser
+
+Print/export
+
+Download as PDF
+Printable version
+
+In other projects
+
+Wikidata item
+
+Appearance
+
+move to sidebar
+hide
+
+From Wikipedia, the free encyclopedia
+
+Measure of ranking quality
+
+Discounted cumulative gain ( DCG ) is a measure of ranking quality in information retrieval . [ 1 ] It is normalized so that it is comparable across queries, giving Normalized DCG (nDCG or NDCG) . (N)DCG is used to measure effectiveness of search engine algorithms , recommender systems and related applications. Using a graded relevance scale of documents in a search-engine result set, DCG sums the usefulness, or gain , of the results discounted by their position in the result list. NDCG is DCG normalized by the maximum possible DCG of the result set when ranked from highest to lowest gain, thus adjusting for the different numbers of relevant results for different queries.
+
+## Overview
+
+[ edit ]
+
+Two assumptions are made in using DCG and its related measures.
+
+Highly relevant documents are more useful when appearing earlier in a search engine result list (have higher ranks)
+
+Highly relevant documents are more useful than marginally relevant documents, which are in turn more useful than non-relevant documents.
+
+### Cumulative Gain
+
+[ edit ]
+
+DCG is a refinement of a simpler measure, Cumulative Gain (CG). [ 2 ] Cumulative Gain is the sum of the graded relevance values of all results in a search result list. CG does not take into account the rank (position) of a result in the result list. The CG at a particular rank position p is defined as:
+
+C G p = ∑ i = 1 p r e l i
+
+Where r e l i is the graded relevance of the result at position i .
+
+The value computed with the CG function is unaffected by changes in the ordering of search results. That is, moving a highly relevant document d i above a higher ranked, less relevant, document d j does not change the computed value for CG (assuming i , j ≤ p ). Based on the two assumptions made above about the usefulness of search results, (N)DCG is usually preferred over CG. Cumulative Gain is sometimes called Graded Precision.
+
+### Discounted Cumulative Gain
+
+[ edit ]
+
+The premise of DCG is that highly relevant documents appearing lower in a search result list should be penalized, as the graded relevance value is reduced logarithmically proportional to the position of the result.
+
+The usual formula of DCG accumulated at a particular rank position p is defined as: [ 1 ]
+
+D C G p = ∑ i = 1 p r e l i log 2 ( i + 1 ) = r e l 1 + ∑ i = 2 p r e l i log 2 ( i + 1 )
+
+Until 2013, there was no theoretically sound justification for using a logarithmic reduction factor [ 3 ] other than the fact that it produces a smooth reduction. But Wang et al. (2013) [ 4 ] gave theoretical guarantee for using the logarithmic reduction factor in Normalized DCG (NDCG). The authors show that for every pair of substantially different ranking functions, the NDCG can decide which one is better in a consistent manner.
+
+An alternative formulation of DCG [ 5 ] places stronger emphasis on retrieving relevant documents:
+
+D C G p = ∑ i = 1 p 2 r e l i − 1 log 2 ( i + 1 )
+
+The latter formula is commonly used in industrial applications including major web search companies [ 6 ] and data science competition platforms such as Kaggle. [ 7 ]
+
+These two formulations of DCG are the same when the relevance values of documents are binary ; [ 3 ] :   320   r e l i ∈ { 0 , 1 } .
+
+Note that Croft et al. (2010) and Burges et al. (2005) present the second DCG with a log of base e, while both versions of DCG above use a log of base 2. When computing NDCG with the first formulation of DCG, the base of the log does not matter, but the base of the log does affect the value of NDCG for the second formulation. Clearly, the base of the log affects the value of DCG in both formulations. [ needs copy edit ]
+
+Convex and smooth approximations to DCG have also been developed, for use as an objective function in gradient based learning methods. [ 8 ]
+
+### Normalized DCG
+
+[ edit ]
+
+This section needs more citations . Please help improve this section by adding citations to reliable sources . Unsourced material may be challenged and removed . ( February 2020 ) ( Learn how and when to remove this message )
+
+Search result lists vary in length depending on the query . Comparing a search engine's performance from one query to the next cannot be consistently achieved using DCG alone, so the cumulative gain at each position for a chosen value of p should be normalized across queries. This is done by sorting all relevant documents in the corpus by their relative relevance, producing the maximum possible DCG through position p , also called Ideal DCG (IDCG) through that position. For a query, the normalized discounted cumulative gain , or nDCG, is computed as:
+
+n D C G p = D C G p I D C G p ,
+
+where IDCG is ideal discounted cumulative gain,
+
+I D C G p = ∑ i = 1 | R E L p | 2 r e l i − 1 log 2 ( i + 1 )
+
+and R E L p represents the list of relevant documents (ordered by their relevance) in the corpus up to position p.
+
+The nDCG values for all queries can be averaged to obtain a measure of the average performance of a search engine's ranking algorithm. Note that in a perfect ranking algorithm, the D C G p will be the same as the I D C G p producing an nDCG of 1.0. All nDCG calculations are then relative values on the interval 0.0 to 1.0 and so are cross-query comparable.
+
+The main difficulty encountered in using nDCG is the unavailability of an ideal ordering of results when only partial relevance feedback is available.
+
+## Example
+
+[ edit ]
+
+Presented with a list of documents in response to a search query, an experiment participant is asked to judge the relevance of each document to the query. Each document is to be judged on a scale of 0-3 with 0 meaning not relevant, 3 meaning highly relevant, and 1 and 2 meaning "somewhere in between". For the documents ordered by the ranking algorithm as
+
+D 1 , D 2 , D 3 , D 4 , D 5 , D 6
+
+the user provides the following relevance scores:
+
+3 , 2 , 3 , 0 , 1 , 2
+
+That is: document 1 has a relevance of 3, document 2 has a relevance of 2, etc. The Cumulative Gain of this search result listing is:
+
+C G 6 = ∑ i = 1 6 r e l i = 3 + 2 + 3 + 0 + 1 + 2 = 11
+
+Changing the order of any two documents does not affect the CG measure. If D 3 and D 4 are switched, the CG remains the same, 11. DCG is used to emphasize highly relevant documents appearing early in the result list. Using the logarithmic scale for reduction, the DCG for each result in order is:
+
+i
+r e l i
+log 2 ( i + 1 )
+r e l i log 2 ( i + 1 )
+
+1
+3
+1
+3
+
+2
+2
+1.585
+1.262
+
+3
+3
+2
+1.5
+
+4
+0
+2.322
+0
+
+5
+1
+2.585
+0.387
+
+6
+2
+2.807
+0.712
+
+So the D C G 6 of this ranking is:
+
+D C G 6 = ∑ i = 1 6 r e l i log 2 ( i + 1 ) = 3 + 1.262 + 1.5 + 0 + 0.387 + 0.712 = 6.861
+
+Now a switch of D 3 and D 4 results in a reduced DCG because a less relevant document is placed higher in the ranking; that is, a more relevant document is discounted more by being placed in a lower rank.
+
+The performance of this query to another is incomparable in this form since the other query may have more results, resulting in a larger overall DCG which may not necessarily be better. In order to compare, the DCG values must be normalized.
+
+To normalize DCG values, an ideal ordering for the given query is needed. For this example, that ordering would be the monotonically decreasing sort of all known relevance judgments. In addition to the six from this experiment, suppose we also know there is a document D 7 with relevance grade 3 to the same query and a document D 8 with relevance grade 2 to that query. Then the ideal ordering is:
+
+3 , 3 , 3 , 2 , 2 , 2 , 1 , 0
+
+The ideal ranking is cut again to length 6 to match the depth of analysis of the ranking:
+
+3 , 3 , 3 , 2 , 2 , 2
+
+The DCG of this ideal ordering, or IDCG (Ideal DCG) , is computed to rank 6:
+
+I D C G 6 = 8.740
+
+And so the nDCG for this query is given as:
+
+n D C G 6 = D C G 6 I D C G 6 = 6.861 8.740 = 0.785
+
+## Limitations
+
+[ edit ]
+
+Normalized DCG does not penalize containing bad documents in the result. For example, if a query returns two results with scores 1,1,1 and 1,1,1,0 respectively, both would be considered equally good, even if the latter contains a bad document. For the ranking judgments Excellent, Fair, Bad one might use numerical scores 1,0,-1 instead of 2,1,0 . This would cause the score to be lowered if bad results are returned, prioritizing the precision of the results over the recall; however, this approach can result in an overall negative score.
+
+Normalized DCG does not penalize missing documents in the result. For example, if a query returns two results with scores 1,1,1 and 1,1,1,1,1 respectively, both would be considered equally good, assuming ideal DCG is computed to rank 3 for the former and rank 5 for the latter. One way to take into account this limitation is to enforce a fixed set size for the result set and use minimum scores for the missing documents. In the previous example, we would use the scores 1,1,1,0,0 and 1,1,1,1,1 and quote nDCG as nDCG@5.
+
+Normalized DCG may not be suitable to measure the performance of queries that may have several equally good results. This is especially true when this metric is limited to only the first few results, as it is often done in practice. For example, for queries such as "restaurants" nDCG@1 accounts for only the first result. If one result set contains only 1 restaurant from the nearby area while the other contains 5, both would end up having the same score even though the latter is more comprehensive.
+
+## See also
+
+[ edit ]
+
+Evaluation measures (information retrieval)
+
+Learning to rank
+
+## References
+
+[ edit ]
+
+1 2 Järvelin, Kalervo; Kekäläinen, Jaana (2002). "Cumulated gain-based evaluation of IR techniques" . ACM Transactions on Information Systems . 20 (4): 422– 446. doi : 10.1145/582415.582418 . ISSN   1046-8188 .
+
+↑ Järvelin, Kalervo; Kekäläinen, Jaana (2000). "IR evaluation methods for retrieving highly relevant documents". Proceedings of the 23rd annual international ACM SIGIR conference on Research and development in information retrieval . ACM. pp.   41– 48. doi : 10.1145/345508.345545 . ISBN   978-1-58113-226-7 .
+
+1 2 B. Croft; D. Metzler; T. Strohman (2010). Search Engines: Information Retrieval in Practice . Addison Wesley.
+
+↑ Yining Wang, Liwei Wang, Yuanzhi Li, Di He, Wei Chen, Tie-Yan Liu . 2013. A Theoretical Analysis of Normalized Discounted Cumulative Gain (NDCG) Ranking Measures. In Proceedings of the 26th Annual Conference on Learning Theory (COLT 2013).
+
+↑ Burges, Chris; Shaked, Tal; Renshaw, Erin; Lazier, Ari; Deeds, Matt; Hamilton, Nicole; Hullender, Greg (2005). "Learning to rank using gradient descent". Proceedings of the 22nd international conference on Machine learning - ICML '05 . pp.   89– 96. doi : 10.1145/1102351.1102363 . ISBN   1-59593-180-5 .
+
+↑ "Introduction to Information Retrieval - Evaluation" (PDF) . Stanford University. 21 April 2013 . Retrieved 23 March 2014 .
+
+↑ "Normalized Discounted Cumulative Gain" . Archived from the original on 23 March 2014 . Retrieved 23 March 2014 .
+
+↑ Cossock, David; Zhang, Tong (2008). "Statistical Analysis of Bayes Optimal Subset Ranking". IEEE Transactions on Information Theory . 54 (11): 5140– 5154. Bibcode : 2008ITIT...54.5140C . doi : 10.1109/TIT.2008.929939 .
+
+v
+t
+e
+
+Machine learning evaluation metrics
+
+Regression
+MSE
+
+MAE
+
+sMAPE
+
+MAPE
+
+MASE
+
+MSPE
+
+RMS
+
+RMSE/RMSD
+
+R 2
+
+MDA
+
+MAD
+
+Classification
+F-score
+
+P4
+
+Accuracy
+
+Precision
+
+Recall
+
+Kappa
+
+MCC
+
+AUC
+
+ROC
+
+Sensitivity and specificity
+
+Logarithmic loss
+
+Clustering
+Silhouette
+
+Calinski–Harabasz index
+
+Davies–Bouldin index
+
+Dunn index
+
+Hopkins statistic
+
+Jaccard index
+
+Rand index
+
+Similarity measure
+
+SMC
+
+DBCV index
+
+Ranking
+MRR
+
+NDCG
+
+AP
+
+Computer vision
+PSNR
+
+SSIM
+
+IoU
+
+NLP
+Perplexity
+
+BLEU
+
+MAUVE
+
+Deep learning
+Inception score
+
+FID
+
+Recommender system
+Coverage
+
+Intra-list similarity
+
+Similarity
+Cosine similarity
+
+Euclidean distance
+
+Pearson correlation coefficient
+
+Confusion matrix
+
+Retrieved from " https://en.wikipedia.org/w/index.php?title=Discounted_cumulative_gain&oldid=1383184584 "
+
+Category : Information retrieval evaluation
+
+Hidden categories: Articles with short description
+Short description is different from Wikidata
+All Wikipedia articles needing copy edit
+Wikipedia articles needing copy edit from October 2026
+Articles needing additional references from February 2020
+All articles needing additional references
+
+This page was last edited on 1 November 2026, at 11:53  (UTC) .
+
+Page was rendered with Parsoid .
+
+Text is available under the Creative Commons Attribution-ShareAlike 4.0 License ;
+additional terms may apply. By using this site, you agree to the Terms of Use and Privacy Policy . Wikipedia® is a registered trademark of the Wikimedia Foundation, Inc. , a non-profit organization.
+
+Privacy policy
+
+About Wikipedia
+
+Disclaimers
+
+Contact Wikipedia
+
+Legal & safety contacts
+
+Code of Conduct
+
+Developers
+
+Statistics
+
+Cookie statement
+
+Mobile view
+
+Search
+
+Search
+
+Toggle the table of contents
+
+Discounted cumulative gain
+
+2 languages
+
+Add topic
