@@ -175,3 +175,24 @@ A single point, properly sourced and long enough to clear any word minimum easil
   assert.equal(passed, false);
   assert.match(results[0].detail, /1 claims, minimum 4/);
 });
+
+test('a fenced block is not a claim, and neither are its backticks', () => {
+  // Live failure: a model wrapped a formula in a fence, each ``` became a
+  // claim, and the corrector told the next attempt that "```" needed a quote.
+  const analysis = parseAnalysis(
+    ['### Gain', 'Relevance is discounted by position.', '> position discount', '', '```', 'DCG = sum rel_i / log2(i+1)', '```'].join('\n')
+  );
+  const claims = claimsOf(analysis);
+  assert.deepEqual(
+    claims.map((c) => c.text),
+    ['Relevance is discounted by position.']
+  );
+});
+
+test('a horizontal rule separates claims rather than becoming one', () => {
+  const analysis = parseAnalysis(['first claim here', '', '---', '', 'second claim here'].join('\n'));
+  assert.deepEqual(
+    claimsOf(analysis).map((c) => c.text),
+    ['first claim here', 'second claim here']
+  );
+});

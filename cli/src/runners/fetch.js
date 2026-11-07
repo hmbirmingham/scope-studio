@@ -46,8 +46,14 @@ export function htmlToText(html) {
     .replace(/<style\b[\s\S]*?<\/style>/gi, ' ')
     .replace(/<noscript\b[\s\S]*?<\/noscript>/gi, ' ')
     .replace(/<!--[\s\S]*?-->/g, ' ')
+    // Headings become markdown headings rather than bare lines. A page's own
+    // section structure is the cheapest relevance signal it offers, and once
+    // chunking leaves neighbours out it is also what makes an excerpt readable
+    // — so it has to survive the tag stripping that follows.
+    .replace(/<h([1-6])\b[^>]*>/gi, (_, level) => `\n\n${'#'.repeat(Number(level))} `)
+    .replace(/<\/h[1-6]>/gi, '\n\n')
     // Block boundaries become line breaks so sentences do not fuse together.
-    .replace(/<\/(p|div|section|article|li|h[1-6]|tr|blockquote)>/gi, '\n')
+    .replace(/<\/(p|div|section|article|li|tr|blockquote)>/gi, '\n')
     .replace(/<br\s*\/?>/gi, '\n')
     .replace(/<[^>]+>/g, ' ')
     .replace(/&nbsp;/gi, ' ')

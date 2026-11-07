@@ -30,7 +30,10 @@ const DEFAULTS = {
     // from the vault. Kept in the environment, not in this file, and never in
     // the vault.
     apiKey: process.env.GEMINI_API_KEY ?? null,
-    model: process.env.GEMINI_MODEL ?? 'gemini-2.5-flash',
+    // A "latest" alias, not a pinned version: gemini-2.5-flash was the default
+    // here and had already been retired for new keys, so the tier 404'd on a
+    // name that looked fine in the config. Measured working 2026-11-07.
+    model: process.env.GEMINI_MODEL ?? 'gemini-flash-latest',
   },
   cloud: {
     // Headless Claude Code on the Pro subscription. No API keys anywhere.

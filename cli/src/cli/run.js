@@ -1,12 +1,28 @@
-import { estimateTokens, fitsContext, generate } from '../runners/local.js';
+import { estimateTokens, fitsContext, generate, ollamaUp } from '../runners/local.js';
 import { PrivacyRefusal, search, searchConfigured } from '../runners/search.js';
 import { FetchRefusal, fetchSource, renderSource } from '../runners/fetch.js';
 import { failureConstraint, runGates } from '../eval/check.js';
 import { claimsOf, correctionNotes, groundQuotes, parseAnalysis } from '../eval/analysis.js';
+import { select } from '../core/select.js';
+import { cloudAllowance, decideRoute, describeRoute, questionDifficulty } from '../core/router.js';
 import { writeRun } from '../core/ledger.js';
 import { loadTask } from '../core/task.js';
 import { agentPath, ensureAgentDirs } from '../core/vault.js';
 import { readFile } from 'node:fs/promises';
+
+// How much of the window a correction is allowed to need. Reserved up front so
+// a retry cannot overflow a prompt that fit on the first attempt.
+const CORRECTION_RESERVE_TOKENS = 512;
+
+/**
+ * The prompt as the model will actually receive it. One function, used by the
+ * budget check and by the attempt loop both — computing the budget against a
+ * different string than the one that gets sent is how a selection comes in 43
+ * tokens over the window.
+ */
+function asked(task, sources) {
+  return sources ? `${task.prompt}\n\nSource material:\n\n${sources}` : task.prompt;
+}
 
 // A task with a use_case is given its rubric's prose verbatim: the constraints
 // the work is judged by are the constraints the work is given. Without one, the
@@ -22,14 +38,20 @@ function systemPrompt(task) {
   ].join('\n');
 }
 
-/** The material a task works from, read straight out of the vault. */
+/**
+ * The material a task works from, read straight out of the vault.
+ *
+ * Vault text is marked private. That marking is the whole input to the router's
+ * first rule: a note of his own in the prompt forces the step local, ahead of
+ * any other consideration including an explicit request for cloud.
+ */
 async function readSources(config, task) {
-  const parts = [];
+  const docs = [];
   for (const relPath of task.sources) {
     const text = await readFile(agentPath(config, relPath), 'utf8');
-    parts.push(`<source path="${relPath}">\n${text.trim()}\n</source>`);
+    docs.push({ label: relPath, attr: 'path', ref: relPath, text: text.trim(), privacy: 'local' });
   }
-  return parts.join('\n\n');
+  return docs;
 }
 
 /**
@@ -38,14 +60,22 @@ async function readSources(config, task) {
  * quotes means anything.
  */
 async function fetchPages(task) {
-  const parts = [];
+  const docs = [];
   for (const url of task.fetchUrls) {
     process.stderr.write(`  fetching: ${url}… `);
     const page = await fetchSource(url);
     process.stderr.write(`${page.chars} chars${page.truncated ? ' (truncated)' : ''} (${page.ms} ms)\n`);
-    parts.push(renderSource(page));
+    docs.push({
+      label: url,
+      attr: 'uri',
+      ref: url,
+      text: page.text,
+      privacy: 'public',
+      truncated: page.truncated,
+      render: () => renderSource(page),
+    });
   }
-  return parts.join('\n\n');
+  return docs;
 }
 
 /**
@@ -77,8 +107,8 @@ async function fetchSources(config, task) {
 export default async function runCommand(config, taskRef, { verbose = false } = {}) {
   const task = await loadTask(config, taskRef);
   await ensureAgentDirs(config);
-  const fromVault = task.sources.length ? await readSources(config, task) : '';
-  let pages = '';
+  const fromVault = task.sources.length ? await readSources(config, task) : [];
+  let pages = [];
   if (task.fetchUrls.length) {
     try {
       pages = await fetchPages(task);
@@ -98,7 +128,7 @@ export default async function runCommand(config, taskRef, { verbose = false } = 
       throw err;
     }
   }
-  const sources = [fromVault, pages, fetched].filter(Boolean).join('\n\n');
+  const docs = [...fromVault, ...pages];
   if (task.sources.length) {
     console.error(`  sources: ${task.sources.join(', ')}`);
   }
@@ -106,14 +136,69 @@ export default async function runCommand(config, taskRef, { verbose = false } = 
     console.error(`  rubric:  ${task.rubricSource} (${task.gates.length} gates, ${task.rubricLines.length} judged lines)`);
   }
 
-  // Refuse an oversized prompt instead of letting Ollama drop the overflow.
-  // A silently truncated source is the worst kind of failure here: the gates
-  // still run, they just judge an answer written from material the model never
-  // saw.
-  const fit = fitsContext(config, { system: systemPrompt(task), prompt: `${task.prompt}\n\n${sources}` });
+  // Which tier serves this step. Privacy is decided by what is in the prompt,
+  // not by what the task asked for: a vault note forces local ahead of
+  // everything else. Cloud has no allowance until a week of runs calibrates
+  // one, so this currently always resolves local — recorded anyway, so a trace
+  // can say whether the router thought the model was big enough for the
+  // question it was given.
+  const system = systemPrompt(task);
+  const local = await ollamaUp(config);
+  const route = decideRoute({
+    sources: docs,
+    localAvailable: local.up,
+    cloud: cloudAllowance(config),
+    hard: questionDifficulty(task.prompt),
+  });
+  if (route.blocked) {
+    throw new Error(`no tier can serve ${task.id}: wanted ${route.tier} (${route.reason}), ${route.blocked}`);
+  }
+  if (verbose) console.error(`  route:   ${describeRoute(route)}`);
+
+  // Fit the source material to the window instead of refusing it.
+  //
+  // Refusing an overflow was the right first fix — Ollama drops the overflow
+  // silently, and gates that judge an answer written from unseen material are
+  // worse than no gates. But refusing is not a workflow: whole pages do not fit
+  // an 8k window, so selection is what makes fetched sources usable at all.
+  //
+  // Selection runs ONCE, from the task's own question, before the first
+  // attempt. Recomputing it per attempt would move the source text a quote has
+  // to ground against between attempts, so a correction could fail for a reason
+  // the model could not see.
+  const verbatim = [...docs.map((doc) => (doc.render ? doc.render() : `<source ${doc.attr}="${doc.ref}">\n${doc.text}\n</source>`)), fetched]
+    .filter(Boolean)
+    .join('\n\n');
+  let sources = verbatim;
+  let selection = null;
+
+  const whole = fitsContext(config, { system, prompt: asked(task, verbatim) });
+  if (!whole.ok && docs.length) {
+    // What is left for source material once everything else has its place. The
+    // search tier's output is not selectable — it is already an extract — so it
+    // is charged against the budget rather than competing for it. The
+    // correction allowance is reserved too: a second attempt carries one note
+    // per failing claim, and a retry that no longer fits would refuse the run
+    // halfway through rather than before it started.
+    const budget =
+      whole.limit -
+      whole.reserveForAnswer -
+      CORRECTION_RESERVE_TOKENS -
+      estimateTokens(system) -
+      estimateTokens(asked(task, '')) -
+      estimateTokens(fetched);
+    selection = await select(config, task.prompt, docs, Math.max(0, budget));
+    sources = [selection.text, fetched].filter(Boolean).join('\n\n');
+    console.error(
+      `  select:  ${selection.selected} of ${selection.total} chunks, ~${selection.tokens} tokens` +
+        `, ${selection.dense ? 'dense+lexical' : 'lexical only'}${selection.elided ? `, ${selection.elided} elided` : ''}`
+    );
+  }
+
+  const fit = fitsContext(config, { system, prompt: asked(task, sources) });
   if (!fit.ok) {
     throw new Error(
-      `source material does not fit the local context: ~${fit.needed} tokens needed ` +
+      `source material does not fit the local context even after selection: ~${fit.needed} tokens needed ` +
         `(including ${fit.reserveForAnswer} reserved for the answer), limit ${fit.limit}. ` +
         `Ollama would silently drop the overflow, so this is refused. ` +
         `Use fewer sources, or raise OLLAMA_NUM_CTX if the machine can hold it.`
@@ -126,10 +211,10 @@ export default async function runCommand(config, taskRef, { verbose = false } = 
   let constraint = null;
 
   for (let n = 1; n <= task.attempts; n += 1) {
-    const asked = sources ? `${task.prompt}\n\nSource material:\n\n${sources}` : task.prompt;
+    const base = asked(task, sources);
     const prompt = constraint
-      ? `${asked}\n\nYour previous answer failed these checks. Fix exactly these and change nothing else:\n${constraint}`
-      : asked;
+      ? `${base}\n\nYour previous answer failed these checks. Fix exactly these and change nothing else:\n${constraint}`
+      : base;
 
     process.stderr.write(`  attempt ${n}/${task.attempts} on ${config.ollama.model}… `);
     const result = await generate(config, { system: systemPrompt(task), prompt });
@@ -161,7 +246,7 @@ export default async function runCommand(config, taskRef, { verbose = false } = 
   }
 
   const passed = attempts.at(-1).passed;
-  const { path, commit } = await writeRun(config, { task, startedAt, attempts, passed });
+  const { path, commit } = await writeRun(config, { task, startedAt, attempts, passed, route, selection });
 
   console.log('');
   console.log(passed ? attempts.at(-1).output : 'Task failed its checks. Nothing is being passed off as done.');

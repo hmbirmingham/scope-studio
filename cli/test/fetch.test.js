@@ -26,7 +26,9 @@ test('html becomes text a model can quote and a gate can match', () => {
   const html = `<html><head><style>p{color:red}</style><script>var x=1</script></head>
     <body><h1>Recall</h1><p>Recall@k measures coverage.</p><p>nDCG measures ordering &amp; gain.</p></body></html>`;
   const text = htmlToText(html);
-  assert.match(text, /^Recall\n/);
+  // Headings survive as markdown headings: chunking uses them as boundaries and
+  // as its relevance signal, so losing them here would cost both.
+  assert.match(text, /^# Recall\n/);
   assert.match(text, /Recall@k measures coverage\./);
   assert.match(text, /nDCG measures ordering & gain\./);
   assert.doesNotMatch(text, /var x=1|color:red/, 'scripts and styles are gone');

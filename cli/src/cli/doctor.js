@@ -1,6 +1,7 @@
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import { ollamaUp } from '../runners/local.js';
+import { embedModel } from '../core/embed.js';
 import { searchConfigured } from '../runners/search.js';
 import { AGENT_DIRS, agentPath, vaultExists, vaultIsGit } from '../core/vault.js';
 import { access, constants } from 'node:fs/promises';
@@ -56,6 +57,20 @@ export default async function doctor(config) {
         label: `model ${config.ollama.model}`,
         detail: has ? 'pulled' : 'not pulled',
         fix: `ollama pull ${config.ollama.model}`,
+      })
+    );
+    // Selection falls back to lexical-only without this, which still works but
+    // ranks worse. A warning, not a failure: a degraded ranking is recoverable
+    // and a refused run is not.
+    const embeds = ollama.models.some((name) => name.startsWith(embedModel()));
+    checks.push(
+      line({
+        // Not `false`: line() renders anything but true-or-false as a warning,
+        // and a missing embedding model degrades a run rather than blocking it.
+        ok: embeds ? true : null,
+        label: `model ${embedModel()}`,
+        detail: embeds ? 'pulled — chunk selection ranks densely' : 'not pulled — selection falls back to lexical only',
+        fix: `ollama pull ${embedModel()}`,
       })
     );
   }

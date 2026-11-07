@@ -73,8 +73,29 @@ export function parseAnalysis(output) {
     claim = null;
   };
 
+  // Fenced blocks and horizontal rules are furniture, not assertions. Observed
+  // live: a model wrapped a formula in a code fence and the three backticks
+  // each became a claim, so `cited` reported eight uncited claims and the
+  // corrector told the next attempt that "```" needed a supporting quote. A
+  // correction note the model cannot act on is worse than none — it spends an
+  // attempt and teaches the wrong lesson.
+  let inFence = false;
+
   output.split('\n').forEach((raw, i) => {
     const line = raw.trim();
+    if (/^(```|~~~)/.test(line)) {
+      // The fence closes the claim above it rather than extending it: a formula
+      // is evidence for the preceding prose, not a new assertion.
+      push();
+      inFence = !inFence;
+      return;
+    }
+    if (inFence) return;
+    // A rule is a separator, so it ends the current claim like a blank line.
+    if (/^(-{3,}|\*{3,}|_{3,})$/.test(line)) {
+      push();
+      return;
+    }
     const heading = /^#{1,6}\s+(.*)$/.exec(line);
     if (heading) {
       push();
