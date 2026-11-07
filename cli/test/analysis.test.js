@@ -147,3 +147,31 @@ test('canonicalising quote marks does not ground an invented sentence', () => {
   const out = '### A\nA claim here.\n> "Explainability is trivially easy"\n';
   assert.equal(groundQuotes(parseAnalysis(out), src).ungrounded.length, 1);
 });
+
+test('stranded spaces from tag stripping do not break grounding', () => {
+  // A fetched page reads "( DCG )" and "retrieval . [ 1 ]" because inline tags
+  // were replaced with spaces; a person quotes it without them.
+  const page = 'Discounted cumulative gain ( DCG ) is a measure of ranking quality in information retrieval . [ 1 ]';
+  const out = '### DCG\nIt scores how well a ranking is ordered.\n> Discounted cumulative gain (DCG) is a measure of ranking quality in information retrieval.\n';
+  assert.equal(groundQuotes(parseAnalysis(out), page).ungrounded.length, 0);
+});
+
+test('normalising spacing does not excuse a genuine misquote', () => {
+  // The live run fused two neighbouring sentences: the source says the base
+  // "affects" the value, the model wrote "does affect".
+  const page = 'Clearly, the base of the log affects the value of DCG in both formulations.';
+  const out = '### Log base\nThe base matters.\n> The base of the log does affect the value of DCG in both formulations.\n';
+  assert.equal(groundQuotes(parseAnalysis(out), page).ungrounded.length, 1);
+});
+
+test('min_claims catches a brief that passed by saying almost nothing', () => {
+  // A live brief passed every other gate with two claims: the cheapest way to
+  // satisfy "every claim must be grounded" is to make very few claims.
+  const thin = `### One finding
+A single point, properly sourced and long enough to clear any word minimum easily.
+> Bootstrap samples use ~63% of rows per tree, leaving ~37% untouched
+`;
+  const { passed, results } = runGates([{ id: 'enough', check: 'min_claims', arg: 4 }], thin, { sources });
+  assert.equal(passed, false);
+  assert.match(results[0].detail, /1 claims, minimum 4/);
+});

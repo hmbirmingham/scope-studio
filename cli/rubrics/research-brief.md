@@ -36,6 +36,8 @@ Rules that matter more than style:
 - You are not adding knowledge. If the sources do not answer part of the question, that
   part belongs under `### What this does not settle`, not filled in from memory.
 - No preamble, no closing summary, no meta-commentary about the sources or these rules.
+- Cover the question. A brief with two findings in it has not answered anything; if the
+  sources support four or five distinct points, make four or five entries.
 
 ## Gates
 
@@ -48,6 +50,7 @@ Rules that matter more than style:
 - no-preamble: must_not_match ^(Here|Sure|Below|In this|The following|I have)
 - not-padded: max_words 600
 - substantial: min_words 80
+- enough-findings: min_claims 4
 
 ## Rubric
 

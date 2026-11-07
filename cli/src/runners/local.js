@@ -7,6 +7,28 @@
 // the answer and a leaked think block would fail them for the wrong reason.
 const THINK_BLOCK = /<think>[\s\S]*?<\/think>\s*/gi;
 
+// Rough but sufficient: the point is to catch a prompt that is twice the window,
+// not to predict the last token. Code and markup run denser than prose, so this
+// under-counts slightly, which is the safe direction for a budget check.
+export function estimateTokens(text) {
+  return Math.ceil(text.length / 4);
+}
+
+/**
+ * Does this prompt fit, leaving room for an answer?
+ *
+ * Ollama silently drops whatever overflows the window. A model that cannot see
+ * half its source material will either fail its grounding gates for the wrong
+ * reason or invent something plausible to fill the gap — both are failures that
+ * look like model weakness and are actually a budget bug. So this is checked
+ * before generating, and an overflow is refused rather than truncated.
+ */
+export function fitsContext(config, { system = '', prompt = '', reserveForAnswer = 1024 }) {
+  const limit = config.ollama.contextTokens;
+  const needed = estimateTokens(system) + estimateTokens(prompt) + reserveForAnswer;
+  return { ok: needed <= limit, needed, limit, reserveForAnswer };
+}
+
 export function stripThinking(text) {
   return text.replace(THINK_BLOCK, '').trim();
 }
@@ -37,6 +59,9 @@ export async function generate(config, { system, prompt, timeoutMs = 300_000 }) 
         model: config.ollama.model,
         stream: false,
         think: false,
+        // Set explicitly: Ollama's own default is smaller than this model can
+        // take, and leaving it unset makes the real budget invisible.
+        options: { num_ctx: config.ollama.contextTokens },
         messages: [
           ...(system ? [{ role: 'system', content: system }] : []),
           { role: 'user', content: prompt },

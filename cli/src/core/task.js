@@ -100,6 +100,12 @@ export function parseTask(text, source, rubric = null) {
     .map((line) => /^\s*-\s+(.*)$/.exec(line)?.[1]?.trim())
     .filter(Boolean);
 
+  // URLs whose page text becomes source material.
+  const fetchUrls = (section(body, 'Fetch') ?? '')
+    .split('\n')
+    .map((line) => /^\s*-\s+(.*)$/.exec(line)?.[1]?.trim())
+    .filter(Boolean);
+
   // A task may fetch its own material instead of reading the vault. The two are
   // deliberately the same shape downstream: by the time gates run, source text
   // is source text and nothing cares where it came from.
@@ -109,6 +115,7 @@ export function parseTask(text, source, rubric = null) {
     .filter(Boolean);
 
   return {
+    fetchUrls,
     searchQueries,
     id: fields.id ?? source.replace(/\.md$/, ''),
     useCase: fields.use_case ?? null,

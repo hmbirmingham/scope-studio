@@ -20,6 +20,9 @@ const DEFAULTS = {
     // prompt diverges instead of only appending. That is why it beats the
     // hybrid-attention 9b on reworded follow-ups.
     model: process.env.OLLAMA_MODEL ?? 'qwen3:8b',
+    // The window the local model is given. Raising it costs memory and time;
+    // 16 GB will not hold a very large one alongside the model weights.
+    contextTokens: Number(process.env.OLLAMA_NUM_CTX ?? 8192),
   },
   search: {
     // The search tier's key. Free tier, and Google trains on free-tier data, so

@@ -3,7 +3,7 @@
 // to enforce is that every step has a check before it has a model — a step
 // nobody can check is a question for the user, not a step.
 
-import { copiedClaims, groundQuotes, parseAnalysis, uncitedClaims } from './analysis.js';
+import { claimsOf, copiedClaims, groundQuotes, parseAnalysis, uncitedClaims } from './analysis.js';
 
 const WORDS = /[A-Za-z0-9'’-]+/g;
 
@@ -95,6 +95,15 @@ const CHECKS = {
             .join('; ')}`
         : `all ${grounded.length} quotes found in the source`,
     };
+  },
+
+  // The counterweight to every grounding gate: the cheapest way to satisfy
+  // "each claim must be grounded" is to make almost no claims. A brief passed
+  // with two. Word count does not catch it — one long sentence clears a
+  // minimum — so claims are counted directly.
+  min_claims: (out, n) => {
+    const count = claimsOf(parseAnalysis(out)).filter((c) => c.text !== '').length;
+    return { ok: count >= n, detail: `${count} claims, minimum ${n}` };
   },
 
   // The counterweight to quotes_grounded: that gate is trivially satisfiable by

@@ -45,7 +45,15 @@ export function normalizeQuote(text) {
     .replace(/['"‘’ʼ“”]/g, '"')
     .replace(/[–—]/g, '-')
     .replace(/[≈]/g, '~')
+    // Reference markers are furniture, not content: a page carries "[ 1 ]" and
+    // nobody quoting it types that.
+    .replace(/\[\s*\d+\s*\]/g, ' ')
     .replace(/\s+/g, ' ')
+    // Stripping inline tags leaves spaces stranded around punctuation, so a
+    // fetched page reads "( DCG )" and "retrieval ." while the model quotes it
+    // the way a person would. Spacing around punctuation is presentation.
+    .replace(/\s+([.,;:!?%)\]}])/g, '$1')
+    .replace(/([(\[{])\s+/g, '$1')
     .trim()
     .toLowerCase();
 }

@@ -57,6 +57,11 @@ The brief says so rather than presenting a single citation as a settled consensu
 the field, which is the failure mode a reader cannot detect from the prose alone.
 > Recall@k and nDCG are the standard offline measures.
 
+### Both measures are offline
+Neither tells you what a user did with the ranking, so a system that scores well can still
+disappoint in production where behaviour rather than labelled relevance decides the outcome.
+> Recall@k and nDCG are the standard offline measures.
+
 ### What this does not settle
 The sources do not say which threshold of k teams actually use in production, nor whether
 the two measures ever disagree enough to change a decision.
