@@ -183,10 +183,28 @@ export function uncitedClaims(analysis) {
  * named so the next attempt repairs those and leaves the rest untouched, which
  * is the whole reason the analysis is structured.
  */
-export function correctionNotes(analysis, sourceText) {
+export function correctionNotes(analysis, sourceText, { minClaims = null } = {}) {
   const { ungrounded } = groundQuotes(analysis, sourceText);
   const uncited = uncitedClaims(analysis);
   const notes = [];
+  // Deletion used to be offered as an equal option — "quote it exactly, or
+  // delete the claim" — and the model took it every time, because deleting is
+  // cheaper than re-reading the source. Measured over four attempts: the second
+  // was the best of the run (four grounded quotes, every claim cited) and the
+  // third and fourth collapsed to a single claim each, failing the coverage
+  // gate they had been passing. The corrector and the coverage gate were giving
+  // contradictory instructions and the model took the cheap branch.
+  //
+  // The gate-gaming rule applies to the corrector too, and this is its version:
+  // whatever the cheapest way to satisfy a correction note is, that is what
+  // happens. So the floor is stated first, before any note that could be read
+  // as permission to cut.
+  if (minClaims !== null) {
+    notes.push(
+      `Keep at least ${minClaims} claims. Repair the claims named below by fixing their ` +
+        `quotes — deleting a claim to avoid a bad quote fails the coverage check and is not a fix.`
+    );
+  }
   for (const claim of copiedClaims(analysis, sourceText)) {
     notes.push(
       `Under "${claim.heading ?? 'untitled'}", the claim is copied from the source instead of ` +
@@ -197,13 +215,20 @@ export function correctionNotes(analysis, sourceText) {
   for (const { heading, quote } of ungrounded) {
     notes.push(
       `Under "${heading ?? 'untitled'}", this quote is not in the source material: "${quote}". ` +
-        `Either quote the source exactly, or delete the claim it supports.`
+        // Named explicitly because it is now the dominant failure, twice over:
+        // the model joins two sentences that the page separates with a formula
+        // or another sentence, producing a quote that reads right and does not
+        // exist. "Quote exactly" did not convey that; "one continuous passage"
+        // does.
+        `Replace it with ONE continuous passage copied from the source — a single unbroken run of ` +
+        `text, not two sentences joined together. If the sentences you want are separated in the ` +
+        `source by anything at all, quote only one of them.`
     );
   }
   for (const claim of uncited) {
     notes.push(
       `Under "${claim.heading ?? 'untitled'}", this claim has no supporting quote: "${claim.text.slice(0, 120)}". ` +
-        `Add the exact sentence from the source, or delete the claim.`
+        `Add one exact, continuous sentence from the source beneath it.`
     );
   }
   return notes;

@@ -15,6 +15,25 @@ import { readFile } from 'node:fs/promises';
 const CORRECTION_RESERVE_TOKENS = 512;
 
 /**
+ * How good an attempt was. Gates passed first, then grounded quotes as the
+ * tiebreak — two attempts that clear the same gates are separated by how much
+ * of their answer is actually anchored in the source.
+ */
+function score(attempt) {
+  return attempt.results.filter((r) => r.ok).length * 1000 + (attempt.grounding?.grounded.length ?? 0);
+}
+
+/**
+ * The coverage floor the corrector must not undercut, if the task has one. The
+ * corrector has to know it: a note that reads as permission to delete a claim
+ * will be taken, and then the coverage gate fails instead.
+ */
+function coverageFloor(task) {
+  const gate = task.gates.find((g) => g.check === 'min_claims');
+  return gate ? gate.arg : null;
+}
+
+/**
  * The prompt as the model will actually receive it. One function, used by the
  * budget check and by the attempt loop both — computing the budget against a
  * different string than the one that gets sent is how a selection comes in 43
@@ -209,6 +228,7 @@ export default async function runCommand(config, taskRef, { verbose = false } = 
   const startedAt = new Date();
   const attempts = [];
   let constraint = null;
+  let best = null;
 
   for (let n = 1; n <= task.attempts; n += 1) {
     const base = asked(task, sources);
@@ -228,7 +248,9 @@ export default async function runCommand(config, taskRef, { verbose = false } = 
     const grounding = sources ? groundQuotes(analysis, sources) : null;
     const claimCount = claimsOf(analysis).length;
 
-    attempts.push({ n, ...result, passed, results, analysis, grounding, claimCount });
+    const attempt = { n, ...result, passed, results, analysis, grounding, claimCount };
+    attempts.push(attempt);
+    if (best === null || score(attempt) > score(best)) best = attempt;
     if (verbose) {
       for (const r of results) console.error(`      ${r.ok ? '✅' : '❌'} ${r.id}: ${r.detail}`);
       if (grounding) {
@@ -238,18 +260,33 @@ export default async function runCommand(config, taskRef, { verbose = false } = 
       }
     }
     if (passed) break;
-    // Correction is per-claim, not a blanket retry: the next attempt is told
-    // which claims failed and why, so it repairs those and leaves the rest.
-    constraint = [failureConstraint(results), ...(sources ? correctionNotes(analysis, sources) : [])]
+    // Correct from the best attempt so far, not from the latest.
+    //
+    // Measured over two four-attempt runs: attempt 2 reached 9 of 10 gates and
+    // attempts 3 and 4 fell back to 7, because each correction was built from
+    // the attempt immediately before it. One bad attempt then poisons every
+    // attempt after it, and the run reports its worst work. Correcting from the
+    // best keeps a regression local — attempt 4 retries the same ground attempt
+    // 3 lost rather than inheriting its collapse.
+    constraint = [
+      failureConstraint(best.results),
+      ...(sources ? correctionNotes(best.analysis, sources, { minClaims: coverageFloor(task) }) : []),
+    ]
       .filter(Boolean)
       .join('\n');
   }
 
-  const passed = attempts.at(-1).passed;
-  const { path, commit } = await writeRun(config, { task, startedAt, attempts, passed, route, selection });
+  // The verdict is the best attempt's, not the last one's. A loop that can
+  // regress must not throw away work it already had in hand.
+  const passed = best.passed;
+  const { path, commit } = await writeRun(config, { task, startedAt, attempts, passed, route, selection, best });
 
   console.log('');
-  console.log(passed ? attempts.at(-1).output : 'Task failed its checks. Nothing is being passed off as done.');
+  console.log(passed ? best.output : 'Task failed its checks. Nothing is being passed off as done.');
+  if (!passed && attempts.length > 1) {
+    const total = best.results.length;
+    console.error(`closest: attempt ${best.n}, ${best.results.filter((r) => r.ok).length} of ${total} gates`);
+  }
   console.log('');
   console.error(`trace: ${path}`);
   if (!commit.committed) console.error(`not committed: ${commit.reason}`);

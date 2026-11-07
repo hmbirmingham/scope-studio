@@ -83,7 +83,21 @@ test('correction notes name the specific claim to repair, not the whole answer',
   assert.equal(notes.length, 1);
   assert.match(notes[0], /under "Random Forests"/i);
   assert.match(notes[0], /not in the source material/);
-  assert.match(notes[0], /quote the source exactly, or delete the claim/);
+  // The note demands a replacement, not a deletion. Offering deletion as an
+  // equal option made the model take it: over four live attempts the best one
+  // was the second, and the two after it collapsed to a single claim each.
+  assert.match(notes[0], /ONE continuous passage/);
+  assert.doesNotMatch(notes[0], /delete the claim/);
+});
+
+test('a coverage floor is stated before any note, so deletion is not a route out', () => {
+  const notes = correctionNotes(parseAnalysis(hallucinated), sources, { minClaims: 4 });
+  assert.match(notes[0], /Keep at least 4 claims/);
+  assert.match(notes[0], /deleting a claim .* is not a fix/);
+});
+
+test('without a coverage gate the corrector adds no floor', () => {
+  assert.doesNotMatch(correctionNotes(parseAnalysis(hallucinated), sources)[0], /Keep at least/);
 });
 
 test('a mixed answer corrects only its failing claim', () => {

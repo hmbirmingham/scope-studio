@@ -88,6 +88,14 @@ export async function writeRun(config, run) {
     `> ${run.task.prompt.split('\n').join('\n> ')}`,
     '',
     `**Verdict:** ${run.passed ? 'passed' : 'failed'} after ${run.attempts.length} attempt${run.attempts.length > 1 ? 's' : ''}.`,
+    ...(run.best && run.attempts.length > 1
+      ? [
+          '',
+          `Best attempt: **${run.best.n}**, ${run.best.results.filter((r) => r.ok).length} of ` +
+            `${run.best.results.length} gates. The verdict is this attempt's, not the last one's — ` +
+            `a retry loop that can regress must not discard work it already had.`,
+        ]
+      : []),
     ...(run.passed ? [] : ['', 'Escalated to you with the trace below rather than returning a partial answer.']),
     '',
     ...contextSection(run),
