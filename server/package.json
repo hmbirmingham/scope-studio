@@ -12,7 +12,7 @@
   },
   "keywords": [],
   "author": "Hynes Birmingham",
-  "license": "ISC",
+  "license": "MIT",
   "type": "module",
   "dependencies": {
     "dotenv": "^18.0.1",

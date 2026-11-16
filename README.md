@@ -97,3 +97,7 @@ this README depends on it.
 
 `npm run embed` backfills embeddings for nodes that were created while Ollama
 was unreachable, and `npm run centroids` builds the task-type centroids.
+
+## License
+
+MIT, see [LICENSE](LICENSE).
