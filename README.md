@@ -62,6 +62,16 @@ claim here about token savings, latency or answer quality.
 such as the token reduction and the 300 ms retrieval budget, are design targets
 and are labeled there as unmeasured.
 
+## Repository history
+
+The pull request history goes further than `main`. Between September and
+November 2026 I built a much larger version on a separate branch: agents,
+model routing, a web interface and more. I set it aside and did not merge it
+here. When I made this repository public I deleted those branches, so `main`,
+`dev` and `test` hold only what this README describes. The merged pull
+requests still show that work, but none of it is on `main`, and nothing in
+this README depends on it.
+
 ## Stack
 
 - **Backend:** Node.js and Express

@@ -1,8 +1,8 @@
-# Scope Studio — Architecture Decision Record
+# Scope Studio: Architecture Decision Record
 **Version:** 0.2 (v1 retrieval implemented; §4 taskType and recency anchor corrected, §5 tier loop resolved)
 **Author:** Hynes Birmingham, Fourier Studios
 **Last updated:** September 2026
-**Status:** Canonical — update only when a fundamental decision changes
+**Status:** Canonical. Update only when a fundamental decision changes.
 
 This document records the core architectural decisions made during scoping,
 the reasoning behind each, and the research that supports them. It is the
@@ -88,7 +88,7 @@ but is essential for correct answers.
 }
 ```
 
-**Key design decision — `token_length` at ingestion:**
+**Key design decision: `token_length` at ingestion.**
 Token length is computed once when a node is ingested, not at retrieval
 time. This allows the greedy packing step to use integer summation
 (`SUM(token_length) <= 1500`) instead of a tokenizer call. As implemented it
@@ -96,7 +96,7 @@ is an estimate, the character count divided by four, and not a tokenizer
 count. The 300 ms retrieval budget this was meant to protect is a design
 target; retrieval latency is **unmeasured**.
 
-**Key design decision — `last_confirmed_useful` and `confirmed_useful_count`:**
+**Key design decision: `last_confirmed_useful` and `confirmed_useful_count`.**
 Standard `access_count` and `last_accessed` create a rich-get-richer
 feedback loop: nodes retrieved frequently get boosted, which causes them
 to be retrieved more. Breaking this requires counting only user-confirmed
@@ -113,7 +113,7 @@ follow-up re-ask within 60 seconds) rather than every retrieval.
 | caused_by | A → B | Reverse: retrieve B for "why" questions about A |
 | part_of | A → B | Hierarchy: B (parent) gets soft boost when A is a seed |
 
-**Critical decision — supersedes as demotion:**
+**Critical decision: supersedes as demotion.**
 The v0 pipeline treats supersedes like any other edge, allowing stale
 decisions and old spec revisions to outrank current ones. The correct
 behavior: when node A supersedes node B, B receives a score multiplier
@@ -138,7 +138,7 @@ the relevance floor.
 
 ### 3.2 Known weaknesses being addressed in v1
 
-**Weakness 1 — Recency saturates in active sessions.**
+**Weakness 1: Recency saturates in active sessions.**
 The step-function (0.4 if <24h, 0.2 if <7d, else 0) stops discriminating
 exactly when the user is working hardest. Every touched node in an active
 session is "<24h" so the boost is uniform and useless.
@@ -148,7 +148,7 @@ where λ is node-type-specific. Fast-aging nodes (run logs, conversation):
 λ = 0.15 (half-life ~5 hours). Slow-aging nodes (datasheets, specs): λ = 0.01
 (half-life ~70 hours). Decision nodes: λ = 0.03 (half-life ~23 hours).
 
-**Weakness 2 — Rich-get-richer feedback loop.**
+**Weakness 2: Rich-get-richer feedback loop.**
 access_count bumped on every retrieval biases toward frequently-retrieved
 nodes regardless of whether they were useful.
 
@@ -157,7 +157,7 @@ only the confirmed count drives boost. Decay `confirmed_useful_count` itself
 over time using the same exponential family to prevent permanent entrenchment
 of early retrievals.
 
-**Weakness 3 — Task type requires client declaration.**
+**Weakness 3: Task type requires client declaration.**
 Nothing infers task type from the query, so `TASK_TYPE_BOOSTS` is empty and
 useless.
 
@@ -169,7 +169,7 @@ no additional model pass. Whether it stays within the 300 ms budget is
 source, recently accessed node types) as a prior on the centroid scores. That
 prior is not implemented.
 
-**Weakness 4 — CAD and structured artifacts are served poorly by prose embeddings.**
+**Weakness 4: CAD and structured artifacts are served poorly by prose embeddings.**
 BOMs, netlists, parameter tables, and run logs have low semantic content in
 prose embedding space. Their relevance is positional (current revision,
 run that produced this plot) rather than semantic.
@@ -182,7 +182,7 @@ pointing to them receive the 0.1 demotion multiplier. Structured nodes
 (type = datasheet, source = kicad) get an additional source-type boost of
 0.2 when the inferred task type is hardware-related.
 
-**Weakness 5 — Cosine similarities cluster in narrow band (0.52-0.82).**
+**Weakness 5: Cosine similarities cluster in narrow band (0.52-0.82).**
 Additive boosts re-order across relevance tiers. Multiplicative boosts
 preserve tier ordering while re-ranking within tiers.
 
@@ -207,7 +207,7 @@ where:
 
 recency(node) = e^(-λ(node.type) × hours_since_anchor)
   anchor = last_confirmed_useful, falling back to created_at until a
-           confirmation exists (never last_accessed — that reopens the loop)
+           confirmation exists (never last_accessed, which reopens the loop)
   λ values: conversation=0.15, file=0.08, decision=0.03, spec=0.03,
             datasheet=0.01, paper=0.01, repo=0.005
 
@@ -232,7 +232,7 @@ supersedeDemotion(node) = 0.1 if any node supersedes this node
 ```
 
 **Default parameters to tune first against the 20-query benchmark:**
-1. `λ` values per node type (recency decay rates) — highest expected impact
+1. `λ` values per node type (recency decay rates), highest expected impact
 2. `project` boost magnitude (0.3 is a guess, may need to be 0.15-0.5)
 3. Relevance floor threshold (0.55 is a guess on real nomic similarity distributions)
 
@@ -282,7 +282,7 @@ and frontier models respond to context come from prior work and are
 
 **The tier is provisional at retrieval time.** Retrieval parameters depend
 on the tier, but the routing rule derives the tier from the privacy flags of
-the selected nodes — a loop. Resolution: retrieve under a provisional tier
+the selected nodes, which is a loop. Resolution: retrieve under a provisional tier
 (local if Ollama is reachable, else cloud); if privacy flags then force the
 local tier after a cloud-config retrieval, re-pack the already-scored
 candidates under the local config without re-querying (`packForTier` in
@@ -420,7 +420,7 @@ improvements of ~15% in answer_correct or ~20% in efficiency ratio as
 statistically meaningful. Smaller effects will be noise at this sample
 size. The benchmark is sufficient to validate that the system works and
 to tune the highest-impact parameters (λ, relevance floor). It is not
-sufficient to validate learning-to-rank approaches — that requires 200+
+sufficient to validate learning-to-rank approaches, which requires 200+
 labeled queries.
 
 ---
@@ -462,7 +462,7 @@ on the 20-query benchmark rather than assumed from prior work.
 
 This is not an API specification, a database migration plan, or a deployment
 guide. Those live in the sprint handoff documents and the README. This
-document records decisions and reasoning — it should be readable by someone
+document records decisions and reasoning. It should be readable by someone
 who has never seen the codebase and should not require reading the code to
 understand the system.
 
