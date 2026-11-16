@@ -11,17 +11,45 @@ understand Scope Studio without reading the codebase.
 
 ---
 
+## Status of what this document claims
+
+I wrote this while scoping, so it mixes three kinds of statement and they are
+not equally solid. Read every section with this in mind.
+
+**Implemented on `main`:** the node and relationship schema (section 2), the
+hybrid retrieval pipeline and the v1 scoring function (sections 3 and 4), the
+two tier parameter sets and `packForTier` (section 5), the HNSW index (6.1),
+the query embedding cache (6.4), and the logging signals (section 7).
+
+**Described here and not implemented:** routing a query to a local or a cloud
+model, prompt construction and the static prefix (section 5), multi-hop
+retrieval (the config flag exists, the traversal does not), the session prior
+for task inference (3.2), the per-source lexical weighting (3.2), the
+PostgreSQL memory limits (6.2, which are server configuration and not in this
+repo), and the materialized graph views (6.3).
+
+**Not measured:** every performance and efficiency figure in this document.
+No benchmark has been run. The 70% token reduction, the 300 ms retrieval
+budget, the latency effects of the embedding cache, the static prefix and the
+memory limits, and the statements about how 7B models respond to context are
+design targets or expectations taken from prior work. None of them is a
+result from this system. Each one is marked **unmeasured** where it appears.
+
+---
+
 ## 1. What Scope Studio Is
 
-A persistent, token-efficient engineering context layer. It ingests
-engineering artifacts into a knowledge graph (the "neural map"), retrieves
-a minimal connected subgraph per query, injects it as context, and routes
-the query to either a local 7B-class model or a cloud model.
+The design is a persistent engineering context layer. It ingests engineering
+artifacts into a knowledge graph (the "neural map"), retrieves a small
+connected subgraph per query, injects it as context, and routes the query to
+either a local 7B-class model or a cloud model. The ingestion, graph and
+retrieval parts exist. The injection and routing parts do not.
 
-**The core claim:** Scope Studio uses 70%+ fewer tokens to answer the same
-engineering query as pasting full context manually, with no drop in answer
-correctness, because it retrieves precisely what is relevant rather than
-everything that exists.
+**The design target (unmeasured):** use 70% or more fewer tokens to answer the
+same engineering query than pasting the full context by hand, with no drop in
+answer correctness. This is the hypothesis the benchmark in section 8 was
+designed to test. That benchmark has not been run, so this is a target and
+not a claim.
 
 ---
 
@@ -63,8 +91,10 @@ but is essential for correct answers.
 **Key design decision — `token_length` at ingestion:**
 Token length is computed once when a node is ingested, not at retrieval
 time. This allows the greedy packing step to use integer summation
-(`SUM(token_length) <= 1500`) instead of a tokenizer call, keeping
-retrieval overhead well under the 300ms budget.
+(`SUM(token_length) <= 1500`) instead of a tokenizer call. As implemented it
+is an estimate, the character count divided by four, and not a tokenizer
+count. The 300 ms retrieval budget this was meant to protect is a design
+target; retrieval latency is **unmeasured**.
 
 **Key design decision — `last_confirmed_useful` and `confirmed_useful_count`:**
 Standard `access_count` and `last_accessed` create a rich-get-richer
@@ -133,10 +163,11 @@ useless.
 
 **Fix:** Lightweight cosine classifier against 5-7 type centroids computed
 from labeled examples. Centroids are stored as vectors in PostgreSQL and the
-classification is a single batch cosine query — no external service, no
-additional model pass, stays within the 300ms budget. Session context
-(active plugin source, recently accessed node types) provides a prior that
-weights the centroid scores before the query embedding is even computed.
+classification is a single batch cosine query, with no external service and
+no additional model pass. Whether it stays within the 300 ms budget is
+**unmeasured**. The design also calls for session context (active plugin
+source, recently accessed node types) as a prior on the centroid scores. That
+prior is not implemented.
 
 **Weakness 4 — CAD and structured artifacts are served poorly by prose embeddings.**
 BOMs, netlists, parameter tables, and run logs have low semantic content in
@@ -145,7 +176,8 @@ run that produced this plot) rather than semantic.
 
 **Fix:** Per-source lexical weight multipliers. For kicad and structured
 sources, the RRF fusion weight shifts toward lexical (identifier matching)
-and away from dense. Revision-awareness: nodes with a supersedes relationship
+and away from dense. This weighting is not implemented; the source-type
+boost below is. Revision-awareness: nodes with a supersedes relationship
 pointing to them receive the 0.1 demotion multiplier. Structured nodes
 (type = datasheet, source = kicad) get an additional source-type boost of
 0.2 when the inferred task type is hardware-related.
@@ -242,6 +274,12 @@ behavior per tier.
 
 **Key decisions:**
 
+The two parameter sets above and `packForTier` are implemented. The router
+that would choose between tiers, the prompt that would be built from the
+result, and multi-hop expansion are not. The statements below about how 7B
+and frontier models respond to context come from prior work and are
+**unmeasured** on this system.
+
 **The tier is provisional at retrieval time.** Retrieval parameters depend
 on the tier, but the routing rule derives the tier from the privacy flags of
 the selected nodes — a loop. Resolution: retrieve under a provisional tier
@@ -269,8 +307,10 @@ block, not by recency or relationship type.
 **Static prefix for KV cache retention.** The prompt is structured so that
 system instructions and the most static nodes (project specs, unchanged
 datasheets) appear at the very beginning. Ollama/llama.cpp caches KV states
-for previous tokens — if the beginning of the prompt is identical across
-iterative queries, the engine skips recomputing those tokens, reducing TTFT.
+for previous tokens. If the beginning of the prompt is identical across
+iterative queries, the engine should skip recomputing those tokens and reduce
+time to first token. No prompt is built on `main`, so this is not implemented
+and its effect is **unmeasured**.
 
 ---
 
@@ -286,7 +326,9 @@ WITH (m = 16, ef_construction = 64);
 
 HNSW over IVFFlat: faster query times, no periodic rebuilding as the graph
 grows, and lower `m` limits RAM consumption leaving memory available for
-the local 7B model on a 16GB M4.
+the local 7B model on a 16GB M4. These are the general properties of the two
+index types. Query time and memory use are **unmeasured** here. The migration
+creates the index with pgvector's defaults, which are the values shown.
 
 ### 6.2 PostgreSQL memory limits
 
@@ -295,23 +337,28 @@ shared_buffers = 1GB
 work_mem = 16MB
 ```
 
-If PostgreSQL consumes dynamic RAM unconstrained, the OS pages out the local
-LLM weights, causing 10+ second latency spikes during generation. Hard limits
-in `postgresql.conf` prevent this.
+The concern is that if PostgreSQL consumes dynamic RAM unconstrained, the OS
+pages out the local LLM weights and generation stalls. Hard limits in
+`postgresql.conf` are the intended guard. This is server configuration, it is
+not in this repo, and the latency effect is **unmeasured**.
 
 ### 6.3 Materialized graph views
 
 Common multi-hop relationships (complete `caused_by` chains for decision
 nodes, full `part_of` hierarchies for specs) are pre-computed into a
-materialized view updated asynchronously. Computing deep graph traversals
-on the fly within the 300ms retrieval budget is not feasible.
+materialized view updated asynchronously. The reasoning is that deep graph
+traversals on the fly would not fit the 300 ms retrieval budget. The views are
+not implemented, and that reasoning is **unmeasured**. Retrieval on `main`
+does a single one-hop query.
 
 ### 6.4 Query embedding LRU cache
 
 An in-memory Node.js LRU cache maps exact or highly similar query strings
 to their 768-d nomic embeddings. Iterative engineering workflows frequently
-re-ask similar queries ("what does X do?" / "how does X work?") — skipping
-the embedding model pass for cached queries meaningfully reduces TTFT.
+re-ask similar queries ("what does X do?" / "how does X work?"). Skipping the
+embedding model pass for a cached query should reduce time to first token.
+The cache is implemented, for exact matches after normalizing case and
+whitespace, with 256 entries. The size of the saving is **unmeasured**.
 
 ---
 
@@ -341,7 +388,11 @@ from Sprint 6 onward.
 
 ---
 
-## 8. Ablation Plan — 20-Query Benchmark
+## 8. Ablation Plan: 20-Query Benchmark
+
+**This is a plan. It has not been run and there are no results.** The metrics
+table and the per-feature switches it needs exist; the query set, the runner
+and the ground-truth labels do not.
 
 The benchmark covers 4 categories (5 queries each):
 - **Codebase lookup:** "what does `quantify_colonies` return?"
